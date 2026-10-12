@@ -1,0 +1,50 @@
+id = "aven.tasks"
+name = "aven tasks"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Open the aven task TUI as a Herdr popover, scoped to the project inferred from the focused pane's directory."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Open aven task popover"
+description = "Open the aven TUI in a popover, scoped to the project inferred from the focused pane's directory (workspace scope when there is none)."
+contexts = ["global", "workspace", "pane", "tab"]
+command = ["sh", "bin/run.sh", "action"]
+
+[[actions]]
+id = "compose"
+title = "Add a task in an aven popover"
+description = "Open aven's add-task composer in a small popover, scoped to the inferred project, and close it after the task is submitted."
+contexts = ["global", "workspace", "pane", "tab"]
+command = ["sh", "bin/run.sh", "action"]
+
+[[actions]]
+id = "install-keybindings"
+title = "Install key bindings"
+description = "Add the plugin's key bindings (open, compose) to the Herdr config and reload it. Skips bindings that already exist."
+contexts = ["global", "workspace", "pane", "tab"]
+command = ["sh", "bin/run.sh", "action"]
+
+[[actions]]
+id = "doctor"
+title = "Check aven setup"
+description = "Check that aven is installed and show the directory, workspace and project a popover would open in."
+contexts = ["global", "workspace", "pane", "tab"]
+command = ["sh", "bin/run.sh", "action"]
+
+[[panes]]
+id = "tui"
+title = "aven"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["sh", "bin/run.sh", "pane"]
+
+[[panes]]
+id = "compose"
+title = "aven: add task"
+placement = "popup"
+width = "80%"
+height = 30
+command = ["sh", "bin/run.sh", "pane"]

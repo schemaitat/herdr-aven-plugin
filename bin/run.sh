@@ -1,0 +1,92 @@
+#!/bin/sh
+# Entry point for every command herdr-plugin.toml declares.
+#
+#   run.sh action   Run the action named by HERDR_PLUGIN_ACTION_ID.
+#   run.sh pane     Run the pane entrypoint named by HERDR_PLUGIN_ENTRYPOINT_ID.
+#
+# Herdr runs this with the plugin directory as the working directory, so the
+# helpers are found relative to $0. Everything the plugin prints goes to the
+# plugin command log; exit codes are recorded there too.
+
+here=$(dirname "$0")
+PLUGIN_ROOT=$(cd "$here/.." && pwd)
+export PLUGIN_ROOT
+
+# shellcheck source=../lib/plugin.sh
+. "$PLUGIN_ROOT/lib/plugin.sh"
+
+# open_pane <entrypoint>
+# Ask Herdr to open one of this plugin's panes over the focused pane. Herdr runs
+# the pane command from the plugin directory (bin/run.sh's relative path depends
+# on that); the pane script then moves to the focused pane's directory, so aven
+# infers the workspace and project from there.
+open_pane() {
+  entrypoint=$1
+  set -- "$(herdr_bin)" plugin pane open --plugin "$PLUGIN_ID" --entrypoint "$entrypoint"
+  exec "$@"
+}
+
+action_main() {
+  action=${HERDR_PLUGIN_ACTION_ID:-}
+  case "$action" in
+    open)
+      open_pane tui
+      ;;
+    compose)
+      open_pane compose
+      ;;
+    install-keybindings)
+      exec sh "$PLUGIN_ROOT/scripts/install-keybindings.sh"
+      ;;
+    doctor)
+      exec sh "$PLUGIN_ROOT/scripts/doctor.sh"
+      ;;
+    "")
+      printf 'HERDR_PLUGIN_ACTION_ID is not set. Run this through Herdr.\n' >&2
+      exit 2
+      ;;
+    *)
+      printf 'unknown action: %s\n' "$action" >&2
+      exit 2
+      ;;
+  esac
+}
+
+pane_main() {
+  entrypoint=${HERDR_PLUGIN_ENTRYPOINT_ID:-tui}
+
+  # Start where the focused pane was, so `aven tui -p` infers the project from
+  # the current directory and falls back to workspace scope when there is none.
+  start_dir=$(resolve_start_dir)
+  cd "$start_dir" 2>/dev/null || cd "${HOME:-/}"
+
+  if ! aven=$(find_aven); then
+    printf 'aven is not installed.\n\n'
+    printf 'Install it from https://aventasks.dev, or set AVEN_BIN to the\n'
+    printf 'aven executable and reopen this popover.\n'
+    wait_for_key
+    exit 127
+  fi
+
+  case "$entrypoint" in
+    tui)
+      exec "$aven" tui -p
+      ;;
+    compose)
+      exec "$aven" tui -p --add-task-only
+      ;;
+    *)
+      printf 'unknown pane entrypoint: %s\n' "$entrypoint" >&2
+      exit 2
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  action) action_main ;;
+  pane) pane_main ;;
+  *)
+    printf 'usage: run.sh <action|pane>\n' >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,6 @@
+# Test scratch space
+/tmp/
+*.log
+
+# Herdr config backups written by install-keybindings
+*.aven-backup.*
