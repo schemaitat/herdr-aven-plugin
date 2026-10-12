@@ -17,7 +17,7 @@ the pane underneath is exactly as you left it.
    │ $ opencode                   │   prefix+a     │ aven v0.1.47                 │
    │                              │ ─────────────▶ │ ws default │ scope project    │
    │                              │                │ view queue │ order ranked     │
-   └──────────────────────────────┘                │  › APP-H8Q4  Decide the ...   │
+   └──────────────────────────────┘                │  › APP-7KQ9  Decide the ...   │
                                                    │    APP-79F0  Planner: ...     │
                                                    └──────────────────────────────┘
 ```
@@ -158,9 +158,9 @@ worktree workspace where an agent is already working on the task:
 ```
    aven popover  (prefix+a)                        new worktree workspace
    ┌──────────────────────────────┐                ┌──────────────────────────────┐
-   │  › APP-H8Q4  Decide the ...   │     z d        │ opencode                      │
-   │    APP-79F0  Planner: ...     │ ─────────────▶ │ > Implement APP-H8Q4: ...     │
-   │                              │                │   branch app/h8q4-decide-...  │
+   │  › APP-7KQ9  Decide the ...   │     z d        │ opencode                      │
+   │    APP-79F0  Planner: ...     │ ─────────────▶ │ > Implement APP-7KQ9: ...     │
+   │                              │                │   branch app/7kq9-decide-...  │
    └──────────────────────────────┘                └──────────────────────────────┘
 ```
 
