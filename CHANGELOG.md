@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0
+
+- Replace the four vendored spec-kit SDD commands with one aven-native example
+  workflow. `sdd` (`z s`) now takes the selected task from a rough request to
+  shipped with aven as the only task store: the spec goes in the task
+  description, the plan in a note, the breakdown in real aven child tasks
+  (epic + `aven dep add`), and progress in task statuses and notes. It resumes
+  from what is already in aven instead of writing `specs/`, `plan.md`, or
+  `tasks.md`.
+- `skills/aven/`: the workflow is plain prompt text, so nothing extra needs
+  installing. `bin/dispatch.sh` inserts it via `AVEN_DISPATCH_SKILL`, drops its
+  front matter, and fills `$ARGUMENTS`/`{ARGS}`, `{ref}` and `{title}` from the
+  task. The `__SPECKIT_COMMAND_*__` rewriting is gone.
+- The workflow is an example, not a built-in command: edit it in
+  `aven-commands.yaml`, or add your own `<name>.md` under `skills/aven/`, and
+  point an entry's `AVEN_DISPATCH_SKILL` at it.
+
 ## 0.3.0
 
 - `aven-commands.yaml`: a plugin file declaring extra aven TUI commands next to

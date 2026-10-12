@@ -98,34 +98,29 @@ assert_file_contains "$FAKE_LOG" "agent start app-7kq9 --kind claude --pane w9:p
 # AVEN_DISPATCH_PROMPT replaces the opening instruction, fills {ref}/{title}, and
 # keeps the task description and the aven handoff guidance.
 : > "$FAKE_LOG"
-AVEN_DISPATCH_PROMPT='/speckit-specify {title}' run_dispatch >/dev/null
-assert_file_contains "$FAKE_LOG" 'agent prompt w9:p1 /speckit-specify refactor "mitarbeiter" view.' "prompt override fills title"
+AVEN_DISPATCH_PROMPT='/aven-sdd {title}' run_dispatch >/dev/null
+assert_file_contains "$FAKE_LOG" 'agent prompt w9:p1 /aven-sdd refactor "mitarbeiter" view.' "prompt override fills title"
 assert_file_contains "$FAKE_LOG" "aven context APP-7KQ9" "guidance still appended"
 
 : > "$FAKE_LOG"
 AVEN_DISPATCH_PROMPT='Do {ref} now: {title}' run_dispatch >/dev/null
 assert_file_contains "$FAKE_LOG" 'agent prompt w9:p1 Do APP-7KQ9 now: refactor "mitarbeiter" view.' "prompt override fills ref"
 
-# AVEN_DISPATCH_SKILL inserts a bundled SDD skill: front matter dropped,
-# __SPECKIT_COMMAND_*__ rewritten, and $ARGUMENTS/{ARGS} filled from the task.
-for skill in specify plan tasks implement; do
-  : > "$FAKE_LOG"
-  AVEN_DISPATCH_SKILL=$skill run_dispatch >/dev/null
-  assert_file_contains "$FAKE_LOG" "agent prompt w9:p1" "skill $skill inlined into the prompt"
-  assert_file_contains "$FAKE_LOG" 'refactor "mitarbeiter" view.' "skill $skill gets the task title"
-  assert_file_lacks "$FAKE_LOG" "__SPECKIT_COMMAND_" "no spec-kit placeholder survives ($skill)"
-  assert_file_lacks "$FAKE_LOG" '$ARGUMENTS' "no \$ARGUMENTS left ($skill)"
-  assert_file_lacks "$FAKE_LOG" "{ARGS}" "no {ARGS} left ($skill)"
-  assert_file_lacks "$FAKE_LOG" "handoffs:" "skill front matter dropped ($skill)"
-  assert_file_contains "$FAKE_LOG" "aven context APP-7KQ9" "aven guidance still appended ($skill)"
-done
-
-# The specify skill's body starts right after the dropped front matter, and its
-# spec-kit cross-references are rewritten to their /speckit-* form.
+# AVEN_DISPATCH_SKILL inserts a bundled skill: the front matter is dropped and
+# the $ARGUMENTS/{ARGS}, {ref} and {title} placeholders are filled from the
+# selected task.
 : > "$FAKE_LOG"
-AVEN_DISPATCH_SKILL=specify run_dispatch >/dev/null
-assert_file_contains "$FAKE_LOG" "agent prompt w9:p1 ## User Input" "skill body inlined first"
-assert_file_contains "$FAKE_LOG" "/speckit-plan" "spec-kit command placeholder rewritten"
+AVEN_DISPATCH_SKILL=sdd run_dispatch >/dev/null
+assert_file_contains "$FAKE_LOG" "agent prompt w9:p1" "skill inlined into the prompt"
+assert_file_contains "$FAKE_LOG" "Take an aven task from request to shipped" "skill body inlined first"
+assert_file_contains "$FAKE_LOG" 'the **root task** `APP-7KQ9` — "refactor "mitarbeiter" view."' "skill gets the task ref and title"
+assert_file_contains "$FAKE_LOG" "Split the view." "skill gets the task description"
+assert_file_lacks "$FAKE_LOG" '$ARGUMENTS' "no \$ARGUMENTS left"
+assert_file_lacks "$FAKE_LOG" "{ARGS}" "no {ARGS} left"
+assert_file_lacks "$FAKE_LOG" "{ref}" "no {ref} left"
+assert_file_lacks "$FAKE_LOG" "{title}" "no {title} left"
+assert_file_lacks "$FAKE_LOG" "description: Example workflow" "skill front matter dropped"
+assert_file_contains "$FAKE_LOG" "aven context APP-7KQ9" "aven guidance still appended"
 
 # An unknown or unsafe skill name fails before anything is dispatched.
 for bad in nope ../escape; do
@@ -140,7 +135,7 @@ done
 set +e
 out=$(AVEN_DISPATCH_SKILL=nope run_dispatch 2>&1)
 set -e
-assert_contains "$out" "no bundled SDD skill 'nope'" "unknown skill message"
+assert_contains "$out" "no bundled skill 'nope'" "unknown skill message"
 
 # AVEN_DISPATCH_NO_FOCUS drops --focus.
 : > "$FAKE_LOG"
@@ -182,7 +177,7 @@ assert_contains "$out" "needs jq or python3" "awk message"
 # checkout instead.
 git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 
-# Re-dispatching a task (or running the next SDD phase) reuses its existing
+# Re-dispatching a task (or re-running the same workflow) reuses its existing
 # worktree: the deterministic branch is already on disk, so herdr opens it and
 # prompts the agent already there instead of creating a second worktree.
 reused=$work/reused-wt

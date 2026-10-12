@@ -35,8 +35,8 @@ the pane underneath is exactly as you left it.
 - **Dispatch to an agent** — with the aven command installed, select a task and
   press `z d`: the plugin creates a Git worktree on a task branch, starts a
   coding agent there, and prompts it to implement the task (see
-  [Dispatch a task to an agent](#dispatch-a-task-to-an-agent)). The four
-  [bundled spec-kit SDD commands](#spec-driven-development-commands) are
+  [Dispatch a task to an agent](#dispatch-a-task-to-an-agent)). An
+  [example aven-native task workflow](#example-an-aven-native-task-workflow) is
   installed next to it, and you can add more in `aven-commands.yaml`.
 - **Follows the pane** — Herdr panes and worktrees each carry their own
   directory, so the popover follows whichever pane you opened it from.
@@ -54,9 +54,9 @@ the pane underneath is exactly as you left it.
 - A coding agent on `PATH`. Dispatch defaults to [opencode](https://opencode.ai);
   `herdr integration install opencode` teaches Herdr to track its
   working/idle/done state.
-- [spec-kit](https://github.com/github/spec-kit) is **not** needed for the
-  [SDD commands](#spec-driven-development-commands); the plugin bundles its four
-  command files and inserts them into the agent prompt.
+- No extra tooling for the bundled workflow: the
+  [example task workflow](#example-an-aven-native-task-workflow) is plain prompt
+  text that ships in the plugin and is inserted into the agent prompt.
 
 ## Install
 
@@ -133,7 +133,7 @@ description = "open the aven task popover"
 | `open` | Open the aven TUI popover over the focused pane |
 | `compose` | Open aven's add-task composer in a popover |
 | `install-keybindings` | Add the bindings above and reload the config |
-| `install-aven-command` | Add the `dispatch`, spec-kit SDD, and `aven-commands.yaml` commands to aven's `config.yaml` |
+| `install-aven-command` | Add the `dispatch` command and the `aven-commands.yaml` examples to aven's `config.yaml` |
 | `doctor` | Show the directory, workspace and project a popover would open in |
 
 Every action is also available from the command line and the Herdr action menu:
@@ -190,14 +190,15 @@ installer runs.
 | `AVEN_DISPATCH_KIND` | the agent name | Herdr agent kind passed to `agent start` |
 | `AVEN_DISPATCH_BASE` | Herdr's choice | Base ref for the new branch |
 | `AVEN_DISPATCH_PROMPT` | `Implement {ref}: {title}` | Opening instruction for the agent; `{ref}` and `{title}` are filled from the selected task |
-| `AVEN_DISPATCH_SKILL` | unset | Name of a bundled SDD skill under `skills/sdd` (e.g. `specify`); its text replaces `AVEN_DISPATCH_PROMPT` |
+| `AVEN_DISPATCH_SKILL` | unset | Name of a bundled workflow under `skills/aven` (e.g. `sdd`); its text replaces `AVEN_DISPATCH_PROMPT` |
 | `AVEN_DISPATCH_NO_FOCUS` | unset | `1` leaves focus where it is instead of switching to the worktree |
 | `AVEN_DISPATCH_DRY_RUN` | unset | `1` prints the plan and changes nothing |
 
 `AVEN_DISPATCH_PROMPT` starts any agent workflow, and `AVEN_DISPATCH_SKILL`
-takes precedence by inserting one of the bundled spec-kit skills (see the
-[SDD commands](#spec-driven-development-commands)). Either way the aven handoff
-guidance is appended, so the agent still reads the task and leaves notes.
+takes precedence by inserting a bundled workflow (see the
+[example task workflow](#example-an-aven-native-task-workflow)). Either way the
+aven handoff guidance is appended, so the agent still reads the task and leaves
+notes.
 
 Example extra command, wired to a second agent (the full file is documented
 [below](#extra-commands)):
@@ -215,44 +216,47 @@ Example extra command, wired to a second agent (the full file is documented
     AVEN_DISPATCH_AGENT: claude
 ```
 
-### Spec-Driven Development commands
+### Example: an aven-native task workflow
 
-`install-aven-command` also installs four commands that run one
-[spec-kit](https://github.com/github/spec-kit) SDD skill on the selected task,
-in a new worktree, exactly like `dispatch`:
-
-| In the popover | Command | Inserted skill |
-| --- | --- | --- |
-| `z s` | `speckit-specify` | `skills/sdd/specify.md` |
-| `z p` | `speckit-plan` | `skills/sdd/plan.md` |
-| `z t` | `speckit-tasks` | `skills/sdd/tasks.md` |
-| `z i` | `speckit-implement` | `skills/sdd/implement.md` |
-
-Each command sets `AVEN_DISPATCH_SKILL`, and `dispatch.sh` inserts that file's
-text into the agent prompt with the task as its `$ARGUMENTS`, dropping the
-skill's front matter and rewriting its `/speckit-*` references. The four files
-are the upstream spec-kit command files, vendored under `skills/sdd` (see the
-[provenance note](skills/sdd/README.md)), so **no spec-kit install or `specify`
-binary is needed** — the prompt travels with the task.
-
-They are the raw spec-kit commands: where one mentions `.specify/` scaffolding
-or a helper script, the agent follows the instructions and creates what it needs
-as it goes. If you would rather use spec-kit's own installed commands, set
-spec-kit up in the repository and drop or rebind these entries in
+`install-aven-command` also installs one example command, `sdd` on **`z s`**,
+that shows how to use `dispatch` plus aven for efficient task management. It is
+an example, not a built-in command: edit it, rebind it, or delete it in
 `aven-commands.yaml`.
 
-Each command targets the task's worktree: the first one creates it, and the
-rest open and reuse it (`herdr worktree open`), prompting the agent already
-there. So you can run specify → plan → tasks → implement one after another from
-the popover and they share one worktree and agent session.
+| In the popover | Command | Inserted workflow |
+| --- | --- | --- |
+| `z s` | `sdd` | `skills/aven/sdd.md` |
+
+The command sets `AVEN_DISPATCH_SKILL: sdd`, and `dispatch.sh` inserts that
+file's text into the agent prompt with the task as its `$ARGUMENTS`, dropping
+the file's front matter and filling `{ref}` and `{title}`. The file is plain
+prompt text that ships in the plugin, so **nothing extra needs installing**.
+
+The workflow keeps aven as the only task store: it writes the spec into the
+selected task's description, the plan into a note, the breakdown into real aven
+child tasks (making the root an epic and linking children with `aven epic add`
+and `aven dep add`), and tracks progress with task statuses and notes — no
+`specs/`, `plan.md`, or `tasks.md` files. It resumes from what is already in
+aven, so running it again on the same task continues instead of starting over.
+
+It uses the plugin's generic `AVEN_DISPATCH_SKILL` mechanism, so it is not wired
+into the plugin itself. To make your own workflow, add a `<name>.md` under
+`skills/aven/` and an `aven-commands.yaml` entry that sets
+`AVEN_DISPATCH_SKILL: <name>`; see
+[Extra commands](#extra-commands) and `skills/aven/README.md`.
+
+The command targets the task's worktree: re-running it opens and reuses the
+worktree and the agent session already there (`herdr worktree open`), so the
+work continues in one place.
 
 ### Extra commands
 
 `aven-commands.yaml` in the plugin directory declares the commands
 `install-aven-command` writes under `tui.commands`, after the built-in
-`dispatch`. It ships with the four [SDD commands](#spec-driven-development-commands)
-active and more examples commented out. Comment out or add an entry, then
-re-run the installer to apply the change:
+`dispatch`. It ships with the one
+[example workflow](#example-an-aven-native-task-workflow) active and more
+examples commented out. Comment out or add an entry, then re-run the installer
+to apply the change:
 
 ```sh
 herdr plugin action invoke aven.tasks.install-aven-command
@@ -352,20 +356,19 @@ read the `warning:` lines, then pick another chord.
 workspace and database; make sure the focused pane's directory is a place aven
 routes to the workspace you expect (`aven doctor` from that directory).
 
-**`z d` or an SDD key (`z s`, `z p`, `z t`, `z i`) does nothing, and nothing is
-shown.** aven reads `tui.commands` once, at startup, so a session that was
-already running before the commands were installed (or updated) will not have
-them — including an `aven tui` you started by hand in a pane. Quit and reopen
-aven. If a fresh session still misses them, run `herdr plugin action invoke
+**`z d` or the `z s` workflow key does nothing, and nothing is shown.** aven
+reads `tui.commands` once, at startup, so a session that was already running
+before the commands were installed (or updated) will not have them — including
+an `aven tui` you started by hand in a pane. Quit and reopen aven. If a fresh
+session still misses them, run `herdr plugin action invoke
 aven.tasks.install-aven-command` and reopen. If the action printed a `warning:`
 about an existing `tui:` section, merge the printed block by hand.
 
-**An SDD command starts the agent but it cannot find a `.specify/` script or
-template.** The plugin inserts the raw spec-kit command text, not spec-kit's
-scaffolding, so the agent is expected to create what it needs from the
-instructions. If it does not, install spec-kit in the repository (`specify
-init`) so the referenced helpers exist, or use spec-kit's own commands instead
-of these entries.
+**The `z s` workflow runs, but the agent treats it as a plain implementation
+request.** The workflow only tells the agent to use aven; it runs whatever aven
+and the selected task provide. Check that the agent has `aven` on its `PATH`
+and can read the task (`aven context <ref>`), and that the command's
+`AVEN_DISPATCH_SKILL` points at a file under `skills/aven/`.
 
 **Dispatch says it needs `jq` or `python3`.** Installing jq or Python 3 is
 enough; the popover itself does not need either.
@@ -393,7 +396,7 @@ The suite covers the manifest, the context parsing that picks the popover
 directory and reads task text (all JSON backends, missing keys, paths with
 spaces, stale directories), the exact flags each pane entrypoint launches aven
 with, action dispatch, key-binding install/idempotency/conflict/restore,
-`doctor`, the aven-command installer (the default dispatch + SDD block,
+`doctor`, the aven-command installer (the default dispatch + workflow block,
 `aven-commands.yaml` extras, the in-place rewrite and restore), and the
 dispatcher's `herdr worktree create` / `agent start` / `agent prompt` argv
 including task titles with quotes, a `AVEN_DISPATCH_PROMPT` override, and
@@ -407,8 +410,8 @@ The entry points are small and worth reading first:
 herdr-plugin.toml            manifest: five actions, two popup panes
 bin/run.sh                   action dispatcher (open, compose, ...) and pane launcher
 bin/dispatch.sh              aven custom command: task -> worktree -> agent -> note
-aven-commands.yaml           extra aven commands (spec-kit SDD + examples)
-skills/sdd/                  vendored spec-kit command files (see its README)
+aven-commands.yaml           extra aven commands (the example workflow + examples)
+skills/aven/                 example agent workflows the dispatcher can insert
 lib/plugin.sh                context JSON, directory resolution, aven lookup, replace_all
 scripts/install-keybindings.sh
 scripts/install-aven-command.sh

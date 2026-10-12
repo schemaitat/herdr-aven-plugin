@@ -28,17 +28,11 @@ assert_file_contains "$config" "keys: [z d]"
 assert_file_contains "$config" "target: focused"
 assert_file_contains "$config" "on_success: quit"
 
-# The spec-kit SDD commands are installed next to dispatch by default.
-assert_file_contains "$config" "name: speckit-specify"
-assert_file_contains "$config" "name: speckit-plan"
-assert_file_contains "$config" "name: speckit-tasks"
-assert_file_contains "$config" "name: speckit-implement"
+# The aven-native workflow example is installed next to dispatch by default.
+assert_file_contains "$config" "name: sdd"
 assert_file_contains "$config" "keys: [z s]"
-assert_file_contains "$config" "keys: [z p]"
-assert_file_contains "$config" "keys: [z t]"
-assert_file_contains "$config" "keys: [z i]"
-assert_file_contains "$config" "AVEN_DISPATCH_SKILL: specify" "SDD skill wiring"
-assert_contains "$out" "installed: speckit-specify (extra)" "SDD command reported"
+assert_file_contains "$config" "AVEN_DISPATCH_SKILL: sdd" "workflow skill wiring"
+assert_contains "$out" "installed: sdd (extra)" "workflow command reported"
 
 # aven can parse the result.
 aven config get sync.enabled >/dev/null ||
@@ -107,7 +101,7 @@ printf '# no extra commands\n' > "$empty"
 out=$(AVEN_COMMANDS_FILE=$empty run_installer)
 assert_contains "$out" "updated: $config" "removal update reported"
 assert_file_lacks "$config" "dispatch-claude" "removed extra command"
-assert_file_lacks "$config" "speckit-specify" "removed SDD command"
+assert_file_lacks "$config" "name: sdd" "removed workflow command"
 aven config get sync.enabled >/dev/null || fail "config after removal does not parse"
 
 # Anything after the managed block is left alone.

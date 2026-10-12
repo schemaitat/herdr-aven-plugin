@@ -16,22 +16,21 @@
 # custom and built-in commands. Point AVEN_COMMANDS_FILE at another file to use
 # a different set of extra commands.
 #
-# --- Spec-Driven Development (spec-kit) --------------------------------------
+# --- Example: an aven-native task workflow -----------------------------------
 #
-# These four commands insert a bundled spec-kit SDD skill
-# (https://github.com/github/spec-kit) into the agent prompt, with the selected
-# task as its input. The skill files are vendored under skills/sdd, so no
-# spec-kit install or `specify` binary is needed; AVEN_DISPATCH_SKILL on
-# bin/dispatch.sh names the skill to insert.
+# This ships active so you can see the pattern, but it is only an example: edit
+# it, rebind it, or delete it. It shows how to use dispatch plus aven for
+# efficient task management — one command takes the selected task from a rough
+# request to shipped, keeping the spec in the task description, the plan in a
+# note, the breakdown in child tasks, and progress in statuses and notes.
 #
-# Each command starts a fresh worktree from the task, like dispatch: run specify
-# first and continue plan, tasks, and implement in that agent session, or use
-# one on its own to launch a phase. Dispatch also appends aven handoff guidance,
-# so the agent can read the task and leave notes.
+# AVEN_DISPATCH_SKILL names the bundled skill text in skills/aven/sdd.md that
+# bin/dispatch.sh inserts into the agent prompt, with the task as its input.
+# Write your own skill file and point another entry at it the same way.
 
-- name: speckit-specify
-  aliases: [sdd-specify]
-  description: Turn the selected task into a spec-kit specification (SDD)
+- name: sdd
+  aliases: [aven-sdd]
+  description: Work the selected task through define, plan, break down, implement (example)
   program: sh
   args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
   keys: [z s]
@@ -40,46 +39,7 @@
   execution: wait
   on_success: quit
   env:
-    AVEN_DISPATCH_SKILL: specify
-
-- name: speckit-plan
-  aliases: [sdd-plan]
-  description: Create the spec-kit implementation plan for the selected task (SDD)
-  program: sh
-  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
-  keys: [z p]
-  detail_keys: [z P]
-  target: focused
-  execution: wait
-  on_success: quit
-  env:
-    AVEN_DISPATCH_SKILL: plan
-
-- name: speckit-tasks
-  aliases: [sdd-tasks]
-  description: Generate the spec-kit task list for the selected task (SDD)
-  program: sh
-  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
-  keys: [z t]
-  detail_keys: [z T]
-  target: focused
-  execution: wait
-  on_success: quit
-  env:
-    AVEN_DISPATCH_SKILL: tasks
-
-- name: speckit-implement
-  aliases: [sdd-implement]
-  description: Implement the selected task with the spec-kit implement skill (SDD)
-  program: sh
-  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
-  keys: [z i]
-  detail_keys: [z I]
-  target: focused
-  execution: wait
-  on_success: quit
-  env:
-    AVEN_DISPATCH_SKILL: implement
+    AVEN_DISPATCH_SKILL: sdd
 
 # --- More examples -----------------------------------------------------------
 #

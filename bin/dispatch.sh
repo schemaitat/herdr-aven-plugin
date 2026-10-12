@@ -22,10 +22,11 @@
 #   AVEN_DISPATCH_PROMPT    opening instruction for the agent; {ref} and {title}
 #                           are replaced (default: "Implement {ref}: {title}").
 #                           Use it to run a different agent workflow.
-#   AVEN_DISPATCH_SKILL     name of a bundled SDD skill under skills/sdd (for
-#                           example "specify"); its text is inserted into the
-#                           prompt with $ARGUMENTS filled from the task. Takes
-#                           precedence over AVEN_DISPATCH_PROMPT.
+#   AVEN_DISPATCH_SKILL     name of a bundled skill under skills/aven (for
+#                           example "sdd"); its text is inserted into the prompt
+#                           with $ARGUMENTS/{ARGS}, {ref} and {title} filled
+#                           from the task. Takes precedence over
+#                           AVEN_DISPATCH_PROMPT.
 #   AVEN_DISPATCH_NO_FOCUS  set to 1 to leave focus where it is
 #   AVEN_DISPATCH_DRY_RUN   set to 1 to print the plan and change nothing
 set -eu
@@ -45,9 +46,8 @@ warn() {
 }
 
 # skill_body <file>
-# Print a bundled SDD skill without its YAML front matter and with the
-# __SPECKIT_COMMAND_<NAME>__ placeholders rewritten to their /speckit-<name>
-# form. Leading blank lines are dropped.
+# Print a bundled skill without its YAML front matter, dropping leading blank
+# lines. Placeholders are filled by the caller.
 skill_body() {
   awk '
     NR == 1 && $0 == "---" { in_fm = 1; next }
@@ -56,13 +56,7 @@ skill_body() {
     {
       if (!started && $0 ~ /^[[:space:]]*$/) next
       started = 1
-      line = $0
-      while (match(line, /__SPECKIT_COMMAND_[A-Z0-9_]+__/)) {
-        name = tolower(substr(line, RSTART + 18, RLENGTH - 20))
-        gsub(/_/, "-", name)
-        line = substr(line, 1, RSTART - 1) "/speckit-" name substr(line, RSTART + RLENGTH)
-      }
-      print line
+      print
     }' "$1"
 }
 
@@ -155,9 +149,9 @@ if [ -n "$skill" ]; then
   case "$skill" in
     *[!a-z0-9-]*) fail "invalid AVEN_DISPATCH_SKILL: $skill" ;;
   esac
-  skill_file=$PLUGIN_ROOT/skills/sdd/$skill.md
+  skill_file=$PLUGIN_ROOT/skills/aven/$skill.md
   [ -f "$skill_file" ] ||
-    fail "no bundled SDD skill '$skill' (looked for $PLUGIN_ROOT/skills/sdd/$skill.md)"
+    fail "no bundled skill '$skill' (looked for $PLUGIN_ROOT/skills/aven/$skill.md)"
   skill_args=$title
   if [ -n "$description" ]; then
     skill_args="$title
@@ -166,7 +160,9 @@ $description"
   fi
   prompt=$(skill_body "$skill_file" |
     replace_all '$ARGUMENTS' "$skill_args" |
-    replace_all '{ARGS}' "$skill_args")
+    replace_all '{ARGS}' "$skill_args" |
+    replace_all '{ref}' "$ref" |
+    replace_all '{title}' "$title")
 else
   prompt_template=${AVEN_DISPATCH_PROMPT:-}
   [ -n "$prompt_template" ] || prompt_template='Implement {ref}: {title}'
@@ -200,7 +196,7 @@ fi
 
 # --- create or reuse the worktree -------------------------------------------
 
-# Re-dispatching a task, or running the next SDD phase, finds the branch's
+# Re-dispatching a task (or re-running the same workflow) finds the branch's
 # worktree already on disk; Herdr refuses to create it twice, so open the
 # existing one instead of failing. The branch is deterministic per task, so this
 # is the common case for a task that has been dispatched before.
