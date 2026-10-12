@@ -95,9 +95,13 @@ herdr plugin action invoke aven.tasks.doctor
 ```
 aven tasks popover
   plugin       aven.tasks
-  start        /home/dev/app
-  workspace    /home/dev/app
-  aven         /home/dev/.local/bin/aven (aven 0.1.47)
+  root         /home/you/.local/share/herdr/plugins/aven.tasks
+  config       /home/you/.config/herdr/plugins/config/aven.tasks
+  state        /home/you/.local/state/herdr/plugins/aven.tasks
+  herdr        /home/you/.local/bin/herdr
+  start        /home/you/code/app
+  workspace    /home/you/code/app
+  aven         /home/you/.local/bin/aven (aven 0.1.47)
   project      app
 
 The popover opens scoped to project app (aven tui -p).

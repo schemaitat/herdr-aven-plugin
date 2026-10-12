@@ -6,14 +6,14 @@ set -eu
 # shellcheck source=../lib/plugin.sh
 . "$PLUGIN_ROOT/lib/plugin.sh"
 
-json='{"workspace_cwd":"/home/dev/app","focused_pane_cwd":"/home/dev/app/sub","nested":{"focused_pane_cwd":"/wrong"},"num":3,"null":null}'
+json='{"workspace_cwd":"/tmp/app","focused_pane_cwd":"/tmp/app/sub","nested":{"focused_pane_cwd":"/wrong"},"num":3,"null":null}'
 
 for backend in jq python3 awk; do
   command -v "$backend" >/dev/null 2>&1 || continue
   AVEN_JSON_BACKEND=$backend
   export AVEN_JSON_BACKEND
-  assert_eq "$(json_field "$json" focused_pane_cwd)" "/home/dev/app/sub" "$backend top-level key"
-  assert_eq "$(json_field "$json" workspace_cwd)" "/home/dev/app" "$backend workspace"
+  assert_eq "$(json_field "$json" focused_pane_cwd)" "/tmp/app/sub" "$backend top-level key"
+  assert_eq "$(json_field "$json" workspace_cwd)" "/tmp/app" "$backend workspace"
   assert_eq "$(json_field "$json" missing)" "" "$backend missing key"
   assert_eq "$(json_field "$json" null)" "" "$backend null value"
   assert_eq "$(json_field '' focused_pane_cwd)" "" "$backend empty json"
@@ -22,10 +22,10 @@ done
 unset AVEN_JSON_BACKEND
 
 # A path with spaces survives parsing.
-spaces='{"focused_pane_cwd":"/home/dev/my project/src"}'
+spaces='{"focused_pane_cwd":"/tmp/my project/src"}'
 AVEN_JSON_BACKEND=awk
 export AVEN_JSON_BACKEND
-assert_eq "$(json_field "$spaces" focused_pane_cwd)" "/home/dev/my project/src" "space in path"
+assert_eq "$(json_field "$spaces" focused_pane_cwd)" "/tmp/my project/src" "space in path"
 unset AVEN_JSON_BACKEND
 
 workdir=$(mkworkdir)
