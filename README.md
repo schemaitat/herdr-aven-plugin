@@ -6,12 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Open the [aven](https://aventasks.dev) task TUI as a [Herdr](https://herdr.dev)
-popover, scoped to the project aven infers from the focused pane's directory —
-the Herdr equivalent of this tmux binding:
-
-```tmux
-bind C-w display-popup -E -d '#{pane_current_path}' -w 80% -h 80% 'aven tui -p'
-```
+popover, scoped to the project aven infers from the focused pane's directory.
 
 Press the key, get the full aven TUI floating over your work, quit with `q`, and
 the pane underneath is exactly as you left it.
@@ -148,10 +143,10 @@ worktrees each carry their own directory: the popover opens where you are, not
 where the whole workspace is. Paths are read with `jq`, then `python3`, then a
 built-in `awk` fallback, so the plugin has no runtime dependency of its own.
 
-The manifest declares both panes with `placement = "popup"`, which mirrors a
-tmux `display-popup`: session-modal, no layout change, closed when aven exits.
-Popups have no pane ID and do not appear in the pane list, so they never become
-part of your saved layout.
+The manifest declares both panes with `placement = "popup"`, so each one is
+session-modal, changes no layout, and closes when aven exits. Popups have no
+pane ID and do not appear in the pane list, so they never become part of your
+saved layout.
 
 ### Popover or overlay?
 
