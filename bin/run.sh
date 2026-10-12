@@ -38,6 +38,9 @@ action_main() {
     install-keybindings)
       exec sh "$PLUGIN_ROOT/scripts/install-keybindings.sh"
       ;;
+    install-aven-command)
+      exec sh "$PLUGIN_ROOT/scripts/install-aven-command.sh"
+      ;;
     doctor)
       exec sh "$PLUGIN_ROOT/scripts/doctor.sh"
       ;;

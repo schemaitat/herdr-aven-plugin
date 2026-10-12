@@ -11,15 +11,19 @@ body=$(cat "$manifest")
 # Required top-level metadata.
 assert_contains "$body" 'id = "aven.tasks"'
 assert_contains "$body" 'name = "aven tasks"'
-assert_contains "$body" 'version = "0.1.0"'
+assert_contains "$body" 'version = "0.2.0"'
 assert_contains "$body" 'min_herdr_version = "0.9.0"'
 assert_contains "$body" 'description ='
 assert_contains "$body" 'platforms = ["linux", "macos"]'
 
 # Actions the wrapper dispatches on.
-for action in open compose install-keybindings doctor; do
+for action in open compose install-keybindings install-aven-command doctor; do
   assert_contains "$body" "id = \"$action\"" "action $action"
 done
+
+# The aven custom command the installer wires up.
+[ -f "$PLUGIN_ROOT/bin/dispatch.sh" ] || fail "missing bin/dispatch.sh"
+[ -f "$PLUGIN_ROOT/scripts/install-aven-command.sh" ] || fail "missing scripts/install-aven-command.sh"
 
 # Panes, both popovers, one per entrypoint.
 assert_contains "$body" 'id = "tui"'

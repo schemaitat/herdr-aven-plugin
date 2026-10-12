@@ -1,7 +1,8 @@
 # Shared helpers for the aven.tasks Herdr plugin.
 #
-# POSIX sh only. Sourced by bin/run.sh and by the scripts under scripts/.
-# Everything here reads the environment Herdr injects into plugin commands:
+# POSIX sh only. Sourced by bin/run.sh, bin/dispatch.sh and the scripts under
+# scripts/. Everything here reads the environment Herdr injects into plugin
+# commands:
 #
 #   HERDR_PLUGIN_CONTEXT_JSON   workspace/tab/focused-pane/worktree context
 #   HERDR_PLUGIN_ENTRYPOINT_ID  pane entrypoint (tui, compose)
@@ -20,13 +21,15 @@ herdr_bin() {
   printf '%s' "${HERDR_BIN_PATH:-herdr}"
 }
 
-# json_field <json> <key>
-# Prints a top-level field of a JSON object as text, empty when absent or null.
-# Prefers jq, then python3, then an awk fallback for a single-line JSON object.
+# json_query <json> <dotted.path>
+# Prints the value at a dotted path ("a.b.c"), empty when it is absent or null.
+# Uses jq, then python3. The awk fallback handles a single top-level key only:
+# it is a last resort for herdr's own context JSON (plain paths), not for task
+# text, which can contain quotes and escapes that awk would mangle.
 # AVEN_JSON_BACKEND forces one backend (auto, jq, python3, awk) for testing.
-json_field() {
+json_query() {
   json=$1
-  key=$2
+  path=$2
   [ -n "$json" ] || return 0
 
   backend=${AVEN_JSON_BACKEND:-auto}
@@ -43,24 +46,32 @@ json_field() {
   case "$backend" in
     jq)
       printf '%s' "$json" |
-        jq -r --arg k "$key" 'if type == "object" then (.[$k] // "") else "" end | tostring' 2>/dev/null
+        jq -r --arg p "$path" '
+          getpath($p | split(".")) as $v
+          | if $v == null then "" else ($v | tostring) end' 2>/dev/null
       ;;
     python3)
       printf '%s' "$json" | python3 -c 'import json, sys
 try:
     data = json.load(sys.stdin)
 except Exception:
-    data = {}
-if not isinstance(data, dict):
-    data = {}
-value = data.get(sys.argv[1])
-sys.stdout.write("" if value is None else str(value))' "$key" 2>/dev/null
+    data = None
+for part in sys.argv[1].split("."):
+    if isinstance(data, dict):
+        data = data.get(part)
+    else:
+        data = None
+        break
+sys.stdout.write("" if data is None else (data if isinstance(data, str) else json.dumps(data)))' "$path" 2>/dev/null
       ;;
     awk)
+      case "$path" in
+        *.*) return 0 ;;
+      esac
       # Leftmost match, so a nested key of the same name cannot win. Handles
       # quoted strings, bare numbers/booleans, and null (printed as empty).
       printf '%s' "$json" |
-        awk -v pat='"'"$key"'"' '
+        awk -v pat='"'"$path"'"' '
           {
             if (match($0, pat "[ \t]*:[ \t]*(\"[^\"]*\"|[^,}]+)")) {
               value = substr($0, RSTART, RLENGTH)
@@ -83,9 +94,24 @@ sys.stdout.write("" if value is None else str(value))' "$key" 2>/dev/null
   esac
 }
 
+# Print one top-level field of a JSON object.
+json_field() {
+  json_query "$1" "$2"
+}
+
 # Print one top-level field of HERDR_PLUGIN_CONTEXT_JSON.
 context_field() {
-  json_field "${HERDR_PLUGIN_CONTEXT_JSON:-}" "$1"
+  json_query "${HERDR_PLUGIN_CONTEXT_JSON:-}" "$1"
+}
+
+# True when a backend that understands nested paths and escaped strings is
+# present. Task text must be read with one of these.
+json_capable() {
+  case "${AVEN_JSON_BACKEND:-auto}" in
+    jq | python3) return 0 ;;
+    awk) return 1 ;;
+  esac
+  command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1
 }
 
 # The directory a popover should start in. Herdr resolves these paths for us:
