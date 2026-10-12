@@ -11,7 +11,7 @@ body=$(cat "$manifest")
 # Required top-level metadata.
 assert_contains "$body" 'id = "aven.tasks"'
 assert_contains "$body" 'name = "aven tasks"'
-assert_contains "$body" 'version = "0.2.0"'
+assert_contains "$body" 'version = "0.2.1"'
 assert_contains "$body" 'min_herdr_version = "0.9.0"'
 assert_contains "$body" 'description ='
 assert_contains "$body" 'platforms = ["linux", "macos"]'

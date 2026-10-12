@@ -35,14 +35,33 @@ warn() {
   printf 'aven dispatch: %s\n' "$1" >&2
 }
 
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+context=$tmp/context.json
+out=$tmp/stdout
+err=$tmp/stderr
+
+# herdr_call <label> <command...>
+# Runs a Herdr command with its stdout in $out. On failure, prints the label and
+# Herdr's own JSON error (herdr writes errors to stderr) and returns nonzero.
+herdr_call() {
+  label=$1
+  shift
+  : > "$err"
+  if "$@" > "$out" 2> "$err"; then
+    return 0
+  fi
+  reason=$(tr '\n' ' ' < "$err")
+  printf 'aven dispatch: %s failed: %s\n' "$label" "${reason:-no detail}" >&2
+  return 1
+}
+
 # --- read the aven command context ------------------------------------------
 
 if ! json_capable; then
   fail "reading the task needs jq or python3 on PATH (set AVEN_JSON_BACKEND to pick one)"
 fi
 
-context=$(mktemp)
-trap 'rm -f "$context"' EXIT
 cat > "$context"
 body=$(cat "$context")
 
@@ -68,7 +87,15 @@ command -v "$herdr" >/dev/null 2>&1 ||
 
 # --- plan -------------------------------------------------------------------
 
-repo=$(git -C "$origin" rev-parse --show-toplevel 2>/dev/null) ||
+# Herdr starts a new worktree from the repository's parent checkout, never from
+# a linked worktree ("linked_worktree_source"). A pane inside a worktree has
+# its own path, so resolve the parent checkout rather than the pane's toplevel.
+repo=$(git -C "$origin" worktree list --porcelain 2>/dev/null |
+  sed -n 's/^worktree //p' | head -n 1)
+if [ -z "$repo" ]; then
+  repo=$(git -C "$origin" rev-parse --show-toplevel 2>/dev/null) || repo=
+fi
+[ -n "$repo" ] ||
   fail "$origin is not inside a Git repository; a worktree needs one"
 
 slug=$(printf '%s' "$title" |
@@ -127,9 +154,9 @@ if [ "$no_focus" != 1 ]; then
   set -- "$@" --focus
 fi
 
-if ! created=$("$@"); then
-  fail "herdr worktree create failed for branch $branch"
-fi
+herdr_call "herdr worktree create" "$@" || exit 1
+created=$(cat "$out")
+
 pane=$(json_query "$created" result.root_pane.pane_id)
 [ -n "$pane" ] || pane=$(json_query "$created" root_pane.pane_id)
 [ -n "$pane" ] || pane=$(json_query "$created" result.pane.pane_id)
@@ -138,10 +165,12 @@ worktree=$(json_query "$created" result.worktree.path)
 
 # --- start and prompt the agent ---------------------------------------------
 
-"$herdr" agent start "$agent_name" --kind "$kind" --pane "$pane" ||
-  fail "herdr agent start failed (worktree ${worktree:-created} left in place)"
-"$herdr" agent prompt "$pane" "$prompt" ||
-  fail "herdr agent prompt failed (agent $agent_name is running in ${worktree:-the new worktree})"
+herdr_call "herdr agent start" \
+  "$herdr" agent start "$agent_name" --kind "$kind" --pane "$pane" ||
+  fail "the worktree ${worktree:-was created} is left in place"
+herdr_call "herdr agent prompt" \
+  "$herdr" agent prompt "$pane" "$prompt" ||
+  fail "agent $agent_name is running in ${worktree:-the new worktree}"
 
 # --- record the handoff in aven ---------------------------------------------
 

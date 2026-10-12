@@ -1,6 +1,6 @@
 id = "aven.tasks"
 name = "aven tasks"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.9.0"
 description = "Open the aven task TUI as a Herdr popover and dispatch a task to a coding agent in a new worktree."
 platforms = ["linux", "macos"]

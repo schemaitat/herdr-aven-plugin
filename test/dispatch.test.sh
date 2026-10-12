@@ -19,6 +19,10 @@ export FAKE_LOG
 # herdr stand-in: /bin/sh runs "worktree" or "agent" from the working directory.
 cat > "$work/worktree" <<'SCRIPT'
 printf 'worktree %s\n' "$*" >> "$FAKE_LOG"
+if [ -n "${FAKE_WORKTREE_FAIL:-}" ]; then
+  printf '%s\n' '{"error":{"code":"linked_worktree_source","message":"New and open worktree actions start from the repo parent workspace."},"id":"cli:worktree:create"}' >&2
+  exit 1
+fi
 printf '%s\n' '{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"w9:p1"},"worktree":{"path":"/tmp/wt/app"}}}'
 SCRIPT
 cat > "$work/agent" <<'SCRIPT'
@@ -121,5 +125,31 @@ rc=$?
 set -e
 assert_eq "$rc" "1" "awk exit code"
 assert_contains "$out" "needs jq or python3" "awk message"
+
+# A pane inside a linked worktree: herdr refuses to branch from it
+# (linked_worktree_source), so the dispatcher must start from the parent
+# checkout instead.
+git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$repo" worktree add -q "$work/wt" -b side
+main=$(git -C "$repo" rev-parse --show-toplevel)
+printf '{
+  "version": 1,
+  "invocation": {"origin_cwd": "%s", "aven_exe": "/bin/sh", "db_path": null},
+  "selection": {"primary": {"ref": "APP-1", "task": {"title": "From a worktree"}, "project": {"key": "app"}}}
+}' "$work/wt" > "$work/wt-context.json"
+: > "$FAKE_LOG"
+sh "$PLUGIN_ROOT/bin/dispatch.sh" < "$work/wt-context.json" >/dev/null
+assert_file_contains "$FAKE_LOG" "worktree create --cwd $main --branch app/1-from-a-worktree" "parent checkout used"
+
+# herdr's own error is surfaced, and nothing is dispatched after it.
+: > "$FAKE_LOG"
+set +e
+out=$(FAKE_WORKTREE_FAIL=1 run_dispatch 2>&1)
+rc=$?
+set -e
+assert_eq "$rc" "1" "worktree failure exit code"
+assert_contains "$out" "linked_worktree_source" "herdr error surfaced"
+assert_contains "$out" "repo parent workspace" "herdr error message surfaced"
+assert_file_lacks "$FAKE_LOG" "agent start" "no agent after a failed worktree"
 
 printf 'dispatch ok\n'

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- Fix dispatch from a pane inside a linked worktree: Herdr refuses to branch a
+  new worktree from a linked worktree (`linked_worktree_source`), so the
+  dispatcher resolves the repository's parent checkout
+  (`git worktree list --porcelain`) before calling `herdr worktree create`.
+- Surface Herdr's own error (`code` and `message`) when `worktree create`,
+  `agent start`, or `agent prompt` fails, instead of a generic message.
+
 ## 0.2.0
 
 - `install-aven-command`: adds the `dispatch` custom TUI command to aven's
