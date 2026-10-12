@@ -114,6 +114,26 @@ json_capable() {
   command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1
 }
 
+# replace_all <from> <to>
+# Read text on standard input and print it with every literal <from> replaced
+# by <to>. Unlike sed, <to> is treated as text, so & and \ in task text or paths
+# survive. An empty <from> leaves the text unchanged. The values are passed
+# through the environment so awk does not reinterpret backslash escapes.
+replace_all() {
+  FROM=$1 TO=$2 awk '
+    BEGIN { from = ENVIRON["FROM"]; to = ENVIRON["TO"] }
+    {
+      if (from == "") { print; next }
+      line = $0
+      out = ""
+      while ((i = index(line, from)) > 0) {
+        out = out substr(line, 1, i - 1) to
+        line = substr(line, i + length(from))
+      }
+      print out line
+    }'
+}
+
 # The directory a popover should start in. Herdr resolves these paths for us:
 # the focused pane's directory first, then the workspace directory, then $HOME.
 # A path that no longer exists falls back the same way, so the popover still

@@ -5,9 +5,11 @@
 # writes its versioned command context to standard input. The dispatcher hands
 # the task to Herdr:
 #
-#   1. create a Git worktree-backed workspace on a task branch,
-#   2. start the configured agent in that worktree's root pane,
-#   3. prompt the agent to implement the task,
+#   1. create a Git worktree-backed workspace on a task branch, or open the
+#      task's existing worktree when it is already there,
+#   2. start the configured agent in that worktree's root pane (or reuse the
+#      agent already in it),
+#   3. prompt the agent to run the workflow,
 #   4. mark the task active and leave a handoff note in aven.
 #
 # Task text reaches herdr and aven only as argv or standard input; it is never
@@ -17,6 +19,13 @@
 #   AVEN_DISPATCH_AGENT     agent to start (default: opencode)
 #   AVEN_DISPATCH_KIND      herdr agent kind (default: the agent name)
 #   AVEN_DISPATCH_BASE      base ref for the new branch (default: herdr's choice)
+#   AVEN_DISPATCH_PROMPT    opening instruction for the agent; {ref} and {title}
+#                           are replaced (default: "Implement {ref}: {title}").
+#                           Use it to run a different agent workflow.
+#   AVEN_DISPATCH_SKILL     name of a bundled SDD skill under skills/sdd (for
+#                           example "specify"); its text is inserted into the
+#                           prompt with $ARGUMENTS filled from the task. Takes
+#                           precedence over AVEN_DISPATCH_PROMPT.
 #   AVEN_DISPATCH_NO_FOCUS  set to 1 to leave focus where it is
 #   AVEN_DISPATCH_DRY_RUN   set to 1 to print the plan and change nothing
 set -eu
@@ -33,6 +42,28 @@ fail() {
 
 warn() {
   printf 'aven dispatch: %s\n' "$1" >&2
+}
+
+# skill_body <file>
+# Print a bundled SDD skill without its YAML front matter and with the
+# __SPECKIT_COMMAND_<NAME>__ placeholders rewritten to their /speckit-<name>
+# form. Leading blank lines are dropped.
+skill_body() {
+  awk '
+    NR == 1 && $0 == "---" { in_fm = 1; next }
+    in_fm && $0 == "---" { in_fm = 0; next }
+    in_fm { next }
+    {
+      if (!started && $0 ~ /^[[:space:]]*$/) next
+      started = 1
+      line = $0
+      while (match(line, /__SPECKIT_COMMAND_[A-Z0-9_]+__/)) {
+        name = tolower(substr(line, RSTART + 18, RLENGTH - 20))
+        gsub(/_/, "-", name)
+        line = substr(line, 1, RSTART - 1) "/speckit-" name substr(line, RSTART + RLENGTH)
+      }
+      print line
+    }' "$1"
 }
 
 tmp=$(mktemp -d)
@@ -118,12 +149,35 @@ agent=${AVEN_DISPATCH_AGENT:-opencode}
 kind=${AVEN_DISPATCH_KIND:-$agent}
 base=${AVEN_DISPATCH_BASE:-}
 no_focus=${AVEN_DISPATCH_NO_FOCUS:-0}
+skill=${AVEN_DISPATCH_SKILL:-}
 
-prompt="Implement $ref: $title"
-if [ -n "$description" ]; then
-  prompt="$prompt
+if [ -n "$skill" ]; then
+  case "$skill" in
+    *[!a-z0-9-]*) fail "invalid AVEN_DISPATCH_SKILL: $skill" ;;
+  esac
+  skill_file=$PLUGIN_ROOT/skills/sdd/$skill.md
+  [ -f "$skill_file" ] ||
+    fail "no bundled SDD skill '$skill' (looked for $PLUGIN_ROOT/skills/sdd/$skill.md)"
+  skill_args=$title
+  if [ -n "$description" ]; then
+    skill_args="$title
 
 $description"
+  fi
+  prompt=$(skill_body "$skill_file" |
+    replace_all '$ARGUMENTS' "$skill_args" |
+    replace_all '{ARGS}' "$skill_args")
+else
+  prompt_template=${AVEN_DISPATCH_PROMPT:-}
+  [ -n "$prompt_template" ] || prompt_template='Implement {ref}: {title}'
+  prompt=$(printf '%s' "$prompt_template" |
+    replace_all '{ref}' "$ref" |
+    replace_all '{title}' "$title")
+  if [ -n "$description" ]; then
+    prompt="$prompt
+
+$description"
+  fi
 fi
 prompt="$prompt
 
@@ -144,30 +198,57 @@ if [ "${AVEN_DISPATCH_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
-# --- create the worktree ----------------------------------------------------
+# --- create or reuse the worktree -------------------------------------------
 
-set -- "$herdr" worktree create --cwd "$repo" --branch "$branch" --label "$ref $title"
-if [ -n "$base" ]; then
-  set -- "$@" --base "$base"
+# Re-dispatching a task, or running the next SDD phase, finds the branch's
+# worktree already on disk; Herdr refuses to create it twice, so open the
+# existing one instead of failing. The branch is deterministic per task, so this
+# is the common case for a task that has been dispatched before.
+existing_wt=$(git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v b="refs/heads/$branch" '
+  /^worktree / { wt = substr($0, 10); next }
+  /^branch / { if ($2 == b) { print wt; exit } }
+')
+
+if [ -n "$existing_wt" ]; then
+  set -- "$herdr" worktree open --cwd "$repo" --path "$existing_wt" --label "$ref $title"
+  open_label="herdr worktree open"
+else
+  set -- "$herdr" worktree create --cwd "$repo" --branch "$branch" --label "$ref $title"
+  if [ -n "$base" ]; then
+    set -- "$@" --base "$base"
+  fi
+  open_label="herdr worktree create"
 fi
 if [ "$no_focus" != 1 ]; then
   set -- "$@" --focus
 fi
 
-herdr_call "herdr worktree create" "$@" || exit 1
+herdr_call "$open_label" "$@" || exit 1
 created=$(cat "$out")
 
 pane=$(json_query "$created" result.root_pane.pane_id)
 [ -n "$pane" ] || pane=$(json_query "$created" root_pane.pane_id)
 [ -n "$pane" ] || pane=$(json_query "$created" result.pane.pane_id)
 worktree=$(json_query "$created" result.worktree.path)
-[ -n "$pane" ] || fail "herdr did not report the new pane: $created"
+[ -n "$worktree" ] || worktree=$existing_wt
+[ -n "$pane" ] || fail "herdr did not report the pane: $created"
 
 # --- start and prompt the agent ---------------------------------------------
 
-herdr_call "herdr agent start" \
-  "$herdr" agent start "$agent_name" --kind "$kind" --pane "$pane" ||
-  fail "the worktree ${worktree:-was created} is left in place"
+# A reused worktree may already have an agent in its pane; prompt that one
+# rather than starting a second. A fresh worktree always needs one.
+agent_status=$(json_query "$created" result.root_pane.agent_status)
+if [ -n "$agent_status" ] && [ "$agent_status" != unknown ]; then
+  :
+elif [ -n "$existing_wt" ]; then
+  herdr_call "herdr agent start" \
+    "$herdr" agent start "$agent_name" --kind "$kind" --pane "$pane" ||
+    warn "continuing with the agent already in $pane"
+else
+  herdr_call "herdr agent start" \
+    "$herdr" agent start "$agent_name" --kind "$kind" --pane "$pane" ||
+    fail "the worktree ${worktree:-was created} is left in place"
+fi
 herdr_call "herdr agent prompt" \
   "$herdr" agent prompt "$pane" "$prompt" ||
   fail "agent $agent_name is running in ${worktree:-the new worktree}"

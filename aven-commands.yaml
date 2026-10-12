@@ -1,0 +1,112 @@
+# Extra aven TUI commands that scripts/install-aven-command.sh writes under
+# tui.commands, after the built-in "dispatch" command. This file is part of the
+# plugin; edit it, then re-run the installer to apply changes:
+#
+#   herdr plugin action invoke aven.tasks.install-aven-command
+#
+# Every active entry is indented under tui.commands and has ${PLUGIN_ROOT}
+# replaced with this plugin's directory, so it can point at bin/dispatch.sh or
+# another script here. Write each entry at the file's left margin ("- name:")
+# with its fields indented relative to it; comment and blank lines are dropped.
+#
+# Fields follow aven's custom-command schema
+# (https://aventasks.dev/custom-commands/): name and program are required;
+# aliases, description, cwd, env, timeout_seconds, args, keys, detail_keys,
+# target, execution, and on_success are optional. Names must be unique across
+# custom and built-in commands. Point AVEN_COMMANDS_FILE at another file to use
+# a different set of extra commands.
+#
+# --- Spec-Driven Development (spec-kit) --------------------------------------
+#
+# These four commands insert a bundled spec-kit SDD skill
+# (https://github.com/github/spec-kit) into the agent prompt, with the selected
+# task as its input. The skill files are vendored under skills/sdd, so no
+# spec-kit install or `specify` binary is needed; AVEN_DISPATCH_SKILL on
+# bin/dispatch.sh names the skill to insert.
+#
+# Each command starts a fresh worktree from the task, like dispatch: run specify
+# first and continue plan, tasks, and implement in that agent session, or use
+# one on its own to launch a phase. Dispatch also appends aven handoff guidance,
+# so the agent can read the task and leave notes.
+
+- name: speckit-specify
+  aliases: [sdd-specify]
+  description: Turn the selected task into a spec-kit specification (SDD)
+  program: sh
+  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+  keys: [z s]
+  detail_keys: [z S]
+  target: focused
+  execution: wait
+  on_success: quit
+  env:
+    AVEN_DISPATCH_SKILL: specify
+
+- name: speckit-plan
+  aliases: [sdd-plan]
+  description: Create the spec-kit implementation plan for the selected task (SDD)
+  program: sh
+  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+  keys: [z p]
+  detail_keys: [z P]
+  target: focused
+  execution: wait
+  on_success: quit
+  env:
+    AVEN_DISPATCH_SKILL: plan
+
+- name: speckit-tasks
+  aliases: [sdd-tasks]
+  description: Generate the spec-kit task list for the selected task (SDD)
+  program: sh
+  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+  keys: [z t]
+  detail_keys: [z T]
+  target: focused
+  execution: wait
+  on_success: quit
+  env:
+    AVEN_DISPATCH_SKILL: tasks
+
+- name: speckit-implement
+  aliases: [sdd-implement]
+  description: Implement the selected task with the spec-kit implement skill (SDD)
+  program: sh
+  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+  keys: [z i]
+  detail_keys: [z I]
+  target: focused
+  execution: wait
+  on_success: quit
+  env:
+    AVEN_DISPATCH_SKILL: implement
+
+# --- More examples -----------------------------------------------------------
+#
+# Dispatch the selected task to Claude on "z c" instead of opencode.
+#
+# - name: dispatch-claude
+#   aliases: [custom-dispatch-claude]
+#   description: Implement the selected task with Claude in a Herdr worktree
+#   program: sh
+#   args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+#   keys: [z c]
+#   detail_keys: [z C]
+#   target: focused
+#   execution: wait
+#   on_success: quit
+#   env:
+#     AVEN_DISPATCH_AGENT: claude
+#
+# Dispatch from a fresh branch based on main on "z m".
+#
+# - name: dispatch-main
+#   description: Implement the selected task on a branch based on main
+#   program: sh
+#   args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+#   keys: [z m]
+#   target: focused
+#   execution: wait
+#   on_success: quit
+#   env:
+#     AVEN_DISPATCH_BASE: main

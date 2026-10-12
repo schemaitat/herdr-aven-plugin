@@ -1,8 +1,8 @@
 id = "aven.tasks"
 name = "aven tasks"
-version = "0.2.1"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
-description = "Open the aven task TUI as a Herdr popover and dispatch a task to a coding agent in a new worktree."
+description = "Open the aven task TUI as a Herdr popover and dispatch a task to a coding agent in a new worktree, with the bundled spec-kit SDD commands installed alongside."
 platforms = ["linux", "macos"]
 
 [[actions]]
@@ -28,8 +28,8 @@ command = ["sh", "bin/run.sh", "action"]
 
 [[actions]]
 id = "install-aven-command"
-title = "Install the aven dispatch command"
-description = "Add the \"dispatch\" custom TUI command to aven's config.yaml, so a selected task can be sent to a coding agent in a worktree with z d. Backs up and validates the config."
+title = "Install the aven commands"
+description = "Add the \"dispatch\" command and the bundled spec-kit SDD commands (plus any extras declared in aven-commands.yaml) to aven's config.yaml, so a selected task can be sent to a coding agent in a worktree. Backs up and validates the config."
 contexts = ["global", "workspace", "pane", "tab"]
 command = ["sh", "bin/run.sh", "action"]
 

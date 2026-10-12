@@ -11,7 +11,7 @@ body=$(cat "$manifest")
 # Required top-level metadata.
 assert_contains "$body" 'id = "aven.tasks"'
 assert_contains "$body" 'name = "aven tasks"'
-assert_contains "$body" 'version = "0.2.1"'
+assert_contains "$body" 'version = "0.3.0"'
 assert_contains "$body" 'min_herdr_version = "0.9.0"'
 assert_contains "$body" 'description ='
 assert_contains "$body" 'platforms = ["linux", "macos"]'
@@ -24,6 +24,12 @@ done
 # The aven custom command the installer wires up.
 [ -f "$PLUGIN_ROOT/bin/dispatch.sh" ] || fail "missing bin/dispatch.sh"
 [ -f "$PLUGIN_ROOT/scripts/install-aven-command.sh" ] || fail "missing scripts/install-aven-command.sh"
+[ -f "$PLUGIN_ROOT/aven-commands.yaml" ] || fail "missing aven-commands.yaml"
+
+# The four spec-kit SDD skills the dispatcher can insert.
+for skill in specify plan tasks implement; do
+  [ -f "$PLUGIN_ROOT/skills/sdd/$skill.md" ] || fail "missing skills/sdd/$skill.md"
+done
 
 # Panes, both popovers, one per entrypoint.
 assert_contains "$body" 'id = "tui"'

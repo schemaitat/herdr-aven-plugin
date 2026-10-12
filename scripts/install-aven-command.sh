@@ -1,17 +1,27 @@
 #!/bin/sh
-# Adds the "dispatch" custom TUI command to aven's config.yaml and validates it.
-# Usage: scripts/install-aven-command.sh
+# Adds the built-in "dispatch" custom TUI command and any extra commands
+# declared in aven-commands.yaml to aven's config.yaml, and validates the
+# result. Usage: scripts/install-aven-command.sh
 #
 # The config file is resolved the way aven resolves it: AVEN_CONFIG_DIR, then
-# $XDG_CONFIG_HOME/aven, then ~/.config/aven. The command is written once: a
-# file it created, or an existing file without a top-level `tui:` key, gets the
-# managed block appended. An existing `tui:` section is never rewritten; the
-# block is printed for you to merge instead. The file is backed up and restored
-# if aven can no longer parse it.
+# $XDG_CONFIG_HOME/aven, then ~/.config/aven. The commands are written as one
+# managed block delimited by markers: a file this script created, or an existing
+# file without a top-level `tui:` key, gets the block appended; a block that is
+# already there is rewritten in place when it changed, so editing
+# aven-commands.yaml and re-running applies the change. An existing `tui:`
+# section that is not ours is never rewritten; the block is printed for you to
+# merge instead. The file is backed up and restored if aven can no longer parse
+# it.
+#
+# The block is built from the built-in dispatch command plus the extra commands
+# in $AVEN_COMMANDS_FILE (default: aven-commands.yaml in the plugin directory).
+# ${PLUGIN_ROOT} in either one is replaced with the plugin directory.
 #
 # Report lines on stdout:
 #   config: PATH
-#   installed: dispatch (keys: z d)
+#   installed: NAME (keys: KEYS)
+#   installed: NAME (EXTRA)
+#   updated: PATH
 #   already installed: PATH
 #   warning: TEXT
 set -eu
@@ -32,19 +42,25 @@ else
   exit 1
 fi
 config=$config_dir/config.yaml
-marker='# Managed by herdr-aven-plugin (install-aven-command).'
+commands_file=${AVEN_COMMANDS_FILE:-$PLUGIN_ROOT/aven-commands.yaml}
+start_marker='# Managed by herdr-aven-plugin (install-aven-command). Remove this block to uninstall.'
+end_marker='# End of the herdr-aven-plugin managed block.'
 
-block() {
-  cat <<EOF
-$marker Remove this block to uninstall.
-tui:
-  commands:
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+block=$tmp/block
+
+# --- build the managed block ------------------------------------------------
+
+# The built-in dispatch command. ${PLUGIN_ROOT} is replaced below.
+dispatch_item() {
+  cat <<'EOF'
     - name: dispatch
       aliases: [custom-dispatch]
       description: Implement the selected task with a coding agent in a Herdr worktree
       program: sh
       args:
-        - $PLUGIN_ROOT/bin/dispatch.sh
+        - ${PLUGIN_ROOT}/bin/dispatch.sh
       keys: [z d]
       detail_keys: [z D]
       target: focused
@@ -53,18 +69,128 @@ tui:
 EOF
 }
 
+# The active commands from $commands_file, indented under tui.commands. Comment
+# and blank lines are documentation and are dropped; four spaces are prepended
+# to each remaining line, so an entry is written at the file's left margin with
+# its fields indented relative to it.
+extra_items() {
+  [ -f "$commands_file" ] || return 0
+  sed -e 's/[[:space:]]*$//' "$commands_file" |
+    grep -v '^[[:space:]]*#' |
+    grep -v '^[[:space:]]*$' |
+    sed -e 's/^/    /'
+}
+
+# The active command names from $commands_file, one per line, for the report.
+extra_names() {
+  [ -f "$commands_file" ] || return 0
+  sed -e 's/[[:space:]]*$//' "$commands_file" |
+    grep -v '^[[:space:]]*#' |
+    sed -n 's/^[[:space:]]*-[[:space:]]*name:[[:space:]]*//p' |
+    sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# Replace every literal ${PLUGIN_ROOT} with the plugin directory. The path is
+# treated as text, so & or \ in it are not interpreted.
+substitute_root() {
+  replace_all '${PLUGIN_ROOT}' "$PLUGIN_ROOT"
+}
+
+build_block() {
+  printf '%s\n' "$start_marker"
+  printf 'tui:\n'
+  printf '  commands:\n'
+  dispatch_item
+  extra_items
+  printf '%s\n' "$end_marker"
+}
+
+build_block | substitute_root > "$block"
+
+# report_installed: the stdout lines naming the commands that were written.
+report_installed() {
+  printf 'installed: dispatch (keys: z d)\n'
+  extras=$(extra_names)
+  for name in $extras; do
+    printf 'installed: %s (extra)\n' "$name"
+  done
+  printf 'Open the aven popover, select a task, and press "z d", or run ":dispatch".\n'
+  if [ -n "$extras" ]; then
+    printf 'Extra commands: %s\n' "$(printf '%s' "$extras" | tr '\n' ' ')"
+  fi
+}
+
+# validate_config: true when aven can still parse the config. A missing aven is
+# not an error here; the caller warns that it could not be checked.
+validate_config() {
+  aven=$(find_aven || true)
+  if [ -n "$aven" ] && ! "$aven" config get sync.enabled >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+warn_missing_aven() {
+  aven=$(find_aven || true)
+  [ -n "$aven" ] ||
+    printf 'warning: aven was not found; the config is written, run "aven doctor" to check it\n'
+}
+
 printf 'config: %s\n' "$config"
 
-if [ -f "$config" ] && grep -qF "$marker" "$config"; then
-  printf 'already installed: %s\n' "$config"
-  printf 'dispatch is available in aven as ":dispatch" or "z d".\n'
+# --- a managed block is already present -------------------------------------
+
+start_line=
+end_line=
+if [ -f "$config" ]; then
+  start_line=$(grep -nF -m1 "$start_marker" "$config" 2>/dev/null | sed 's/:.*//')
+  end_line=$(grep -nF -m1 "$end_marker" "$config" 2>/dev/null | sed 's/:.*//')
+fi
+
+if [ -n "$start_line" ]; then
+  existing=$tmp/existing
+  if [ -n "$end_line" ]; then
+    sed -n "${start_line},${end_line}p" "$config" > "$existing"
+  else
+    # Written by an older version: the block runs to the end of the file.
+    tail -n "+$start_line" "$config" > "$existing"
+  fi
+
+  if cmp -s "$existing" "$block"; then
+    printf 'already installed: %s\n' "$config"
+    report_installed
+    exit 0
+  fi
+
+  updated=$tmp/updated
+  head -n "$((start_line - 1))" "$config" > "$updated"
+  cat "$block" >> "$updated"
+  if [ -n "$end_line" ]; then
+    tail -n "+$((end_line + 1))" "$config" >> "$updated"
+  fi
+
+  backup=$config.aven-backup.$$
+  cp "$config" "$backup"
+  cp "$updated" "$config"
+  if ! validate_config; then
+    cp "$backup" "$config"
+    rm -f "$backup"
+    printf 'warning: aven could not parse the config after the change; it was restored\n'
+    exit 1
+  fi
+  rm -f "$backup"
+  printf 'updated: %s\n' "$config"
+  report_installed
+  warn_missing_aven
   exit 0
 fi
+
+# --- first install ----------------------------------------------------------
 
 if [ -f "$config" ] && grep -qE '^tui[[:space:]]*:' "$config"; then
   printf 'warning: %s already has a top-level tui: section; nothing was written.\n' "$config"
   printf 'Add this under tui.commands (or set AVEN_CONFIG_DIR to a separate config):\n\n'
-  block
+  cat "$block"
   exit 1
 fi
 
@@ -81,11 +207,10 @@ fi
   if [ "$created" = 0 ]; then
     printf '\n'
   fi
-  block
+  cat "$block"
 } >> "$config"
 
-aven=$(find_aven || true)
-if [ -n "$aven" ] && ! "$aven" config get sync.enabled >/dev/null 2>&1; then
+if ! validate_config; then
   if [ "$created" = 1 ]; then
     rm -f "$config"
   else
@@ -97,8 +222,5 @@ if [ -n "$aven" ] && ! "$aven" config get sync.enabled >/dev/null 2>&1; then
 fi
 rm -f "$backup"
 
-printf 'installed: dispatch (keys: z d)\n'
-if [ -z "$aven" ]; then
-  printf 'warning: aven was not found; the config is written, run "aven doctor" to check it\n'
-fi
-printf 'Open the aven popover, select a task, and press "z d", or run ":dispatch".\n'
+report_installed
+warn_missing_aven

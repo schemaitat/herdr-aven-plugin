@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.0
+
+- `aven-commands.yaml`: a plugin file declaring extra aven TUI commands next to
+  the built-in `dispatch`. It ships with four spec-kit
+  [SDD](https://github.com/github/spec-kit) commands active — `speckit-specify`
+  (`z s`), `speckit-plan` (`z p`), `speckit-tasks` (`z t`), and
+  `speckit-implement` (`z i`) — each of which runs that skill on the selected
+  task in the task's worktree. Every entry is written under `tui.commands` with
+  `${PLUGIN_ROOT}` replaced by the plugin directory; comment out or add entries
+  as wanted. Point `AVEN_COMMANDS_FILE` at another file to use a different set.
+- `skills/sdd/`: the four spec-kit SDD command files, vendored (MIT) so no
+  spec-kit install or `specify` binary is needed. `bin/dispatch.sh` inserts the
+  named skill into the agent prompt, dropping its front matter, rewriting its
+  `/speckit-*` references, and filling `$ARGUMENTS` from the task.
+- `bin/dispatch.sh`: `AVEN_DISPATCH_SKILL` names a bundled skill to insert into
+  the prompt; `AVEN_DISPATCH_PROMPT` overrides the opening instruction, with
+  `{ref}` and `{title}` filled from the selected task.
+- `bin/dispatch.sh`: re-dispatching a task opens its existing worktree
+  (`herdr worktree open`) and reuses the agent already in its pane, instead of
+  failing when `herdr worktree create` finds the deterministic branch on disk.
+  The SDD phases therefore share one worktree, and repeated dispatch is safe.
+- `install-aven-command`: writes the built-in command and the extras as one
+  managed block, reports each installed command, and rewrites the block in place
+  when the commands change, so editing `aven-commands.yaml` and re-running
+  applies it. Content outside the block is left untouched, and blocks written by
+  older versions are upgraded.
+
 ## 0.2.1
 
 - Fix dispatch from a pane inside a linked worktree: Herdr refuses to branch a

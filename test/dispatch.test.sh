@@ -23,6 +23,10 @@ if [ -n "${FAKE_WORKTREE_FAIL:-}" ]; then
   printf '%s\n' '{"error":{"code":"linked_worktree_source","message":"New and open worktree actions start from the repo parent workspace."},"id":"cli:worktree:create"}' >&2
   exit 1
 fi
+if [ "${1:-}" = open ]; then
+  printf '{"id":"cli:worktree:open","result":{"already_open":true,"root_pane":{"pane_id":"w9:p1","agent_status":"%s"},"worktree":{"path":"%s"}}}\n' "${FAKE_AGENT_STATUS:-unknown}" "${FAKE_WT_PATH:-/tmp/wt/app}"
+  exit 0
+fi
 printf '%s\n' '{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"w9:p1"},"worktree":{"path":"/tmp/wt/app"}}}'
 SCRIPT
 cat > "$work/agent" <<'SCRIPT'
@@ -91,6 +95,53 @@ AVEN_DISPATCH_BASE=main AVEN_DISPATCH_AGENT=claude run_dispatch >/dev/null
 assert_file_contains "$FAKE_LOG" "--base main" "custom base"
 assert_file_contains "$FAKE_LOG" "agent start app-7kq9 --kind claude --pane w9:p1" "custom agent"
 
+# AVEN_DISPATCH_PROMPT replaces the opening instruction, fills {ref}/{title}, and
+# keeps the task description and the aven handoff guidance.
+: > "$FAKE_LOG"
+AVEN_DISPATCH_PROMPT='/speckit-specify {title}' run_dispatch >/dev/null
+assert_file_contains "$FAKE_LOG" 'agent prompt w9:p1 /speckit-specify refactor "mitarbeiter" view.' "prompt override fills title"
+assert_file_contains "$FAKE_LOG" "aven context APP-7KQ9" "guidance still appended"
+
+: > "$FAKE_LOG"
+AVEN_DISPATCH_PROMPT='Do {ref} now: {title}' run_dispatch >/dev/null
+assert_file_contains "$FAKE_LOG" 'agent prompt w9:p1 Do APP-7KQ9 now: refactor "mitarbeiter" view.' "prompt override fills ref"
+
+# AVEN_DISPATCH_SKILL inserts a bundled SDD skill: front matter dropped,
+# __SPECKIT_COMMAND_*__ rewritten, and $ARGUMENTS/{ARGS} filled from the task.
+for skill in specify plan tasks implement; do
+  : > "$FAKE_LOG"
+  AVEN_DISPATCH_SKILL=$skill run_dispatch >/dev/null
+  assert_file_contains "$FAKE_LOG" "agent prompt w9:p1" "skill $skill inlined into the prompt"
+  assert_file_contains "$FAKE_LOG" 'refactor "mitarbeiter" view.' "skill $skill gets the task title"
+  assert_file_lacks "$FAKE_LOG" "__SPECKIT_COMMAND_" "no spec-kit placeholder survives ($skill)"
+  assert_file_lacks "$FAKE_LOG" '$ARGUMENTS' "no \$ARGUMENTS left ($skill)"
+  assert_file_lacks "$FAKE_LOG" "{ARGS}" "no {ARGS} left ($skill)"
+  assert_file_lacks "$FAKE_LOG" "handoffs:" "skill front matter dropped ($skill)"
+  assert_file_contains "$FAKE_LOG" "aven context APP-7KQ9" "aven guidance still appended ($skill)"
+done
+
+# The specify skill's body starts right after the dropped front matter, and its
+# spec-kit cross-references are rewritten to their /speckit-* form.
+: > "$FAKE_LOG"
+AVEN_DISPATCH_SKILL=specify run_dispatch >/dev/null
+assert_file_contains "$FAKE_LOG" "agent prompt w9:p1 ## User Input" "skill body inlined first"
+assert_file_contains "$FAKE_LOG" "/speckit-plan" "spec-kit command placeholder rewritten"
+
+# An unknown or unsafe skill name fails before anything is dispatched.
+for bad in nope ../escape; do
+  : > "$FAKE_LOG"
+  set +e
+  out=$(AVEN_DISPATCH_SKILL=$bad run_dispatch 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$rc" "1" "bad skill exit code ($bad)"
+  assert_eq "$(wc -l < "$FAKE_LOG")" "0" "bad skill must not dispatch ($bad)"
+done
+set +e
+out=$(AVEN_DISPATCH_SKILL=nope run_dispatch 2>&1)
+set -e
+assert_contains "$out" "no bundled SDD skill 'nope'" "unknown skill message"
+
 # AVEN_DISPATCH_NO_FOCUS drops --focus.
 : > "$FAKE_LOG"
 AVEN_DISPATCH_NO_FOCUS=1 run_dispatch >/dev/null
@@ -130,6 +181,27 @@ assert_contains "$out" "needs jq or python3" "awk message"
 # (linked_worktree_source), so the dispatcher must start from the parent
 # checkout instead.
 git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+
+# Re-dispatching a task (or running the next SDD phase) reuses its existing
+# worktree: the deterministic branch is already on disk, so herdr opens it and
+# prompts the agent already there instead of creating a second worktree.
+reused=$work/reused-wt
+git -C "$repo" worktree add -q "$reused" -b "$expected_branch"
+: > "$FAKE_LOG"
+out=$(FAKE_AGENT_STATUS=idle FAKE_WT_PATH="$reused" run_dispatch)
+assert_file_contains "$FAKE_LOG" "worktree open --cwd $repo --path $reused --label APP-7KQ9 refactor \"mitarbeiter\" view. --focus" "existing worktree opened"
+assert_file_lacks "$FAKE_LOG" "worktree create" "no create when the worktree exists"
+assert_file_lacks "$FAKE_LOG" "agent start" "existing agent not restarted"
+assert_file_contains "$FAKE_LOG" "agent prompt w9:p1" "prompts the reused pane"
+assert_contains "$out" "Dispatched APP-7KQ9 to opencode" "reuse reports success"
+assert_contains "$out" "worktree $reused" "reuse names the existing worktree"
+
+# A reused worktree with no agent gets one.
+: > "$FAKE_LOG"
+FAKE_AGENT_STATUS=unknown FAKE_WT_PATH="$reused" run_dispatch >/dev/null
+assert_file_contains "$FAKE_LOG" "worktree open" "opens the existing worktree"
+assert_file_contains "$FAKE_LOG" "agent start app-7kq9 --kind opencode --pane w9:p1" "starts an agent when the pane has none"
+
 git -C "$repo" worktree add -q "$work/wt" -b side
 main=$(git -C "$repo" rev-parse --show-toplevel)
 printf '{
