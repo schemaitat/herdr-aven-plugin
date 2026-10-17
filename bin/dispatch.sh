@@ -33,6 +33,9 @@ set -eu
 
 here=$(dirname "$0")
 PLUGIN_ROOT=$(cd "$here/.." && pwd)
+if [ "${AVEN_DISPATCH_BACKEND:-shell}" = rust ]; then
+  exec "$PLUGIN_ROOT/bin/dispatch-rust.sh" "$@"
+fi
 # shellcheck source=../lib/plugin.sh
 . "$PLUGIN_ROOT/lib/plugin.sh"
 

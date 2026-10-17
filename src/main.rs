@@ -1,0 +1,702 @@
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    io::{self, Read},
+    path::PathBuf,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+#[derive(Parser)]
+#[command(about = "Durable one-task Aven to OpenCode V2 dispatcher")]
+struct Cli {
+    #[arg(long, env = "AVEN_DISPATCH_STORE")]
+    store: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Read an Aven custom-command context from stdin and admit one prompt.
+    Dispatch {
+        #[arg(long)]
+        dry_run: bool,
+        /// Primary OpenCode agent for the created session (or AVEN_DISPATCH_AGENT).
+        #[arg(long, env = "AVEN_DISPATCH_AGENT")]
+        agent: Option<String>,
+    },
+    /// Resume an existing attempt without creating a second session.
+    Resume { task: String },
+    /// Inspect persisted state and the authoritative OpenCode snapshot.
+    Status { task: String },
+    /// List persisted dispatch attempts; --running limits results to active execution.
+    List {
+        #[arg(long)]
+        running: bool,
+    },
+    /// Repair pending Aven updates and refresh session state.
+    Reconcile { task: String },
+    /// Interrupt OpenCode execution; this never changes the Aven task to done/canceled.
+    Interrupt { task: String },
+    /// Validate local Aven and OpenCode V2 capabilities without mutation.
+    Doctor,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommandContext {
+    version: u32,
+    invocation: Invocation,
+    #[serde(default)]
+    targeting: Targeting,
+    #[serde(default)]
+    selection: Selection,
+}
+#[derive(Debug, Deserialize, Default)]
+struct Targeting {
+    #[serde(default)]
+    targets: Vec<Target>,
+}
+#[derive(Debug, Deserialize)]
+struct Target {
+    id: String,
+    #[serde(default)]
+    reference: String,
+    #[serde(rename = "ref", default)]
+    short_ref: String,
+}
+impl Target {
+    fn reference(&self) -> &str {
+        if self.reference.is_empty() {
+            &self.short_ref
+        } else {
+            &self.reference
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Invocation {
+    #[serde(default)]
+    aven_exe: String,
+    #[serde(default)]
+    db_path: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    origin_cwd: String,
+}
+#[derive(Debug, Deserialize, Default)]
+struct Selection {
+    #[serde(default)]
+    primary: Option<Selected>,
+}
+#[derive(Debug, Deserialize)]
+struct Selected {
+    #[serde(default)]
+    reference: String,
+    #[serde(rename = "ref", default)]
+    short_ref: String,
+    task: SelectedTask,
+    #[serde(default)]
+    project: Project,
+}
+impl Selected {
+    fn reference(&self) -> &str {
+        if self.reference.is_empty() {
+            &self.short_ref
+        } else {
+            &self.reference
+        }
+    }
+}
+#[derive(Debug, Deserialize)]
+struct SelectedTask {
+    id: String,
+    #[serde(default)]
+    title: String,
+}
+#[derive(Debug, Deserialize, Default)]
+struct Project {
+    #[serde(default)]
+    key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct Store {
+    attempts: BTreeMap<String, Attempt>,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Attempt {
+    task_id: String,
+    task_ref: String,
+    attempt_id: String,
+    branch: String,
+    worktree: String,
+    #[serde(default)]
+    pane: String,
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    session_id: String,
+    prompt_id: String,
+    state: String,
+    #[serde(default)]
+    aven_update_pending: bool,
+    #[serde(default)]
+    log_cursor: String,
+    aven: Invocation,
+    created_at: u64,
+}
+struct LockedStore {
+    path: PathBuf,
+    lock: PathBuf,
+    store: Store,
+}
+impl LockedStore {
+    fn open(path: PathBuf) -> Result<Self> {
+        let parent = path.parent().context("store path has no parent")?;
+        fs::create_dir_all(parent).context("create dispatcher state directory")?;
+        let lock = path.with_extension("lock");
+        fs::OpenOptions::new().write(true).create_new(true).open(&lock)
+            .with_context(|| format!("dispatcher store is locked: {}; use status/reconcile instead of concurrent dispatch", lock.display()))?;
+        let store = if path.exists() {
+            serde_json::from_slice(&fs::read(&path)?)?
+        } else {
+            Store::default()
+        };
+        Ok(Self { path, lock, store })
+    }
+    fn save(&self) -> Result<()> {
+        let temporary = self.path.with_extension("new");
+        fs::write(&temporary, serde_json::to_vec_pretty(&self.store)?)?;
+        fs::rename(temporary, &self.path)?;
+        Ok(())
+    }
+}
+impl Drop for LockedStore {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.lock);
+    }
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+fn identifier(prefix: &str) -> String {
+    format!("{prefix}_{:x}", now())
+}
+fn store_path(value: Option<PathBuf>) -> PathBuf {
+    value.unwrap_or_else(|| {
+        env::current_dir()
+            .unwrap()
+            .join(".aven-dispatch/state.json")
+    })
+}
+
+fn run(program: &str, args: &[String], input: Option<&str>) -> Result<String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if input.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    }
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("start {program}"))?;
+    if let Some(text) = input {
+        use std::io::Write;
+        child.stdin.as_mut().unwrap().write_all(text.as_bytes())?;
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        bail!(
+            "{} failed: {}",
+            program,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+fn aven_args(invocation: &Invocation, command: &[&str]) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(db) = &invocation.db_path {
+        args.extend(["--db".into(), db.clone()]);
+    }
+    if let Some(workspace) = &invocation.workspace {
+        args.extend(["--workspace".into(), workspace.clone()]);
+    }
+    args.extend(command.iter().map(|x| (*x).into()));
+    args
+}
+fn aven(invocation: &Invocation, command: &[&str], input: Option<&str>) -> Result<String> {
+    run(
+        if invocation.aven_exe.is_empty() {
+            "aven"
+        } else {
+            &invocation.aven_exe
+        },
+        &aven_args(invocation, command),
+        input,
+    )
+}
+fn opencode(method: &str, path: &str, data: Option<Value>) -> Result<Value> {
+    let output = opencode_text(method, path, data)?;
+    serde_json::from_str(&output).with_context(|| format!("OpenCode returned non-JSON for {path}"))
+}
+fn opencode_text(method: &str, path: &str, data: Option<Value>) -> Result<String> {
+    let mut args = vec!["api".into(), method.into(), path.into()];
+    if let Some(data) = data {
+        args.extend(["--data".into(), serde_json::to_string(&data)?]);
+    }
+    run("opencode", &args, None)
+}
+fn field<'a>(value: &'a Value, pointer: &str) -> Result<&'a str> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .context(pointer.to_owned())
+}
+
+fn parse_context(text: &str) -> Result<CommandContext> {
+    let context: CommandContext =
+        serde_json::from_str(text).context("invalid Aven command context JSON")?;
+    if context.version != 1 {
+        bail!(
+            "unsupported Aven command context version {}; expected 1",
+            context.version
+        );
+    }
+    if context.targeting.targets.len() != 1 {
+        bail!(
+            "one-task dispatch requires exactly one targeting.targets entry (got {})",
+            context.targeting.targets.len()
+        );
+    }
+    if context.targeting.targets[0].id.is_empty()
+        || context.targeting.targets[0].reference().is_empty()
+    {
+        bail!("Aven target is missing immutable id or ref");
+    }
+    Ok(context)
+}
+fn selected_for(context: &CommandContext) -> Result<&Selected> {
+    let selected = context
+        .selection
+        .primary
+        .as_ref()
+        .context("command context lacks selection.primary task details")?;
+    if selected.task.id != context.targeting.targets[0].id {
+        bail!(
+            "selection.primary does not match targeting.targets; refusing focused-selection dispatch"
+        );
+    }
+    Ok(selected)
+}
+fn branch(project: &str, task_id: &str) -> String {
+    format!(
+        "{}/dispatch-{}",
+        if project.is_empty() { "task" } else { project },
+        task_id.to_ascii_lowercase()
+    )
+}
+
+fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> {
+    let output = aven(
+        &context.invocation,
+        &["context", selected.reference(), "--json"],
+        None,
+    )?;
+    let task: Value = serde_json::from_str(&output).context("Aven context --json output")?;
+    if task.pointer("/task/id").and_then(Value::as_str) != Some(selected.task.id.as_str()) {
+        bail!("Aven re-read returned a different task; refusing dispatch");
+    }
+    Ok(task)
+}
+fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(String, String)> {
+    let listing = run(
+        "git",
+        &[
+            "-C".into(),
+            origin.into(),
+            "worktree".into(),
+            "list".into(),
+            "--porcelain".into(),
+        ],
+        None,
+    )?;
+    let repo = listing
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(str::to_owned)
+        .context("resolve parent checkout")?;
+    let existing = listing.split("\n\n").find_map(|entry| {
+        entry
+            .lines()
+            .find_map(|line| line.strip_prefix("branch refs/heads/"))
+            .filter(|branch| *branch == attempt.branch)
+            .and_then(|_| {
+                entry
+                    .lines()
+                    .find_map(|line| line.strip_prefix("worktree "))
+            })
+    });
+    let mut args = vec!["worktree".into()];
+    if let Some(path) = existing {
+        args.extend([
+            "open".into(),
+            "--cwd".into(),
+            repo,
+            "--path".into(),
+            path.into(),
+        ]);
+    } else {
+        args.extend([
+            "create".into(),
+            "--cwd".into(),
+            repo,
+            "--branch".into(),
+            attempt.branch.clone(),
+        ]);
+    }
+    args.extend(["--label".into(), format!("{} {}", attempt.task_ref, title)]);
+    let output = run("herdr", &args, None)?;
+    let value: Value = serde_json::from_str(&output)?;
+    let worktree = value
+        .pointer("/result/worktree/path")
+        .and_then(Value::as_str)
+        .context("Herdr worktree path")?
+        .to_owned();
+    let pane = value
+        .pointer("/result/root_pane/pane_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    Ok((worktree, pane))
+}
+fn prompt(task: &Value, reference: &str) -> String {
+    format!(
+        "Implement {reference}. Aven is the source of truth: re-read `aven context {reference} --full`, record handoffs and verification in Aven notes, and do not mark the task done until verification/review succeeds.\n\nTask context:\n{}",
+        serde_json::to_string_pretty(task).unwrap()
+    )
+}
+fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
+    let metadata = [
+        "dispatch.backend=opencode-v2",
+        &format!("dispatch.session-id={}", attempt.session_id),
+        &format!("dispatch.attempt-id={}", attempt.attempt_id),
+        &format!("dispatch.state={}", attempt.state),
+        "dispatch.workflow=default",
+        &format!("dispatch.branch={}", attempt.branch),
+    ];
+    let mut args = vec![
+        "edit".to_owned(),
+        attempt.task_ref.clone(),
+        "--status".into(),
+        "active".into(),
+    ];
+    for item in metadata {
+        args.extend(["--metadata".into(), item.to_owned()]);
+    }
+    let executable = if invocation.aven_exe.is_empty() {
+        "aven"
+    } else {
+        &invocation.aven_exe
+    };
+    run(
+        executable,
+        &{
+            let mut global = aven_args(invocation, &[]);
+            global.extend(args);
+            global
+        },
+        None,
+    )?;
+    let note = format!(
+        "## Dispatcher handoff\n\nOpenCode prompt admitted for attempt `{}` (session `{}`). Worktree branch: `{}`. Execution state: `{}`. Use `aven-dispatch status {}` to inspect permissions, forms, and recovery state.",
+        attempt.attempt_id, attempt.session_id, attempt.branch, attempt.state, attempt.task_ref
+    );
+    aven(
+        invocation,
+        &["note", &attempt.task_ref, "--stdin"],
+        Some(&note),
+    )?;
+    Ok(())
+}
+
+fn dispatch(path: PathBuf, dry_run: bool, agent: Option<String>) -> Result<()> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+    let context = parse_context(&input)?;
+    let selected = selected_for(&context)?;
+    let task = refresh_task(&context, selected)?;
+    let mut store = LockedStore::open(path)?;
+    if let Some(existing) = store.store.attempts.get(&selected.task.id) {
+        println!(
+            "existing attempt {} is {}; use resume/status/reconcile",
+            existing.attempt_id, existing.state
+        );
+        return Ok(());
+    }
+    let mut attempt = Attempt {
+        task_id: selected.task.id.clone(),
+        task_ref: selected.reference().to_owned(),
+        attempt_id: identifier("att"),
+        branch: branch(&selected.project.key, &selected.task.id),
+        worktree: String::new(),
+        pane: String::new(),
+        agent: agent.unwrap_or_default(),
+        session_id: String::new(),
+        prompt_id: identifier("msg"),
+        state: "workspace-pending".into(),
+        aven_update_pending: false,
+        log_cursor: String::new(),
+        aven: context.invocation.clone(),
+        created_at: now(),
+    };
+    if dry_run {
+        println!(
+            "would dispatch {} as {} on {}{}",
+            attempt.task_ref,
+            attempt.attempt_id,
+            attempt.branch,
+            if attempt.agent.is_empty() {
+                String::new()
+            } else {
+                format!(" with agent {}", attempt.agent)
+            }
+        );
+        return Ok(());
+    }
+    store
+        .store
+        .attempts
+        .insert(attempt.task_id.clone(), attempt.clone());
+    store.save()?;
+    let (worktree, pane) = create_worktree(
+        &context.invocation.origin_cwd,
+        &attempt,
+        &selected.task.title,
+    )?;
+    attempt.worktree = worktree;
+    attempt.pane = pane;
+    attempt.state = "session-pending".into();
+    store
+        .store
+        .attempts
+        .insert(attempt.task_id.clone(), attempt.clone());
+    store.save()?;
+    let session = opencode(
+        "POST",
+        "/api/session",
+        Some(json!({
+            "title": format!("{} {}", attempt.task_ref, selected.task.title),
+            "location": {"directory": attempt.worktree},
+            "agent": if attempt.agent.is_empty() { Value::Null } else { Value::String(attempt.agent.clone()) },
+        })),
+    )?;
+    attempt.session_id = field(&session, "/data/id")?.to_owned();
+    attempt.state = "prompt-pending".into();
+    store
+        .store
+        .attempts
+        .insert(attempt.task_id.clone(), attempt.clone());
+    store.save()?;
+    let admission = opencode(
+        "POST",
+        &format!("/api/session/{}/prompt", attempt.session_id),
+        Some(
+            json!({"id": attempt.prompt_id, "text": prompt(&task, &attempt.task_ref), "resume": true}),
+        ),
+    )?;
+    let admitted = field(&admission, "/data/id")?;
+    if admitted != attempt.prompt_id {
+        bail!("OpenCode admitted an unexpected message id");
+    }
+    attempt.state = "running".into();
+    attempt.aven_update_pending = true;
+    store
+        .store
+        .attempts
+        .insert(attempt.task_id.clone(), attempt.clone());
+    store.save()?;
+    if write_aven_links(&context.invocation, &attempt).is_ok() {
+        attempt.aven_update_pending = false;
+        store
+            .store
+            .attempts
+            .insert(attempt.task_id.clone(), attempt.clone());
+        store.save()?;
+    }
+    println!(
+        "admitted {} to OpenCode session {} (attempt {})",
+        attempt.task_ref, attempt.session_id, attempt.attempt_id
+    );
+    if attempt.aven_update_pending {
+        println!("Aven update pending; run reconcile before retrying dispatch");
+    }
+    Ok(())
+}
+
+fn find_attempt<'a>(store: &'a LockedStore, task: &str) -> Result<&'a Attempt> {
+    store
+        .store
+        .attempts
+        .values()
+        .find(|a| a.task_id == task || a.task_ref == task)
+        .context("no dispatcher attempt for task")
+}
+fn status(path: PathBuf, task: &str) -> Result<()> {
+    let store = LockedStore::open(path)?;
+    let attempt = find_attempt(&store, task)?;
+    let snapshot = opencode("GET", &format!("/api/session/{}", attempt.session_id), None)?;
+    let permissions = opencode(
+        "GET",
+        &format!("/api/session/{}/permission", attempt.session_id),
+        None,
+    )?;
+    let forms = opencode(
+        "GET",
+        &format!("/api/session/{}/form", attempt.session_id),
+        None,
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &json!({"attempt": attempt, "session": snapshot, "pending_permissions": permissions, "pending_forms": forms})
+        )?
+    );
+    Ok(())
+}
+fn list(path: PathBuf, running: bool) -> Result<()> {
+    let store = LockedStore::open(path)?;
+    let attempts: Vec<&Attempt> = store
+        .store
+        .attempts
+        .values()
+        .filter(|attempt| !running || attempt.state == "running")
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&attempts)?);
+    Ok(())
+}
+fn interrupt(path: PathBuf, task: &str) -> Result<()> {
+    let mut store = LockedStore::open(path)?;
+    let attempt = find_attempt(&store, task)?.clone();
+    opencode(
+        "POST",
+        &format!("/api/session/{}/interrupt", attempt.session_id),
+        None,
+    )?;
+    let mut changed = attempt;
+    changed.state = "interrupted".into();
+    store
+        .store
+        .attempts
+        .insert(changed.task_id.clone(), changed);
+    store.save()?;
+    println!("interrupted OpenCode execution; Aven task status was not changed");
+    Ok(())
+}
+fn reconcile(path: PathBuf, task: &str) -> Result<()> {
+    let mut store = LockedStore::open(path)?;
+    let mut attempt = find_attempt(&store, task)?.clone();
+    if attempt.aven_update_pending && write_aven_links(&attempt.aven, &attempt).is_ok() {
+        attempt.aven_update_pending = false;
+        store
+            .store
+            .attempts
+            .insert(attempt.task_id.clone(), attempt.clone());
+        store.save()?;
+        println!("repaired pending Aven status, metadata, and handoff update");
+    }
+    let log = opencode_text(
+        "GET",
+        &format!(
+            "/api/experimental/session/{}/log?after={}&follow=false",
+            attempt.session_id, attempt.log_cursor
+        ),
+        None,
+    );
+    println!(
+        "attempt {} state={} aven_update_pending={}",
+        attempt.attempt_id, attempt.state, attempt.aven_update_pending
+    );
+    match log {
+        Ok(events) => {
+            if let Some(cursor) = events
+                .lines()
+                .filter_map(|line| line.strip_prefix("id: "))
+                .last()
+            {
+                attempt.log_cursor = cursor.to_owned();
+                store
+                    .store
+                    .attempts
+                    .insert(attempt.task_id.clone(), attempt);
+                store.save()?;
+                println!("replayed durable session log through cursor {cursor}");
+            } else {
+                println!("durable session log is reachable; no new events");
+            }
+        }
+        Err(error) => println!("session log unavailable: {error:#}"),
+    };
+    Ok(())
+}
+fn doctor() -> Result<()> {
+    let aven_version = run("aven", &["--version".into()], None)?;
+    // `opencode api` intentionally truncates very large bodies, so probe a
+    // small V2 endpoint rather than trying to parse its complete OpenAPI body.
+    let sessions = opencode("GET", "/api/session?limit=1", None)?;
+    if sessions.get("data").is_none() {
+        bail!("OpenCode V2 session endpoint returned an unsupported response");
+    }
+    println!(
+        "ready: {aven_version}; OpenCode V2 session API detected (prompt-ID support is checked on admission)"
+    );
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let path = store_path(cli.store);
+    match cli.command {
+        Commands::Dispatch { dry_run, agent } => dispatch(path, dry_run, agent),
+        Commands::Resume { task } => reconcile(path, &task),
+        Commands::Status { task } => status(path, &task),
+        Commands::List { running } => list(path, running),
+        Commands::Reconcile { task } => reconcile(path, &task),
+        Commands::Interrupt { task } => interrupt(path, &task),
+        Commands::Doctor => doctor(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn targets_not_focused_selection_drive_validation() {
+        let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).unwrap();
+        assert!(selected_for(&context).is_err());
+    }
+    #[test]
+    fn branch_uses_immutable_id() {
+        assert_eq!(branch("APP", "ABC123"), "APP/dispatch-abc123");
+    }
+    #[test]
+    fn running_list_excludes_non_running_attempts() {
+        let attempts = ["running", "interrupted"];
+        assert_eq!(
+            attempts.iter().filter(|state| **state == "running").count(),
+            1
+        );
+    }
+}

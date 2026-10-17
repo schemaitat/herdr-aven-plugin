@@ -4,3 +4,5 @@
 
 # Herdr config backups written by install-keybindings
 *.aven-backup.*
+target/
+.aven-dispatch/

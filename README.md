@@ -197,12 +197,56 @@ installer runs.
 | `AVEN_DISPATCH_SKILL` | unset | Name of a bundled workflow under `skills/aven` (e.g. `sdd`); its text replaces `AVEN_DISPATCH_PROMPT` |
 | `AVEN_DISPATCH_NO_FOCUS` | unset | `1` leaves focus where it is instead of switching to the worktree |
 | `AVEN_DISPATCH_DRY_RUN` | unset | `1` prints the plan and changes nothing |
+| `AVEN_DISPATCH_BACKEND` | `shell` | Set to `rust` to opt into the durable OpenCode V2 dispatcher |
 
 `AVEN_DISPATCH_PROMPT` starts any agent workflow, and `AVEN_DISPATCH_SKILL`
 takes precedence by inserting a bundled workflow (see the
 [example task workflow](#example-an-aven-native-task-workflow)). Either way the
 aven handoff guidance is appended, so the agent still reads the task and leaves
 notes.
+
+### Rust OpenCode V2 dispatcher (preview)
+
+The shell dispatcher remains the default migration fallback. To route the
+existing **`z d`** and **`z s`** entries through the Rust dispatcher without
+changing Aven's safe stdin context handling, set this in the environment that
+starts Herdr:
+
+```sh
+export AVEN_DISPATCH_BACKEND=rust
+```
+
+The first use builds the bundled binary with Cargo; deployers can build it in
+advance and set `AVEN_DISPATCH_BIN=/path/to/aven-dispatch`. The binary accepts
+the versioned Aven command context on stdin and supports:
+
+```sh
+aven-dispatch doctor
+aven-dispatch dispatch --agent build < context.json
+aven-dispatch list --running
+aven-dispatch status HAP-FTYE
+aven-dispatch reconcile HAP-FTYE
+aven-dispatch interrupt HAP-FTYE
+```
+
+Operational state defaults to `.aven-dispatch/state.json` (override with
+`AVEN_DISPATCH_STORE`). It links immutable task IDs, attempt IDs,
+branch/worktree, OpenCode session IDs, caller-selected prompt IDs, and pending
+Aven mutations. It never stores credentials in Aven. `status` surfaces pending
+OpenCode permissions/forms without approving them, and prompt admission is not
+task completion. `list` prints all persisted attempts; `list --running` limits
+the output to attempts whose dispatcher execution state is `running`.
+
+Set the primary OpenCode agent for a dispatch with `--agent <name>` (or the
+`AVEN_DISPATCH_AGENT` environment variable). The selected agent is sent during
+session creation and persisted with the attempt, so operators can see which
+agent owns a running dispatch:
+
+```sh
+aven-dispatch dispatch --agent build < context.json
+# equivalent for an Aven custom-command environment
+export AVEN_DISPATCH_AGENT=build
+```
 
 Example extra command, wired to a second agent (the full file is documented
 [below](#extra-commands)):
