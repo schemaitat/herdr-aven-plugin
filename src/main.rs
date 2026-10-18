@@ -735,38 +735,32 @@ fn ensure_log_task(attempt: &mut Attempt) -> Result<()> {
     attempt.log_task_ref = log_task_ref;
     Ok(())
 }
-fn write_debug_note(attempt: &Attempt, event: &str, detail: &str) {
+fn dispatcher_event(attempt: &Attempt, event: &str, detail: &str) -> Value {
+    json!({
+        "schema": "aven-dispatch-event/v1",
+        "time_ms": now(),
+        "source_task": attempt.task_ref,
+        "attempt_id": attempt.attempt_id,
+        "event": event,
+        "state": attempt.state,
+        "worktree": attempt.worktree,
+        "pane": attempt.pane,
+        "opencode_session_id": attempt.session_id,
+        "detail": detail,
+    })
+}
+fn write_debug_event(attempt: &Attempt, event: &str, detail: &str) -> Option<Value> {
     if attempt.log_task_ref.is_empty() {
-        return;
+        return None;
     }
-    let note = format!(
-        "## Dispatcher event\n\n- Time: `{}`\n- Source task: `{}`\n- Event: `{event}`\n- State: `{}`\n- Attempt: `{}`\n- Worktree: `{}`\n- Pane: `{}`\n- OpenCode session: `{}`\n- Detail: {detail}",
-        now(),
-        attempt.task_ref,
-        attempt.state,
-        attempt.attempt_id,
-        if attempt.worktree.is_empty() {
-            "(pending)"
-        } else {
-            &attempt.worktree
-        },
-        if attempt.pane.is_empty() {
-            "(pending)"
-        } else {
-            &attempt.pane
-        },
-        if attempt.session_id.is_empty() {
-            "(pending)"
-        } else {
-            &attempt.session_id
-        },
-    );
+    let record = dispatcher_event(attempt, event, detail);
     // Debug evidence must never hide the operation's original outcome.
     let _ = aven(
         &attempt.aven,
         &["note", &attempt.log_task_ref, "--stdin"],
-        Some(&note),
+        Some(&record.to_string()),
     );
+    Some(record)
 }
 
 fn dispatch(
@@ -1077,7 +1071,7 @@ fn log_event(path: PathBuf, task: &str, event: &str, detail: &str) -> Result<()>
     let mut store = LockedStore::open(path)?;
     let mut attempt = find_attempt(&store, task)?.clone();
     ensure_log_task(&mut attempt)?;
-    write_debug_note(&attempt, event, detail);
+    let record = write_debug_event(&attempt, event, detail);
     store
         .store
         .attempts
@@ -1087,6 +1081,9 @@ fn log_event(path: PathBuf, task: &str, event: &str, detail: &str) -> Result<()>
         "logged {event} for {} in {}",
         attempt.task_ref, attempt.log_task_ref
     );
+    if let Some(record) = record {
+        println!("{}", serde_json::to_string(&record)?);
+    }
     Ok(())
 }
 fn doctor() -> Result<()> {
@@ -1199,5 +1196,40 @@ mod tests {
             attempts.iter().filter(|state| **state == "running").count(),
             1
         );
+    }
+    #[test]
+    fn dispatcher_events_are_machine_readable_json() {
+        let attempt = Attempt {
+            task_id: "task-id".into(),
+            task_ref: "APP-1".into(),
+            attempt_id: "att_1".into(),
+            branch: "app/dispatch-task-id".into(),
+            worktree: "/worktree".into(),
+            pane: "w1:p1".into(),
+            agent: "build".into(),
+            model: "provider/model".into(),
+            session_id: "ses_1".into(),
+            prompt_id: "msg_1".into(),
+            state: "running".into(),
+            aven_update_pending: false,
+            log_cursor: String::new(),
+            log_task_ref: "DL-1".into(),
+            babysitter: false,
+            babysitter_pane: String::new(),
+            babysitter_session_id: String::new(),
+            babysitter_prompt_id: String::new(),
+            aven: Invocation {
+                aven_exe: String::new(),
+                db_path: None,
+                workspace: None,
+                origin_cwd: String::new(),
+            },
+            created_at: 0,
+        };
+        let record = dispatcher_event(&attempt, "completed", "verified");
+        assert_eq!(record["schema"], "aven-dispatch-event/v1");
+        assert_eq!(record["source_task"], "APP-1");
+        assert_eq!(record["event"], "completed");
+        assert_eq!(record["detail"], "verified");
     }
 }
