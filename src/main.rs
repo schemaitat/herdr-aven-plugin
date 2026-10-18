@@ -640,13 +640,17 @@ fn prompt(
     ))
 }
 fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
-    let metadata = [
-        "dispatch.backend=opencode-v2",
-        &format!("dispatch.session-id={}", attempt.session_id),
-        &format!("dispatch.attempt-id={}", attempt.attempt_id),
-        &format!("dispatch.state={}", attempt.state),
-        "dispatch.workflow=default",
-        &format!("dispatch.branch={}", attempt.branch),
+    // Aven owns the task-scoped durable snapshot. The individual metadata
+    // fields stay queryable, while dispatch.attempt permits recovery from any
+    // checkout without locating a checkout-local state file.
+    let metadata = vec![
+        "dispatch.backend=opencode-v2".to_owned(),
+        format!("dispatch.session-id={}", attempt.session_id),
+        format!("dispatch.attempt-id={}", attempt.attempt_id),
+        format!("dispatch.state={}", attempt.state),
+        "dispatch.workflow=default".to_owned(),
+        format!("dispatch.branch={}", attempt.branch),
+        format!("dispatch.attempt={}", serde_json::to_string(attempt)?),
     ];
     let mut args = vec![
         "edit".to_owned(),
@@ -655,7 +659,7 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
         "active".into(),
     ];
     for item in metadata {
-        args.extend(["--metadata".into(), item.to_owned()]);
+        args.extend(["--metadata".into(), item]);
     }
     let executable = if invocation.aven_exe.is_empty() {
         "aven"
