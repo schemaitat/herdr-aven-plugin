@@ -160,6 +160,8 @@ struct Store {
 struct Attempt {
     task_id: String,
     task_ref: String,
+    #[serde(default = "default_workflow")]
+    workflow: String,
     attempt_id: String,
     branch: String,
     worktree: String,
@@ -189,6 +191,25 @@ struct Attempt {
     babysitter_prompt_id: String,
     aven: Invocation,
     created_at: u64,
+}
+fn default_workflow() -> String {
+    "default".into()
+}
+fn workflow_for_skill(skill: Option<&str>) -> &'static str {
+    match skill {
+        Some("aven/sdd-plan") => "planning",
+        Some("aven/sdd-implement" | "aven/sdd-plan-implement") => "implementation",
+        _ => "default",
+    }
+}
+fn attempt_key(task_id: &str, workflow: &str) -> String {
+    format!("{task_id}:{workflow}")
+}
+fn store_attempt(store: &mut LockedStore, attempt: Attempt) {
+    store
+        .store
+        .attempts
+        .insert(attempt_key(&attempt.task_id, &attempt.workflow), attempt);
 }
 struct LockedStore {
     path: PathBuf,
@@ -962,16 +983,22 @@ fn prompt(
 }
 fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     // Aven owns the task-scoped durable snapshot. The individual metadata
-    // fields stay queryable, while dispatch.attempt permits recovery from any
-    // checkout without locating a checkout-local state file.
+    // fields stay queryable, while one workflow-scoped dispatch.attempt snapshot
+    // per role permits recovery from any checkout without locating a
+    // checkout-local state file. Planning and implementation therefore retain
+    // separate sessions while sharing the selected task's worktree branch.
     let metadata = vec![
         "dispatch.backend=opencode-v2".to_owned(),
         format!("dispatch.session-id={}", attempt.session_id),
         format!("dispatch.attempt-id={}", attempt.attempt_id),
         format!("dispatch.state={}", attempt.state),
-        "dispatch.workflow=default".to_owned(),
+        format!("dispatch.workflow={}", attempt.workflow),
         format!("dispatch.branch={}", attempt.branch),
-        format!("dispatch.attempt={}", serde_json::to_string(attempt)?),
+        format!(
+            "dispatch.attempt.{}={}",
+            attempt.workflow,
+            serde_json::to_string(attempt)?
+        ),
     ];
     let mut args = vec![
         "edit".to_owned(),
@@ -1106,10 +1133,23 @@ fn dispatch(
     let selected = selected_for(&context)?;
     let task = refresh_task(&context, selected)?;
     let mut store = LockedStore::open(path.clone())?;
-    if !store.store.attempts.contains_key(&selected.task.id)
-        && let Some(snapshot) = task
-            .pointer("/metadata/dispatch.attempt")
-            .and_then(Value::as_str)
+    let workflow = workflow_for_skill(skill.as_deref());
+    let key = attempt_key(&selected.task.id, workflow);
+    if !store.store.attempts.contains_key(&key)
+        && let Some(snapshot) =
+            task.get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| {
+                    metadata
+                        .get(&format!("dispatch.attempt.{workflow}"))
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            (workflow == "default")
+                                .then(|| metadata.get("dispatch.attempt"))
+                                .flatten()
+                                .and_then(Value::as_str)
+                        })
+                })
     {
         // Older dispatches may have used a checkout-local store. Aven's
         // task-scoped snapshot preserves that session across checkout changes.
@@ -1118,15 +1158,15 @@ fn dispatch(
         if recovered.task_id != selected.task.id {
             bail!("Aven dispatcher snapshot belongs to a different task");
         }
-        store
-            .store
-            .attempts
-            .insert(recovered.task_id.clone(), recovered);
+        if recovered.workflow != workflow {
+            bail!("Aven dispatcher snapshot belongs to a different workflow role");
+        }
+        store_attempt(&mut store, recovered);
         if !dry_run {
             store.save()?;
         }
     }
-    if let Some(existing) = store.store.attempts.get(&selected.task.id).cloned() {
+    if let Some(existing) = store.store.attempts.get(&key).cloned() {
         if dry_run {
             println!(
                 "would reopen {} in OpenCode session {} (attempt {})",
@@ -1157,10 +1197,7 @@ fn dispatch(
         reopened.worktree = worktree;
         reopened.pane = pane;
         reopened.state = "terminal-pending".into();
-        store
-            .store
-            .attempts
-            .insert(reopened.task_id.clone(), reopened.clone());
+        store_attempt(&mut store, reopened.clone());
         store.save()?;
         start_opencode_in_pane(&reopened.pane, &reopened.session_id, &path)?;
         if reopened.babysitter && !reopened.babysitter_session_id.is_empty() {
@@ -1188,10 +1225,7 @@ fn dispatch(
             )?;
         }
         reopened.state = "running".into();
-        store
-            .store
-            .attempts
-            .insert(reopened.task_id.clone(), reopened.clone());
+        store_attempt(&mut store, reopened.clone());
         store.save()?;
         focus_pane(&reopened.pane)?;
         println!(
@@ -1203,6 +1237,7 @@ fn dispatch(
     let mut attempt = Attempt {
         task_id: selected.task.id.clone(),
         task_ref: selected.reference().to_owned(),
+        workflow: workflow.into(),
         attempt_id: identifier("att"),
         branch: branch(&selected.project.key, &selected.task.id),
         worktree: String::new(),
@@ -1275,10 +1310,7 @@ fn dispatch(
         };
     }
     attempt.state = "session-pending".into();
-    store
-        .store
-        .attempts
-        .insert(attempt.task_id.clone(), attempt.clone());
+    store_attempt(&mut store, attempt.clone());
     store.save()?;
     let session = opencode(
         "POST",
@@ -1294,17 +1326,11 @@ fn dispatch(
     // Launch the OpenCode CLI in the worktree pane before scheduling the prompt.
     // The CLI attaches to the API-created session by its durable ID.
     attempt.state = "terminal-pending".into();
-    store
-        .store
-        .attempts
-        .insert(attempt.task_id.clone(), attempt.clone());
+    store_attempt(&mut store, attempt.clone());
     store.save()?;
     start_opencode_in_pane(&attempt.pane, &attempt.session_id, &path)?;
     attempt.state = "prompt-pending".into();
-    store
-        .store
-        .attempts
-        .insert(attempt.task_id.clone(), attempt.clone());
+    store_attempt(&mut store, attempt.clone());
     store.save()?;
     let admission = opencode(
         "POST",
@@ -1322,17 +1348,11 @@ fn dispatch(
     }
     attempt.state = "running".into();
     attempt.aven_update_pending = true;
-    store
-        .store
-        .attempts
-        .insert(attempt.task_id.clone(), attempt.clone());
+    store_attempt(&mut store, attempt.clone());
     store.save()?;
     if write_aven_links(&context.invocation, &attempt).is_ok() {
         attempt.aven_update_pending = false;
-        store
-            .store
-            .attempts
-            .insert(attempt.task_id.clone(), attempt.clone());
+        store_attempt(&mut store, attempt.clone());
         store.save()?;
     }
     focus_pane(&attempt.pane)?;
@@ -1397,10 +1417,7 @@ fn interrupt(path: PathBuf, task: &str) -> Result<()> {
     )?;
     let mut changed = attempt;
     changed.state = "interrupted".into();
-    store
-        .store
-        .attempts
-        .insert(changed.task_id.clone(), changed);
+    store_attempt(&mut store, changed);
     store.save()?;
     println!("interrupted OpenCode execution; Aven task status was not changed");
     Ok(())
@@ -1410,10 +1427,7 @@ fn reconcile(path: PathBuf, task: &str) -> Result<()> {
     let mut attempt = find_attempt(&store, task)?.clone();
     if attempt.aven_update_pending && write_aven_links(&attempt.aven, &attempt).is_ok() {
         attempt.aven_update_pending = false;
-        store
-            .store
-            .attempts
-            .insert(attempt.task_id.clone(), attempt.clone());
+        store_attempt(&mut store, attempt.clone());
         store.save()?;
         println!("repaired pending Aven status, metadata, and handoff update");
     }
@@ -1437,10 +1451,7 @@ fn reconcile(path: PathBuf, task: &str) -> Result<()> {
                 .last()
             {
                 attempt.log_cursor = cursor.to_owned();
-                store
-                    .store
-                    .attempts
-                    .insert(attempt.task_id.clone(), attempt);
+                store_attempt(&mut store, attempt);
                 store.save()?;
                 println!("replayed durable session log through cursor {cursor}");
             } else {
@@ -1456,10 +1467,7 @@ fn log_event(path: PathBuf, task: &str, event: &str, detail: &str) -> Result<()>
     let mut attempt = find_attempt(&store, task)?.clone();
     ensure_log_task(&mut attempt)?;
     let record = write_debug_event(&attempt, event, detail);
-    store
-        .store
-        .attempts
-        .insert(attempt.task_id.clone(), attempt.clone());
+    store_attempt(&mut store, attempt.clone());
     store.save()?;
     println!(
         "logged {event} for {} in {}",
@@ -1571,6 +1579,18 @@ mod tests {
         assert_eq!(choices[1].1, "github-copilot/gpt-5.6-terra");
     }
     #[test]
+    fn planning_and_implementation_have_separate_attempt_keys() {
+        assert_eq!(workflow_for_skill(Some("aven/sdd-plan")), "planning");
+        assert_eq!(
+            workflow_for_skill(Some("aven/sdd-implement")),
+            "implementation"
+        );
+        assert_ne!(
+            attempt_key("task-id", "planning"),
+            attempt_key("task-id", "implementation")
+        );
+    }
+    #[test]
     fn targets_not_focused_selection_drive_validation() {
         let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).unwrap();
         assert!(selected_for(&context).is_err());
@@ -1642,6 +1662,7 @@ mod tests {
         let attempt = Attempt {
             task_id: "task-id".into(),
             task_ref: "APP-1".into(),
+            workflow: "default".into(),
             attempt_id: "att_1".into(),
             branch: "app/dispatch-task-id".into(),
             worktree: "/worktree".into(),

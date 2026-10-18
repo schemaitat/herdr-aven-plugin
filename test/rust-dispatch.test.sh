@@ -140,7 +140,7 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --runn
 assert_file_contains "$work/running" '"task_ref": "APP-1"' 'list reports running dispatch'
 assert_file_contains "$work/running" '"state": "running"' 'list filters to running dispatches'
 before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra > "$work/retry"
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" > "$work/retry"
 after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 assert_eq "$after" "$before" 're-dispatch does not admit a second prompt'
 assert_file_contains "$work/retry" 'reopened APP-1 in OpenCode session ses_one' 're-dispatch reopens the persisted session'
