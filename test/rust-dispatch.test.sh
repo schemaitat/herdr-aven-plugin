@@ -16,6 +16,7 @@ cat > "$fake/aven" <<'EOF'
 #!/bin/sh
 case " $* " in
   *" context APP-1 --json "*) printf '%s\n' '{"task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}' ;;
+  *" add Dispatch log: "*) printf '%s\n' 'created DL-LOG ref=LOG' ;;
   *) printf 'aven %s\n' "$*" >> "$RUST_DISPATCH_LOG" ;;
 esac
 EOF
@@ -26,6 +27,9 @@ EOF
 cat > "$fake/herdr" <<'EOF'
 #!/bin/sh
 printf 'herdr %s\n' "$*" >> "$RUST_DISPATCH_LOG"
+if [ "$1" = pane ] && [ "$2" = run ]; then
+  printf 'herdr-pane-run argc=%s command=%s\n' "$#" "$4" >> "$RUST_DISPATCH_LOG"
+fi
 mkdir -p "$RUST_WORKTREE"
 printf '{"result":{"worktree":{"path":"%s"},"root_pane":{"pane_id":"w1:p1"}}}\n' "$RUST_WORKTREE"
 EOF
@@ -68,9 +72,11 @@ assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode se
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
 assert_file_contains "$work/worktree/.opencode/opencode.jsonc" '"$schema"' 'plugin OpenCode config copied to worktree'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
-assert_file_contains "$log" 'herdr agent start dispatch-att_' 'OpenCode terminal agent starts in worktree pane'
-assert_file_contains "$log" '--kind opencode --pane w1:p1 -- --session ses_one' 'terminal attaches durable OpenCode session'
-assert_file_contains "$log" 'herdr agent focus w1:p1' 'terminal agent is focused'
+assert_file_contains "$log" 'herdr pane run w1:p1 opencode --session ses_one' 'OpenCode starts in the worktree pane with its durable session'
+assert_file_contains "$log" 'herdr-pane-run argc=4 command=opencode --session ses_one' 'OpenCode command is one pane-run argument, not Herdr options'
+agent_start_line=$(grep -n 'herdr pane run w1:p1 opencode --session ses_one' "$log" | head -n 1 | cut -d: -f1)
+prompt_line=$(grep -n 'opencode api POST /api/session/ses_one/prompt' "$log" | head -n 1 | cut -d: -f1)
+[ "$agent_start_line" -lt "$prompt_line" ] || fail 'OpenCode starts before prompt admission schedules execution'
 assert_file_contains "$log" 'Take an aven task from request to shipped' 'explicit skills directory is loaded'
 assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
 assert_file_contains "$state" '"agent": "build"' 'primary agent persisted'
@@ -81,11 +87,15 @@ before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch > "$work/retry"
 after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 assert_eq "$after" "$before" 're-dispatch does not admit a second prompt'
-assert_file_contains "$work/retry" 'existing attempt' 're-dispatch points to recovery commands'
+assert_file_contains "$work/retry" 'reopened APP-1 in OpenCode session ses_one' 're-dispatch reopens the persisted session'
 
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- reconcile APP-1 >/dev/null
 assert_file_contains "$state" '"log_cursor": "42"' 'durable log cursor persisted'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- interrupt APP-1 >/dev/null
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/after-interrupt"
 assert_not_contains "$(cat "$work/after-interrupt")" '"task_ref": "APP-1"' 'interrupted dispatch is excluded from running list'
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- log APP-1 --event manual-debug --detail 'operator diagnostic' > "$work/log-event"
+assert_file_contains "$work/log-event" 'logged manual-debug for APP-1 in DL-LOG' 'dispatcher log command appends an operator event'
+assert_file_contains "$log" 'aven related add DL-LOG APP-1' 'dispatcher log task references the source task'
+assert_file_contains "$log" 'aven note DL-LOG --stdin' 'operator event is written to the linked log task'
 printf 'rust dispatch ok\n'

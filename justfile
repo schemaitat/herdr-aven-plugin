@@ -3,9 +3,9 @@ default:
 
 install:
     herdr plugin link "{{justfile_directory()}}"
-    herdr plugin action invoke aven.tasks.install-keybindings
-    herdr plugin action invoke aven.tasks.install-aven-command
-    herdr plugin action invoke aven.tasks.doctor
+    sh scripts/install-keybindings.sh
+    sh scripts/install-aven-command.sh
+    sh scripts/doctor.sh
 
 test:
     cargo test --workspace

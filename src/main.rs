@@ -53,6 +53,14 @@ enum Commands {
     },
     /// Repair pending Aven updates and refresh session state.
     Reconcile { task: String },
+    /// Append a diagnostic event to this attempt's linked Dispatcher Logs task.
+    Log {
+        task: String,
+        #[arg(long)]
+        event: String,
+        #[arg(long)]
+        detail: String,
+    },
     /// Interrupt OpenCode execution; this never changes the Aven task to done/canceled.
     Interrupt { task: String },
     /// Validate local Aven and OpenCode V2 capabilities without mutation.
@@ -162,6 +170,8 @@ struct Attempt {
     aven_update_pending: bool,
     #[serde(default)]
     log_cursor: String,
+    #[serde(default)]
+    log_task_ref: String,
     aven: Invocation,
     created_at: u64,
 }
@@ -365,6 +375,39 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn directories_are_equal(left: &Path, right: &Path) -> Result<bool> {
+    if !left.is_dir() || !right.is_dir() {
+        return Ok(false);
+    }
+    let left_entries: BTreeMap<_, _> = fs::read_dir(left)?
+        .map(|entry| entry.map(|entry| (entry.file_name(), entry)))
+        .collect::<std::io::Result<_>>()?;
+    let right_entries: BTreeMap<_, _> = fs::read_dir(right)?
+        .map(|entry| entry.map(|entry| (entry.file_name(), entry)))
+        .collect::<std::io::Result<_>>()?;
+    if left_entries.len() != right_entries.len() {
+        return Ok(false);
+    }
+    for (name, left_entry) in left_entries {
+        let Some(right_entry) = right_entries.get(&name) else {
+            return Ok(false);
+        };
+        let left_type = left_entry.file_type()?;
+        let right_type = right_entry.file_type()?;
+        if left_type.is_dir() && right_type.is_dir() {
+            if !directories_are_equal(&left_entry.path(), &right_entry.path())? {
+                return Ok(false);
+            }
+        } else if left_type.is_file() && right_type.is_file() {
+            if fs::read(left_entry.path())? != fs::read(right_entry.path())? {
+                return Ok(false);
+            }
+        } else {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 fn install_opencode_config(worktree: &str, source: Option<&Path>) -> Result<()> {
     let Some(source) = source else {
         return Ok(());
@@ -377,6 +420,9 @@ fn install_opencode_config(worktree: &str, source: Option<&Path>) -> Result<()> 
     }
     let destination = Path::new(worktree).join(".opencode");
     if destination.exists() {
+        if directories_are_equal(source, &destination)? {
+            return Ok(());
+        }
         bail!(
             "worktree already has {}; refusing to overwrite project OpenCode configuration",
             destination.display()
@@ -462,43 +508,15 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
         .to_owned();
     Ok((worktree, pane))
 }
-fn terminal_agent_name(attempt: &Attempt) -> String {
-    format!("dispatch-{}", attempt.attempt_id.to_ascii_lowercase())
-        .chars()
-        .map(|character| {
-            if character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || character == '-'
-                || character == '_'
-            {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-fn start_terminal_agent(attempt: &Attempt) -> Result<()> {
-    let name = terminal_agent_name(attempt);
+fn start_opencode_in_pane(attempt: &Attempt) -> Result<()> {
     run(
         "herdr",
         &[
-            "agent".into(),
-            "start".into(),
-            name,
-            "--kind".into(),
-            "opencode".into(),
-            "--pane".into(),
+            "pane".into(),
+            "run".into(),
             attempt.pane.clone(),
-            "--".into(),
-            "--session".into(),
-            attempt.session_id.clone(),
+            format!("opencode --session {}", attempt.session_id),
         ],
-        None,
-    )?;
-    run(
-        "herdr",
-        &["agent".into(), "focus".into(), attempt.pane.clone()],
         None,
     )?;
     Ok(())
@@ -587,6 +605,88 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     )?;
     Ok(())
 }
+fn ensure_log_task(attempt: &mut Attempt) -> Result<()> {
+    if !attempt.log_task_ref.is_empty() {
+        return Ok(());
+    }
+    // Creating an existing project is harmlessly rejected by Aven; the add
+    // operation below remains the authority for whether logging is available.
+    let _ = aven(
+        &attempt.aven,
+        &["project", "create", "Dispatcher Logs"],
+        None,
+    );
+    let title = format!(
+        "Dispatch log: {} ({})",
+        attempt.task_ref, attempt.attempt_id
+    );
+    let source = format!(
+        "Source task: `{}`\n\nAttempt: `{}`",
+        attempt.task_ref, attempt.attempt_id
+    );
+    let output = aven(
+        &attempt.aven,
+        &[
+            "add",
+            &title,
+            "--project",
+            "dispatcher-logs",
+            "--status",
+            "active",
+            "--description",
+            &source,
+            "--metadata",
+            &format!("dispatch.attempt-id={}", attempt.attempt_id),
+        ],
+        None,
+    )?;
+    let log_task_ref = output
+        .split_whitespace()
+        .nth(1)
+        .filter(|reference| !reference.is_empty())
+        .context("Aven did not return a log task reference")?
+        .to_owned();
+    let _ = aven(
+        &attempt.aven,
+        &["related", "add", &log_task_ref, &attempt.task_ref],
+        None,
+    );
+    attempt.log_task_ref = log_task_ref;
+    Ok(())
+}
+fn write_debug_note(attempt: &Attempt, event: &str, detail: &str) {
+    if attempt.log_task_ref.is_empty() {
+        return;
+    }
+    let note = format!(
+        "## Dispatcher event\n\n- Time: `{}`\n- Source task: `{}`\n- Event: `{event}`\n- State: `{}`\n- Attempt: `{}`\n- Worktree: `{}`\n- Pane: `{}`\n- OpenCode session: `{}`\n- Detail: {detail}",
+        now(),
+        attempt.task_ref,
+        attempt.state,
+        attempt.attempt_id,
+        if attempt.worktree.is_empty() {
+            "(pending)"
+        } else {
+            &attempt.worktree
+        },
+        if attempt.pane.is_empty() {
+            "(pending)"
+        } else {
+            &attempt.pane
+        },
+        if attempt.session_id.is_empty() {
+            "(pending)"
+        } else {
+            &attempt.session_id
+        },
+    );
+    // Debug evidence must never hide the operation's original outcome.
+    let _ = aven(
+        &attempt.aven,
+        &["note", &attempt.log_task_ref, "--stdin"],
+        Some(&note),
+    );
+}
 
 fn dispatch(
     path: PathBuf,
@@ -603,10 +703,38 @@ fn dispatch(
     let selected = selected_for(&context)?;
     let task = refresh_task(&context, selected)?;
     let mut store = LockedStore::open(path)?;
-    if let Some(existing) = store.store.attempts.get(&selected.task.id) {
+    if let Some(existing) = store.store.attempts.get(&selected.task.id).cloned() {
+        if dry_run {
+            println!(
+                "would reopen {} in OpenCode session {} (attempt {})",
+                existing.task_ref, existing.session_id, existing.attempt_id
+            );
+            return Ok(());
+        }
+        let (worktree, pane) = create_worktree(
+            &context.invocation.origin_cwd,
+            &existing,
+            &selected.task.title,
+        )?;
+        let mut reopened = existing;
+        reopened.worktree = worktree;
+        reopened.pane = pane;
+        reopened.state = "terminal-pending".into();
+        store
+            .store
+            .attempts
+            .insert(reopened.task_id.clone(), reopened.clone());
+        store.save()?;
+        start_opencode_in_pane(&reopened)?;
+        reopened.state = "running".into();
+        store
+            .store
+            .attempts
+            .insert(reopened.task_id.clone(), reopened.clone());
+        store.save()?;
         println!(
-            "existing attempt {} is {}; use resume/status/reconcile",
-            existing.attempt_id, existing.state
+            "reopened {} in OpenCode session {} (attempt {})",
+            reopened.task_ref, reopened.session_id, reopened.attempt_id
         );
         return Ok(());
     }
@@ -624,6 +752,7 @@ fn dispatch(
         state: "workspace-pending".into(),
         aven_update_pending: false,
         log_cursor: String::new(),
+        log_task_ref: String::new(),
         aven: context.invocation.clone(),
         created_at: now(),
     };
@@ -675,6 +804,15 @@ fn dispatch(
         })),
     )?;
     attempt.session_id = field(&session, "/data/id")?.to_owned();
+    // Launch the OpenCode CLI in the worktree pane before scheduling the prompt.
+    // The CLI attaches to the API-created session by its durable ID.
+    attempt.state = "terminal-pending".into();
+    store
+        .store
+        .attempts
+        .insert(attempt.task_id.clone(), attempt.clone());
+    store.save()?;
+    start_opencode_in_pane(&attempt)?;
     attempt.state = "prompt-pending".into();
     store
         .store
@@ -692,7 +830,6 @@ fn dispatch(
     if admitted != attempt.prompt_id {
         bail!("OpenCode admitted an unexpected message id");
     }
-    start_terminal_agent(&attempt)?;
     attempt.state = "running".into();
     attempt.aven_update_pending = true;
     store
@@ -823,6 +960,22 @@ fn reconcile(path: PathBuf, task: &str) -> Result<()> {
     };
     Ok(())
 }
+fn log_event(path: PathBuf, task: &str, event: &str, detail: &str) -> Result<()> {
+    let mut store = LockedStore::open(path)?;
+    let mut attempt = find_attempt(&store, task)?.clone();
+    ensure_log_task(&mut attempt)?;
+    write_debug_note(&attempt, event, detail);
+    store
+        .store
+        .attempts
+        .insert(attempt.task_id.clone(), attempt.clone());
+    store.save()?;
+    println!(
+        "logged {event} for {} in {}",
+        attempt.task_ref, attempt.log_task_ref
+    );
+    Ok(())
+}
 fn doctor() -> Result<()> {
     let aven_version = run("aven", &["--version".into()], None)?;
     // `opencode api` intentionally truncates very large bodies, so probe a
@@ -861,6 +1014,11 @@ fn main() -> Result<()> {
         Commands::Status { task } => status(path, &task),
         Commands::List { running } => list(path, running),
         Commands::Reconcile { task } => reconcile(path, &task),
+        Commands::Log {
+            task,
+            event,
+            detail,
+        } => log_event(path, &task, &event, &detail),
         Commands::Interrupt { task } => interrupt(path, &task),
         Commands::Doctor => doctor(),
     }
@@ -873,32 +1031,6 @@ mod tests {
     fn targets_not_focused_selection_drive_validation() {
         let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).unwrap();
         assert!(selected_for(&context).is_err());
-    }
-    #[test]
-    fn terminal_agent_name_is_a_safe_herdr_name() {
-        let attempt = Attempt {
-            task_id: String::new(),
-            task_ref: String::new(),
-            attempt_id: "att_ABC.123".into(),
-            branch: String::new(),
-            worktree: String::new(),
-            pane: String::new(),
-            agent: String::new(),
-            model: String::new(),
-            session_id: String::new(),
-            prompt_id: String::new(),
-            state: String::new(),
-            aven_update_pending: false,
-            log_cursor: String::new(),
-            aven: Invocation {
-                aven_exe: String::new(),
-                db_path: None,
-                workspace: None,
-                origin_cwd: String::new(),
-            },
-            created_at: 0,
-        };
-        assert_eq!(terminal_agent_name(&attempt), "dispatch-att_abc-123");
     }
     #[test]
     fn model_option_becomes_an_opencode_model_ref() {
@@ -920,6 +1052,10 @@ mod tests {
             fs::read_to_string(worktree.join(".opencode/opencode.jsonc")).unwrap(),
             "{}"
         );
+        // A tracked plugin configuration is already present in worktrees made
+        // from this repository. It is safe to reuse when byte-for-byte equal.
+        install_opencode_config(worktree.to_str().unwrap(), Some(&source)).unwrap();
+        fs::write(worktree.join(".opencode/opencode.jsonc"), "different").unwrap();
         assert!(install_opencode_config(worktree.to_str().unwrap(), Some(&source)).is_err());
     }
     #[test]

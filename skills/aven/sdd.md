@@ -28,6 +28,22 @@ prints, preferably the qualified form (`APP-7KQ9`).
 If `{ref}` above was not replaced with a real ref, read it from the handoff
 guidance at the end of this prompt (the `aven context <ref>` line).
 
+## Dispatcher diagnostics
+
+When dispatch or OpenCode needs debugging, create diagnostic records **only**
+through the dispatcher CLI. Do not create ad-hoc log tasks or write dispatcher
+diagnostics to the work task yourself:
+
+```sh
+aven-dispatch log {ref} \
+  --event agent-startup-debug \
+  --detail "Describe the observed failure and relevant IDs."
+```
+
+This creates or reuses the attempt's linked task in the **Dispatcher Logs**
+project, links it to `{ref}`, and appends the event there. Do not include
+credentials, tokens, or prompt text in `--detail`.
+
 ## 0. Read the task and find where to resume
 
 ```sh
@@ -211,6 +227,7 @@ aven add "<title>" --project <key> --status todo --description-stdin
 aven epic add <child> <epic>            # group children under the root
 aven dep add <blocked> <blocker>        # execution order
 aven related add <a> <b>                # symmetric context link
+aven-dispatch log <ref> --event <name> --detail "<safe diagnostic>"
 aven list --ready --project <key>       # what to do next
 aven search --project <key> "<terms>"
 ```
