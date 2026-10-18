@@ -24,12 +24,18 @@ Find the plan root:
 - If `{ref}` has `sdd.plan-root=<root-ref>`, read that root with
   `aven context <root-ref> --full` and `aven show <root-ref> --json`; it is the
   root only when it has `sdd.plan-worked-out=true`.
+- If `{ref}` is an epic child, its context identifies `epic_parent`. Read that
+  parent with `aven context <parent-ref> --full` and `aven show <parent-ref>
+  --json`; it is the root only when it has `sdd.plan-worked-out=true` and
+  `sdd.plan-kind=multi-phase`. This is the durable fallback for phase tasks
+  provisioned by cumulative worktrees.
 - Otherwise there is no worked-out plan.
 
 **Do not implement when the root marker is absent or not `true`.** Leave the
 task unchanged, report that planning is required, and direct the user to run
 `z p` for planning only or `z s` for plan then implement. Do not infer the plan
-from a title, description, old note, or epic membership.
+from a title, description, or old note; use only the explicit marker or the
+verified epic-parent fallback above.
 
 Once the marker is confirmed, read the root `## Plan` note, the task's own
 description, existing notes, relations, and current status. Reuse the stated

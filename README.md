@@ -86,9 +86,13 @@ plan-then-implement and `z b` for implementation of an existing plan.
 For a multi-phase plan, select the **root epic** and run `z s` or `z i` once.
 Implementation supports `single-session` (the compatible default),
 `subsessions`, and `worktrees`; use `--mode` for unattended dispatch. Worktree
-mode always uses the bundled fixed-Luna, 1000-step coordinator while the chosen
-agent/model applies only to phase workers. Reopened attempts retain their saved
-mode rather than silently changing topology.
+mode creates one coordinator worktree plus one dedicated worker worktree for
+each ordered phase. It always uses the bundled fixed-Luna, 1000-step
+coordinator in the coordinator worktree while the chosen agent/model applies
+only to phase workers. The first ready phase is admitted immediately;
+successors remain provisioned until their predecessors are verified and
+integrated. Reopened attempts retain their saved mode rather than silently
+changing topology.
 When `z p` precedes `z i`, planning and implementation retain separate OpenCode
 sessions so they can use different agents/models, but both use the same
 deterministic task worktree branch.

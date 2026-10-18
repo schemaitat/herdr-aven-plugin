@@ -24,6 +24,9 @@ cat > "$fake/aven" <<'EOF'
 #!/bin/sh
 case " $* " in
   *" context APP-1 --json "*) printf '%s\n' '{"task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}' ;;
+  *" context APP-2 --json "*) printf '%s\n' '{"task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"phase-one","ref":"APP-P1","title":"first phase"},{"id":"phase-two","ref":"APP-P2","title":"second phase"}]}' ;;
+  *" context APP-P1 --json "*) printf '%s\n' '{"task":{"id":"phase-one","title":"first phase"},"project":{"key":"app"}}' ;;
+  *" context APP-P2 --json "*) printf '%s\n' '{"task":{"id":"phase-two","title":"second phase"},"project":{"key":"app"}}' ;;
   *" add Dispatch log: "*) printf '%s\n' 'created DL-LOG ref=LOG' ;;
   *) printf 'aven %s\n' "$*" >> "$RUST_DISPATCH_LOG" ;;
 esac
@@ -154,4 +157,20 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- log APP-1 -
 assert_file_contains "$work/log-event" 'logged manual-debug for APP-1 in DL-LOG' 'dispatcher log command appends an operator event'
 assert_file_contains "$log" 'aven related add DL-LOG APP-1' 'dispatcher log task references the source task'
 assert_file_contains "$log" 'aven note DL-LOG --stdin' 'operator event is written to the linked log task'
+
+# Cumulative worktrees are provisioned by the dispatcher, not left to the
+# coordinator model. The root gets one coordinator worktree and every ordered
+# phase gets its own worker worktree; only the first phase is admitted.
+cumulative_state=$work/cumulative-state.json
+cumulative_context='{"version":1,"invocation":{"origin_cwd":"/repo"},"targeting":{"targets":[{"id":"epic-task","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-2","task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"}}}}'
+printf '%s\n' "$cumulative_context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_state" RUST_WORKTREE="$work/worktree-cumulative" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees >/dev/null
+epic_worktrees=$(grep -c 'branch app/dispatch-epic-task' "$log")
+assert_eq "$epic_worktrees" 3 'cumulative dispatch creates coordinator plus two phase worktrees'
+assert_file_contains "$log" 'branch app/dispatch-epic-task-phase-01 --base app/dispatch-epic-task' 'first phase starts from the coordinator branch'
+assert_file_contains "$log" 'branch app/dispatch-epic-task-phase-02 --base app/dispatch-epic-task' 'second phase gets its dedicated cumulative branch'
+assert_file_contains "$log" '"agent":"orchestrator"' 'root session uses the fixed orchestrator agent'
+assert_file_contains "$cumulative_state" '"task_ref": "APP-P1"' 'first phase is persisted'
+assert_file_contains "$cumulative_state" '"task_ref": "APP-P2"' 'second phase is persisted'
+assert_file_contains "$cumulative_state" '"state": "provisioned"' 'blocked successor remains provisioned without a prompt'
+assert_file_contains "$cumulative_state" '"state": "running"' 'first phase is admitted to its worker session'
 printf 'rust dispatch ok\n'

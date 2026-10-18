@@ -226,7 +226,9 @@ impl ExecutionMode {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PhaseAttempt {
+    task_id: String,
     task_ref: String,
+    title: String,
     branch: String,
     worktree: String,
     pane: String,
@@ -235,6 +237,12 @@ struct PhaseAttempt {
     commit: String,
     integrated_commit: String,
     state: String,
+}
+#[derive(Debug, Clone)]
+struct EpicPhase {
+    task_id: String,
+    task_ref: String,
+    title: String,
 }
 fn default_workflow() -> String {
     "default".into()
@@ -453,6 +461,51 @@ fn branch(project: &str, task_id: &str) -> String {
         if project.is_empty() { "task" } else { project },
         task_id.to_ascii_lowercase()
     )
+}
+fn phase_branch(root_branch: &str, position: usize) -> String {
+    format!("{root_branch}-phase-{position:02}")
+}
+fn epic_phases(task: &Value) -> Result<Vec<EpicPhase>> {
+    let children = task
+        .pointer("/epic_children")
+        .and_then(Value::as_array)
+        .context("worktree mode requires a root epic with phase children")?;
+    if children.len() < 2 {
+        bail!("worktree mode requires at least two ordered epic phases");
+    }
+    children
+        .iter()
+        .map(|child| {
+            Ok(EpicPhase {
+                task_id: child
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .context("epic phase is missing immutable id")?
+                    .to_owned(),
+                task_ref: child
+                    .get("ref")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .context("epic phase is missing reference")?
+                    .to_owned(),
+                title: child
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+fn has_worked_out_multi_phase_plan(task: &Value) -> bool {
+    task.pointer("/metadata/sdd.plan-worked-out")
+        .and_then(Value::as_str)
+        == Some("true")
+        && task
+            .pointer("/metadata/sdd.plan-kind")
+            .and_then(Value::as_str)
+            == Some("multi-phase")
 }
 fn model_ref(model: Option<&str>) -> Result<Value> {
     let Some(model) = model.filter(|model| !model.is_empty()) else {
@@ -841,7 +894,12 @@ fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> 
     }
     Ok(task)
 }
-fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(String, String)> {
+fn create_worktree(
+    origin: &str,
+    branch: &str,
+    label: &str,
+    base: Option<&str>,
+) -> Result<(String, String)> {
     let listing = run(
         "git",
         &[
@@ -862,7 +920,7 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
         entry
             .lines()
             .find_map(|line| line.strip_prefix("branch refs/heads/"))
-            .filter(|branch| *branch == attempt.branch)
+            .filter(|candidate| *candidate == branch)
             .and_then(|_| {
                 entry
                     .lines()
@@ -884,14 +942,13 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
             "--cwd".into(),
             repo,
             "--branch".into(),
-            attempt.branch.clone(),
+            branch.to_owned(),
         ]);
+        if let Some(base) = base {
+            args.extend(["--base".into(), base.to_owned()]);
+        }
     }
-    args.extend([
-        "--label".into(),
-        format!("{} {}", attempt.task_ref, title),
-        "--no-focus".into(),
-    ]);
+    args.extend(["--label".into(), label.to_owned(), "--no-focus".into()]);
     let output = run("herdr", &args, None)?;
     let value: Value = serde_json::from_str(&output)?;
     let worktree = value
@@ -1059,12 +1116,24 @@ fn bundled_skill(skill: Option<String>, skills_dir: Option<PathBuf>) -> Result<O
         bail!("invalid AVEN_DISPATCH_SKILL: {skill}");
     }
     let skills_dir = skills_dir.unwrap_or_else(|| {
-        env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
-            .join("skills")
+        let mut candidates = vec![
+            env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+                .join("skills"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skills"),
+        ];
+        if let Some(executable) = env::current_exe().ok()
+            && let Some(directory) = executable.parent()
+        {
+            candidates.push(directory.join("skills"));
+            if let Some(parent) = directory.parent() {
+                candidates.push(parent.join("skills"));
+            }
+        }
+        candidates
+            .into_iter()
+            .find(|candidate| candidate.exists())
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skills"))
     });
     let path = skills_dir.join(skill).with_extension("md");
     let text = fs::read_to_string(&path)
@@ -1083,6 +1152,127 @@ fn prompt(
         "{opening}\n\nAven is the source of truth: re-read `aven context {reference} --full`, record handoffs and verification in Aven notes, and do not mark the task done until verification/review succeeds.\n\nTask context:\n{}",
         serde_json::to_string_pretty(task).unwrap()
     ))
+}
+fn phase_prompt(
+    task: &Value,
+    phase: &PhaseAttempt,
+    root: &Attempt,
+    skills_dir: Option<PathBuf>,
+) -> Result<String> {
+    Ok(format!(
+        "You are phase `{}` of the approved root epic `{}`. The root has `sdd.plan-worked-out=true` and `sdd.plan-kind=multi-phase`; its plan is the authoritative plan gate for this phase. Work only in your phase worktree and never modify the coordinator worktree. Your predecessor must be verified and integrated before you begin.\n\n{}",
+        phase.task_ref,
+        root.task_ref,
+        prompt(
+            task,
+            &phase.task_ref,
+            Some("aven/sdd-implement".into()),
+            skills_dir
+        )?
+    ))
+}
+fn coordinator_topology(attempt: &Attempt) -> String {
+    let phases = attempt
+        .phases
+        .iter()
+        .map(|phase| {
+            format!(
+                "- `{}` — branch `{}`; worktree `{}`; worker session `{}`; state `{}`",
+                phase.task_ref, phase.branch, phase.worktree, phase.session_id, phase.state
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\n## Pre-provisioned cumulative worktrees\n\nYou are the coordinator only: do not implement a phase in this worktree. The dispatcher has provisioned one worker worktree per ordered phase. The first ready phase is already admitted; later phase sessions remain unprompted until their predecessor is committed, tested, reviewed, and cleanly fast-forwarded into `{}`. Preserve all state and record a blocker rather than bypassing this order.\n\n{}",
+        attempt.branch, phases
+    )
+}
+fn phase_task(invocation: &Invocation, phase: &EpicPhase) -> Result<Value> {
+    let output = aven(invocation, &["context", &phase.task_ref, "--json"], None)?;
+    let task: Value = serde_json::from_str(&output).context("Aven phase context --json output")?;
+    if task.pointer("/task/id").and_then(Value::as_str) != Some(phase.task_id.as_str()) {
+        bail!("Aven re-read returned a different phase task");
+    }
+    Ok(task)
+}
+fn provision_phase_worktrees(
+    attempt: &mut Attempt,
+    root_task: &Value,
+    store_path: &Path,
+    skills_dir: Option<PathBuf>,
+) -> Result<()> {
+    if !has_worked_out_multi_phase_plan(root_task) {
+        bail!(
+            "worktree mode requires sdd.plan-worked-out=true and sdd.plan-kind=multi-phase on the root epic"
+        );
+    }
+    let phases = epic_phases(root_task)?;
+    for (index, task) in phases.iter().enumerate() {
+        let branch = phase_branch(&attempt.branch, index + 1);
+        let (worktree, pane) = create_worktree(
+            &attempt.worktree,
+            &branch,
+            &format!("{} {}", task.task_ref, task.title),
+            Some(&attempt.branch),
+        )?;
+        let session = opencode(
+            "POST",
+            "/api/session",
+            Some(json!({
+                "title": format!("{} {}", task.task_ref, task.title),
+                "location": {"directory": worktree},
+                "agent": attempt.agent,
+                "model": model_ref(Some(&attempt.model))?,
+                "permissions": autonomous_permissions(),
+            })),
+        )?;
+        let session_id = field(&session, "/data/id")?.to_owned();
+        start_opencode_in_pane(&pane, &session_id, store_path)?;
+        attempt.phases.push(PhaseAttempt {
+            task_id: task.task_id.clone(),
+            task_ref: task.task_ref.clone(),
+            title: task.title.clone(),
+            branch,
+            worktree,
+            pane,
+            session_id,
+            prompt_id: String::new(),
+            commit: String::new(),
+            integrated_commit: String::new(),
+            state: "provisioned".into(),
+        });
+    }
+    let ready = attempt
+        .phases
+        .first()
+        .context("worktree mode requires a first phase")?;
+    let task = phase_task(
+        &attempt.aven,
+        &EpicPhase {
+            task_id: ready.task_id.clone(),
+            task_ref: ready.task_ref.clone(),
+            title: ready.title.clone(),
+        },
+    )?;
+    let root = attempt.clone();
+    let mut ready = ready.clone();
+    ready.prompt_id = identifier("msg");
+    let admission = opencode(
+        "POST",
+        &format!("/api/session/{}/prompt", ready.session_id),
+        Some(json!({
+            "id": ready.prompt_id,
+            "text": phase_prompt(&task, &ready, &root, skills_dir)?,
+            "resume": true,
+        })),
+    )?;
+    if field(&admission, "/data/id")? != ready.prompt_id {
+        bail!("OpenCode admitted an unexpected phase message id");
+    }
+    ready.state = "running".into();
+    attempt.phases[0] = ready;
+    Ok(())
 }
 fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     // Aven owns the task-scoped durable snapshot. The individual metadata
@@ -1107,7 +1297,11 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
         "edit".to_owned(),
         attempt.task_ref.clone(),
         "--status".into(),
-        "active".into(),
+        if attempt.state == "completed" {
+            "done".into()
+        } else {
+            "active".into()
+        },
     ];
     for item in metadata {
         args.extend(["--metadata".into(), item]);
@@ -1288,8 +1482,9 @@ fn dispatch(
         }
         let (worktree, pane) = create_worktree(
             &context.invocation.origin_cwd,
-            &existing,
-            &selected.task.title,
+            &existing.branch,
+            &format!("{} {}", existing.task_ref, selected.task.title),
+            None,
         )?;
         if agent.as_deref().is_none_or(|agent| agent == "select") {
             let response =
@@ -1391,8 +1586,9 @@ fn dispatch(
     }
     let (worktree, pane) = create_worktree(
         &context.invocation.origin_cwd,
-        &attempt,
-        &selected.task.title,
+        &attempt.branch,
+        &format!("{} {}", attempt.task_ref, selected.task.title),
+        None,
     )?;
     attempt.worktree = worktree;
     attempt.pane = pane;
@@ -1432,6 +1628,9 @@ fn dispatch(
     store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees {
         install_orchestrator_agent(&attempt.worktree)?;
+        provision_phase_worktrees(&mut attempt, &task, &path, skills_dir.clone())?;
+        store_attempt(&mut store, attempt.clone());
+        store.save()?;
     }
     let (session_agent, session_model) = if attempt.execution_mode == ExecutionMode::Worktrees {
         ("orchestrator".to_owned(), ORCHESTRATOR_MODEL.to_owned())
@@ -1466,7 +1665,7 @@ fn dispatch(
         "POST",
         &format!("/api/session/{}/prompt", attempt.session_id),
         Some(
-            json!({"id": attempt.prompt_id, "text": prompt(&task, &attempt.task_ref, skill, skills_dir)?, "resume": true}),
+            json!({"id": attempt.prompt_id, "text": format!("{}{}", prompt(&task, &attempt.task_ref, skill, skills_dir)?, coordinator_topology(&attempt)), "resume": true}),
         ),
     )?;
     let admitted = field(&admission, "/data/id")?;
@@ -1538,7 +1737,7 @@ fn list(path: PathBuf, running: bool) -> Result<()> {
     Ok(())
 }
 fn interrupt(path: PathBuf, task: &str) -> Result<()> {
-    let mut store = LockedStore::open(path)?;
+    let mut store = LockedStore::open(path.clone())?;
     let attempt = find_attempt(&store, task)?.clone();
     opencode(
         "POST",
@@ -1553,13 +1752,19 @@ fn interrupt(path: PathBuf, task: &str) -> Result<()> {
     Ok(())
 }
 fn reconcile(path: PathBuf, task: &str) -> Result<()> {
-    let mut store = LockedStore::open(path)?;
+    let mut store = LockedStore::open(path.clone())?;
     let mut attempt = find_attempt(&store, task)?.clone();
     if attempt.aven_update_pending && write_aven_links(&attempt.aven, &attempt).is_ok() {
         attempt.aven_update_pending = false;
         store_attempt(&mut store, attempt.clone());
         store.save()?;
         println!("repaired pending Aven status, metadata, and handoff update");
+    }
+    if attempt.execution_mode == ExecutionMode::Worktrees && advance_worktree_phases(&mut attempt)?
+    {
+        store_attempt(&mut store, attempt.clone());
+        store.save()?;
+        println!("advanced cumulative worktree phases");
     }
     let log = opencode_text(
         "GET",
@@ -1607,6 +1812,150 @@ fn log_event(path: PathBuf, task: &str, event: &str, detail: &str) -> Result<()>
         println!("{}", serde_json::to_string(&record)?);
     }
     Ok(())
+}
+fn git_head(directory: &Path) -> Result<String> {
+    run_in(
+        "git",
+        &["rev-parse".into(), "HEAD".into()],
+        None,
+        Some(directory),
+    )
+}
+fn tracked_worktree_is_clean(directory: &Path) -> Result<bool> {
+    Ok(run_in(
+        "git",
+        &[
+            "status".into(),
+            "--porcelain".into(),
+            "--untracked-files=no".into(),
+        ],
+        None,
+        Some(directory),
+    )?
+    .is_empty())
+}
+fn phase_is_done(attempt: &Attempt, phase: &PhaseAttempt) -> Result<bool> {
+    Ok(phase_task(
+        &attempt.aven,
+        &EpicPhase {
+            task_id: phase.task_id.clone(),
+            task_ref: phase.task_ref.clone(),
+            title: phase.title.clone(),
+        },
+    )?
+    .pointer("/task/status")
+    .and_then(Value::as_str)
+        == Some("done"))
+}
+fn phase_session_succeeded(phase: &PhaseAttempt) -> Result<bool> {
+    Ok(
+        opencode("GET", &format!("/api/session/{}", phase.session_id), None)?
+            .pointer("/data/outcome")
+            .and_then(Value::as_str)
+            == Some("succeeded"),
+    )
+}
+fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
+    let mut changed = false;
+    for index in 0..attempt.phases.len() {
+        let phase = attempt.phases[index].clone();
+        if phase.state == "integrated" {
+            continue;
+        }
+        if phase.state != "running" || !phase_is_done(attempt, &phase)? {
+            break;
+        }
+        if !phase_session_succeeded(&phase)? {
+            bail!(
+                "phase {} is marked done but its OpenCode session did not succeed",
+                phase.task_ref
+            );
+        }
+        let root = Path::new(&attempt.worktree);
+        if !tracked_worktree_is_clean(root)? {
+            bail!(
+                "coordinator worktree has tracked changes; refusing to integrate {}",
+                phase.task_ref
+            );
+        }
+        let commit = git_head(Path::new(&phase.worktree))?;
+        if git_head(root)? != commit {
+            run_in(
+                "git",
+                &["merge".into(), "--ff-only".into(), phase.branch.clone()],
+                None,
+                Some(root),
+            )?;
+        }
+        attempt.phases[index].commit = commit;
+        attempt.phases[index].integrated_commit = git_head(root)?;
+        attempt.phases[index].state = "integrated".into();
+        changed = true;
+
+        let Some(next) = attempt.phases.get(index + 1).cloned() else {
+            continue;
+        };
+        if next.state != "provisioned" {
+            continue;
+        }
+        let next_directory = Path::new(&next.worktree);
+        if !tracked_worktree_is_clean(next_directory)? {
+            bail!(
+                "next phase worktree {} has tracked changes; refusing to advance it",
+                next.task_ref
+            );
+        }
+        run_in(
+            "git",
+            &["merge".into(), "--ff-only".into(), attempt.branch.clone()],
+            None,
+            Some(next_directory),
+        )?;
+        let task = phase_task(
+            &attempt.aven,
+            &EpicPhase {
+                task_id: next.task_id.clone(),
+                task_ref: next.task_ref.clone(),
+                title: next.title.clone(),
+            },
+        )?;
+        let mut admitted = next;
+        admitted.prompt_id = identifier("msg");
+        let response = opencode(
+            "POST",
+            &format!("/api/session/{}/prompt", admitted.session_id),
+            Some(json!({
+                "id": admitted.prompt_id,
+                "text": phase_prompt(&task, &admitted, attempt, None)?,
+                "resume": true,
+            })),
+        )?;
+        if field(&response, "/data/id")? != admitted.prompt_id {
+            bail!("OpenCode admitted an unexpected successor phase message id");
+        }
+        admitted.state = "running".into();
+        attempt.phases[index + 1] = admitted;
+        changed = true;
+        break;
+    }
+    let all_integrated = !attempt.phases.is_empty()
+        && attempt
+            .phases
+            .iter()
+            .all(|phase| phase.state == "integrated");
+    if all_integrated && attempt.state != "completed" {
+        aven(
+            &attempt.aven,
+            &["edit", &attempt.task_ref, "--status", "done"],
+            None,
+        )?;
+        attempt.state = "completed".into();
+        changed = true;
+    }
+    if changed {
+        let _ = write_aven_links(&attempt.aven, attempt);
+    }
+    Ok(changed)
 }
 fn doctor() -> Result<()> {
     let aven_version = run("aven", &["--version".into()], None)?;
