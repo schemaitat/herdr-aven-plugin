@@ -86,7 +86,7 @@ args = sys.argv[1:]
 record = {"argv": args[:3]}
 if args[:2] == ["api", "POST"]:
     data = json.loads(args[args.index("--data") + 1])
-        record.update({key: data[key] for key in ("agent", "id", "model") if key in data})
+    record.update({key: data[key] for key in ("agent", "id", "model") if key in data})
 with open(os.environ["E2E_CALLS"], "a") as log:
     log.write(json.dumps(record) + "\\n")
 if args[:3] == ["api", "GET", "/api/agent"]:
@@ -106,8 +106,12 @@ else:
     # Exercise the real command installer without installing into the user's
     # Cargo bin directory. Its resolved dispatcher is our already-built binary.
     (fake / "cargo").write_text('#!/bin/sh\n[ "$1" = install ]\n')
-    (fake / "aven-dispatch").symlink_to(dispatcher)
-    for program in ("opencode", "cargo"):
+    # Preserve dispatcher stderr so a failed custom command has actionable
+    # evidence in the retained E2E artifact directory.
+    (fake / "aven-dispatch").write_text(
+        f'#!/bin/sh\nexec {dispatcher} "$@" 2>{root / "dispatcher.stderr"}\n'
+    )
+    for program in ("opencode", "cargo", "aven-dispatch"):
         (fake / program).chmod(0o755)
 
     def run(args, cwd=repo):
