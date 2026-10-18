@@ -70,6 +70,13 @@ def exercise(name, choice, reopen=False):
         os.write(master, b"0\n")
         wait_for(b"Enter a number from 1 to 1, or q.")
         os.write(master, choice)
+        if choice != b"q\n":
+            wait_for(b"Select an OpenCode model:")
+            wait_for(b"Choice [1-8], or q to cancel:" if not reopen
+                     else b"Choice [1-1], or q to cancel:")
+            os.write(master, b"0\n")
+            wait_for(b"Enter a number from 1 to " + (b"8" if not reopen else b"1") + b", or q.")
+            os.write(master, b"1\n")
         result = process.wait(timeout=30)
         if choice == b"q\n":
             assert result != 0
@@ -80,6 +87,7 @@ def exercise(name, choice, reopen=False):
             assert result == 0, output.decode(errors="replace")
             attempt = next(iter(json.loads(state.read_text())["attempts"].values()))
             assert attempt["agent"] == "configured-build"
+            assert attempt["model"] == "github-copilot/gpt-5.6-terra"
             assert attempt["state"] == "running"
             calls = log.read_text()[len(before):]
             assert "herdr-api pane.focus w1:p1" in calls

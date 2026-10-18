@@ -51,7 +51,7 @@ fi
 mkdir -p "$RUST_WORKTREE"
 case " $* " in
   *" pane split "*) printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
-  *) printf '{"result":{"worktree":{"path":"%s"},"root_pane":{"pane_id":"w1:p1"}}}\n' "$RUST_WORKTREE" ;;
+   *) printf '{"result":{"workspace_id":"w2","worktree":{"path":"%s"},"root_pane":{"pane_id":"w1:p1"}}}\n' "$RUST_WORKTREE" ;;
 esac
 EOF
 cat > "$fake/opencode" <<'EOF'
@@ -61,7 +61,7 @@ case " $* " in
   *" POST /api/session "*) printf '%s\n' '{"data":{"id":"ses_one"}}' ;;
   *" POST /api/session/ses_one/prompt "*) printf '%s\n' "$*" | grep -q 'msg_' || exit 1; printf '%s\n' '{"data":{"id":"msg_expected"}}' ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","mode":"primary","hidden":false}]}' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -83,7 +83,7 @@ case " $* " in
    *" POST /api/session/"*"/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
    *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","mode":"primary","hidden":false}]}' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
    *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -110,7 +110,7 @@ assert_not_contains "$(cat "$log")" 'herdr pane split' 'ordinary dispatch does n
 # Babysitting is opt-in: both sessions are created and prompted through the
 # OpenCode API, then the second API session is attached in the sibling pane.
 babysitter_state=$work/babysitter-state.json
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --babysitter >/dev/null
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter >/dev/null
 assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'babysitter splits next to build pane'
 assert_file_contains "$log" '"agent":"babysitter"' 'babysitter session created through OpenCode API'
 assert_file_contains "$log" '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' 'babysitter API session uses Luna'
@@ -127,7 +127,7 @@ assert_file_contains "$work/worktree-babysitter/.opencode/agents/babysitter.md" 
 # reports only one visible primary agent. The selected ID returns through a
 # private response file, so the Aven command's JSON stdin remains untouched.
 selector_state=$work/selector-state.json
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$selector_state" RUST_WORKTREE="$work/worktree-selector" cargo run --quiet -- dispatch --agent select >/dev/null
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$selector_state" RUST_WORKTREE="$work/worktree-selector" cargo run --quiet -- dispatch --agent select --model github-copilot/gpt-5.6-terra >/dev/null
 assert_file_contains "$selector_state" '"agent": "configured-build"' 'picker returns the selected OpenCode agent id'
 assert_file_contains "$log" 'herdr plugin pane open --plugin aven.tasks --entrypoint agent-picker' 'selector opens the Herdr popup picker'
 assert_file_contains "$log" 'opencode api GET /api/agent' 'selector lists agents through the OpenCode API'
@@ -140,7 +140,7 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --runn
 assert_file_contains "$work/running" '"task_ref": "APP-1"' 'list reports running dispatch'
 assert_file_contains "$work/running" '"state": "running"' 'list filters to running dispatches'
 before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build > "$work/retry"
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra > "$work/retry"
 after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 assert_eq "$after" "$before" 're-dispatch does not admit a second prompt'
 assert_file_contains "$work/retry" 'reopened APP-1 in OpenCode session ses_one' 're-dispatch reopens the persisted session'

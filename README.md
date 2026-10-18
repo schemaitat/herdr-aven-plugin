@@ -95,8 +95,10 @@ bundled `.opencode/agents/babysitter.md` definition.
 
 ### Agents and custom workflows
 
-Installed commands use `--agent select` and the default model
-`github-copilot/gpt-5.6-terra`. Edit `aven-commands.yaml` to add commands or
+Installed commands ask for a build agent, then ask for a model. The selected
+agent's configured model is first, followed by the supported GPT and Claude
+choices. Entering `q` at either picker cancels the dispatch and removes the
+newly created Herdr worktree. Edit `aven-commands.yaml` to add commands or
 change CLI options. For example:
 
 ```yaml
@@ -110,7 +112,8 @@ change CLI options. For example:
   on_success: quit
 ```
 
-Use `--agent select` for the picker or `--agent <id>` to bypass it. Keep
+Use `--agent select` for the picker or `--agent <id>` to bypass it; use
+`--model provider/model` to bypass model selection for scripts. Keep
 **`execution: terminal`** for picker commands: Aven passes task JSON through
 `AVEN_COMMAND_CONTEXT` and lends the popup terminal to the picker. Herdr
 cannot nest a second popup inside Aven.

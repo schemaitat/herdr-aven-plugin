@@ -36,8 +36,6 @@
     - dispatch
     - --agent
     - select
-    - --model
-    - github-copilot/gpt-5.6-terra
     - --skill
     - aven/sdd
     - --skills-dir
@@ -60,8 +58,6 @@
     - dispatch
     - --agent
     - select
-    - --model
-    - github-copilot/gpt-5.6-terra
     - --babysitter
   keys: [z b]
   detail_keys: [z B]

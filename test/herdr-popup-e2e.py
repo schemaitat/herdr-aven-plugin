@@ -78,7 +78,7 @@ def main():
         'update:\n  automatic_checks: false\n'
     )
     agents.write_text(json.dumps([
-        {"id": "build", "name": "Build", "mode": "primary", "hidden": False}
+        {"id": "build", "name": "Build", "model": {"providerID": "github-copilot", "id": "gpt-5.6-terra"}, "mode": "primary", "hidden": False}
     ]))
     (fake / "opencode").write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -86,7 +86,7 @@ args = sys.argv[1:]
 record = {"argv": args[:3]}
 if args[:2] == ["api", "POST"]:
     data = json.loads(args[args.index("--data") + 1])
-    record.update({key: data[key] for key in ("agent", "id") if key in data})
+        record.update({key: data[key] for key in ("agent", "id", "model") if key in data})
 with open(os.environ["E2E_CALLS"], "a") as log:
     log.write(json.dumps(record) + "\\n")
 if args[:3] == ["api", "GET", "/api/agent"]:
@@ -212,6 +212,7 @@ else:
         wait_until(lambda: len(output) > 1000, "Herdr client startup")
         origin = snapshot()
         origin_pane, origin_workspace = origin["focused_pane_id"], origin["focused_workspace_id"]
+        initial_worktrees = run(["git", "worktree", "list", "--porcelain"]).count("worktree ")
         open_aven()
         start = invoke_picker()
         wait_text(b"Choice [1-1]", start)
@@ -224,13 +225,15 @@ else:
         os.write(master, b"q\n")
         wait_text(b"POPUP_PICKER_E2E", cancel_start)
         assert not posts() and not store.exists(), "Cancellation admitted a session"
+        assert run(["git", "worktree", "list", "--porcelain"]).count("worktree ") == initial_worktrees, \
+            "Cancellation did not remove the newly created Herdr worktree"
         assert snapshot()["focused_pane_id"] == origin_pane
         assert json.loads(run(["aven", "context", task_ref, "--json"]))["task"]["status"] == "inbox"
         print("PASS: single-agent picker, invalid input, cancel, and original focus", flush=True)
 
         agents.write_text(json.dumps([
-            {"id": "build", "name": "Build", "mode": "primary"},
-            {"id": "review", "name": "Review", "mode": "primary"},
+            {"id": "build", "name": "Build", "model": {"providerID": "github-copilot", "id": "gpt-5.6-terra"}, "mode": "primary"},
+            {"id": "review", "name": "Review", "model": {"providerID": "github-copilot", "id": "gpt-5.6-terra"}, "mode": "primary"},
             {"id": "hidden", "mode": "primary", "hidden": True},
             {"id": "explore", "mode": "subagent"},
         ]))
@@ -238,12 +241,17 @@ else:
         wait_text(b"Choice [1-2]", start)
         assert not posts(), "Session was created before agent selection"
         os.write(master, b"2\n")
+        wait_text(b"Select an OpenCode model", start)
+        wait_text(b"Choice [1-8]", start)
+        assert not posts(), "Session was created before model selection"
+        os.write(master, b"2\n")
         wait_until(lambda: attempt() is not None and attempt()["state"] == "running"
                    and not attempt()["aven_update_pending"], "dispatch admission")
         selected = attempt()
         wait_until(lambda: snapshot()["focused_pane_id"] == selected["pane"], "worktree pane focus")
         assert selected["agent"] == "review"
         assert len(posts()) == 2 and posts()[0]["agent"] == "review", posts()
+        assert posts()[0]["model"] == {"providerID": "github-copilot", "id": "gpt-5.5"}, posts()
         context = json.loads(run(["aven", "context", task_ref, "--json"]))
         assert context["task"]["status"] == "active" and context["notes"]
         print("PASS: chosen agent admitted once, Aven handoff saved, then worktree focused", flush=True)
@@ -254,6 +262,8 @@ else:
         start = invoke_picker()
         wait_text(b"reopen existing session", start)
         wait_text(b"Choice [1-1]", start)
+        os.write(master, b"1\n")
+        wait_text(b"Select an OpenCode model", start)
         os.write(master, b"1\n")
         wait_until(lambda: snapshot()["focused_pane_id"] == selected["pane"], "reopened pane focus")
         assert len(posts()) == 2, "Re-dispatch admitted a duplicate session/prompt"
@@ -267,6 +277,8 @@ else:
         start = invoke_picker()
         wait_text(b"reopen existing session", start)
         wait_text(b"Choice [1-1]", start)
+        os.write(master, b"1\n")
+        wait_text(b"Select an OpenCode model", start)
         os.write(master, b"1\n")
         wait_text(f"reopened {task_ref}".encode(), start)
         assert len(posts()) == 2, "Dispatch from a worktree created a duplicate attempt"
@@ -285,6 +297,8 @@ else:
         start = invoke_picker()
         wait_text(b"Choice [1-2]", start)
         assert len(posts()) == 2, "New worktree dispatch admitted before selection"
+        os.write(master, b"1\n")
+        wait_text(b"Select an OpenCode model", start)
         os.write(master, b"1\n")
         wait_until(lambda: attempt(worktree_ref) is not None and attempt(worktree_ref)["state"] == "running"
                    and not attempt(worktree_ref)["aven_update_pending"], "dispatch from linked worktree")

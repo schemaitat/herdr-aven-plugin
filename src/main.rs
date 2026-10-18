@@ -405,7 +405,23 @@ fn model_ref(model: Option<&str>) -> Result<Value> {
     Ok(value)
 }
 const BABYSITTER_AGENT: &str = include_str!("../agents/babysitter.md");
-const BUILD_MODEL: &str = "github-copilot/gpt-5.6-terra";
+const MODEL_CHOICES: &[(&str, &str)] = &[
+    ("Latest GPT", "github-copilot/gpt-5.5"),
+    ("GPT Sol", "github-copilot/gpt-6.1-sol"),
+    ("GPT Terra", "github-copilot/gpt-5.6-terra"),
+    ("GPT Astra", "github-copilot/gpt-6-astra"),
+    ("GPT Luna", "github-copilot/gpt-6-luna"),
+    ("Claude Opus", "github-copilot/claude-opus-5.5"),
+    ("Claude Sonnet", "github-copilot/claude-sonnet-5.5"),
+    ("Claude Haiku", "github-copilot/claude-haiku-5.5"),
+];
+
+#[derive(Debug, Clone)]
+struct PrimaryAgent {
+    id: String,
+    name: String,
+    model: Option<String>,
+}
 
 /// Add only the bundled babysitter agent. The worktree's OpenCode config stays
 /// entirely user-owned: in particular, no opencode.json/opencode.jsonc is
@@ -424,7 +440,7 @@ fn install_babysitter_agent(worktree: &str) -> Result<()> {
         .with_context(|| format!("write bundled babysitter agent {}", destination.display()))
 }
 
-fn available_primary_agents(worktree: &str) -> Result<Vec<(String, String)>> {
+fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
     let output = opencode_text_in("GET", "/api/agent", None, Some(Path::new(worktree)))?;
     let response: Value = serde_json::from_str(&output).context("OpenCode agent list response")?;
     let agents = response
@@ -438,19 +454,27 @@ fn available_primary_agents(worktree: &str) -> Result<Vec<(String, String)>> {
         .filter_map(|agent| {
             let id = agent.pointer("/id").and_then(Value::as_str)?;
             let name = agent.pointer("/name").and_then(Value::as_str).unwrap_or(id);
-            Some((id.to_owned(), name.to_owned()))
+            let provider = agent.pointer("/model/providerID").and_then(Value::as_str);
+            let model = agent.pointer("/model/id").and_then(Value::as_str);
+            Some(PrimaryAgent {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                model: provider
+                    .zip(model)
+                    .map(|(provider, model)| format!("{provider}/{model}")),
+            })
         })
         .collect())
 }
 
 fn choose_agent(
-    agents: &[(String, String)],
+    agents: &[PrimaryAgent],
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<String> {
     writeln!(output, "Select an OpenCode build agent:\n")?;
-    for (index, (id, name)) in agents.iter().enumerate() {
-        writeln!(output, "  {}. {} ({})", index + 1, name, id)?;
+    for (index, agent) in agents.iter().enumerate() {
+        writeln!(output, "  {}. {} ({})", index + 1, agent.name, agent.id)?;
     }
     loop {
         write!(output, "\nChoice [1-{}], or q to cancel: ", agents.len())?;
@@ -462,10 +486,103 @@ fn choose_agent(
         if let Ok(index) = choice.trim().parse::<usize>()
             && let Some(agent) = index.checked_sub(1).and_then(|index| agents.get(index))
         {
-            return Ok(agent.0.clone());
+            return Ok(agent.id.clone());
         }
         writeln!(output, "Enter a number from 1 to {}, or q.", agents.len())?;
     }
+}
+
+fn model_choices(configured: Option<&str>) -> Vec<(String, String)> {
+    let mut choices = Vec::new();
+    if let Some(model) = configured.filter(|model| !model.is_empty()) {
+        choices.push((format!("Agent default ({model})"), model.to_owned()));
+    }
+    for (name, model) in MODEL_CHOICES {
+        if !choices.iter().any(|(_, choice)| choice == model) {
+            choices.push(((*name).to_owned(), (*model).to_owned()));
+        }
+    }
+    choices
+}
+
+fn choose_model(
+    choices: &[(String, String)],
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<String> {
+    writeln!(output, "Select an OpenCode model:\n")?;
+    for (index, (name, model)) in choices.iter().enumerate() {
+        writeln!(output, "  {}. {} ({})", index + 1, name, model)?;
+    }
+    loop {
+        write!(output, "\nChoice [1-{}], or q to cancel: ", choices.len())?;
+        output.flush()?;
+        let mut choice = String::new();
+        if input.read_line(&mut choice)? == 0 || matches!(choice.trim(), "" | "q" | "Q") {
+            bail!("OpenCode model selection was canceled");
+        }
+        if let Ok(index) = choice.trim().parse::<usize>()
+            && let Some((_, model)) = index.checked_sub(1).and_then(|index| choices.get(index))
+        {
+            return Ok(model.clone());
+        }
+        writeln!(output, "Enter a number from 1 to {}, or q.", choices.len())?;
+    }
+}
+
+fn select_model(choices: &[(String, String)], response: &Path) -> Result<String> {
+    if env::var_os("AVEN_COMMAND_CONTEXT").is_some() {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            bail!("Aven terminal dispatch requires an interactive terminal");
+        }
+        return choose_model(choices, &mut io::stdin().lock(), &mut io::stdout().lock());
+    }
+    let choices_text = choices
+        .iter()
+        .enumerate()
+        .map(|(index, (name, model))| format!("  {}. {} ({})", index + 1, name, model))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ids = choices
+        .iter()
+        .map(|(_, model)| model.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response = response
+        .to_str()
+        .context("model picker response path is not valid UTF-8")?;
+    let _ = fs::remove_file(response);
+    run(
+        "herdr",
+        &[
+            "plugin".into(),
+            "pane".into(),
+            "open".into(),
+            "--plugin".into(),
+            "aven.tasks".into(),
+            "--entrypoint".into(),
+            "model-picker".into(),
+            "--env".into(),
+            format!("AVEN_DISPATCH_PICKER_RESPONSE={response}"),
+            "--env".into(),
+            format!("AVEN_DISPATCH_PICKER_CHOICES={choices_text}"),
+            "--env".into(),
+            format!("AVEN_DISPATCH_PICKER_IDS={ids}"),
+        ],
+        None,
+    )?;
+    for _ in 0..1200 {
+        if Path::new(response).exists() {
+            let selected = fs::read_to_string(response)?.trim().to_owned();
+            let _ = fs::remove_file(response);
+            if choices.iter().any(|(_, model)| model == &selected) {
+                return Ok(selected);
+            }
+            bail!("OpenCode model selection was canceled");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!("timed out waiting for the Herdr OpenCode model picker")
 }
 
 fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Result<String> {
@@ -475,13 +592,14 @@ fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Resu
         // agent or admits another prompt. It must still display the picker.
         let name = agents
             .iter()
-            .find(|(id, _)| id == existing)
-            .map(|(_, name)| name.as_str())
+            .find(|agent| agent.id == existing)
+            .map(|agent| agent.name.as_str())
             .unwrap_or(existing);
-        agents = vec![(
-            existing.to_owned(),
-            format!("{name} — reopen existing session"),
-        )];
+        agents = vec![PrimaryAgent {
+            id: existing.to_owned(),
+            name: format!("{name} — reopen existing session"),
+            model: None,
+        }];
     }
     if agents.is_empty() {
         bail!(
@@ -508,12 +626,12 @@ fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Resu
     let choices = agents
         .iter()
         .enumerate()
-        .map(|(index, (id, name))| format!("  {}. {} ({})", index + 1, name, id))
+        .map(|(index, agent)| format!("  {}. {} ({})", index + 1, agent.name, agent.id))
         .collect::<Vec<_>>()
         .join("\n");
     let ids = agents
         .iter()
-        .map(|(id, _)| id.as_str())
+        .map(|agent| agent.id.as_str())
         .collect::<Vec<_>>()
         .join("\n");
     let response_path = response;
@@ -544,7 +662,7 @@ fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Resu
         if response_path.exists() {
             let selected = fs::read_to_string(response_path)?.trim().to_owned();
             let _ = fs::remove_file(response_path);
-            if agents.iter().any(|(id, _)| id == &selected) {
+            if agents.iter().any(|agent| agent.id == selected) {
                 return Ok(selected);
             }
             bail!("OpenCode agent selection was canceled");
@@ -552,6 +670,13 @@ fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Resu
         std::thread::sleep(Duration::from_millis(100));
     }
     bail!("timed out waiting for the Herdr OpenCode agent picker")
+}
+
+fn configured_agent_model(worktree: &str, agent_id: &str) -> Result<Option<String>> {
+    Ok(available_primary_agents(worktree)?
+        .into_iter()
+        .find(|agent| agent.id == agent_id)
+        .and_then(|agent| agent.model))
 }
 
 fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> {
@@ -630,6 +755,43 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
         .unwrap_or("")
         .to_owned();
     Ok((worktree, pane))
+}
+fn remove_worktree(worktree: &str) {
+    // Picker cancellation happens before a session or attempt is created, so
+    // this workspace is solely the one just created for this dispatch.
+    let Ok(listing) = run("herdr", &["workspace".into(), "list".into()], None) else {
+        return;
+    };
+    let Ok(listing): Result<Value, _> = serde_json::from_str(&listing) else {
+        return;
+    };
+    let workspace = listing
+        .pointer("/result/workspaces")
+        .and_then(Value::as_array)
+        .and_then(|workspaces| {
+            workspaces.iter().find_map(|workspace| {
+                (workspace
+                    .pointer("/worktree/checkout_path")
+                    .and_then(Value::as_str)
+                    == Some(worktree))
+                .then(|| workspace.pointer("/workspace_id").and_then(Value::as_str))
+                .flatten()
+            })
+        });
+    let Some(workspace) = workspace else {
+        return;
+    };
+    let _ = run(
+        "herdr",
+        &[
+            "worktree".into(),
+            "remove".into(),
+            "--workspace".into(),
+            workspace.to_owned(),
+            "--force".into(),
+        ],
+        None,
+    );
 }
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
@@ -954,6 +1116,15 @@ fn dispatch(
                 path.with_file_name(format!(".agent-picker-{}.response", identifier("reopen")));
             select_agent(&worktree, &response, Some(&existing.agent))?;
         }
+        if model.is_none() {
+            select_model(
+                &[(
+                    format!("Saved model ({})", existing.model),
+                    existing.model.clone(),
+                )],
+                &path.with_file_name(format!(".model-picker-{}.response", identifier("reopen"))),
+            )?;
+        }
         let mut reopened = existing;
         reopened.worktree = worktree;
         reopened.pane = pane;
@@ -1009,9 +1180,7 @@ fn dispatch(
         worktree: String::new(),
         pane: String::new(),
         agent: agent.unwrap_or_default(),
-        // Agent choice is interactive, but the build model deliberately stays
-        // fixed until model selection is introduced as a separate workflow.
-        model: model.unwrap_or_else(|| BUILD_MODEL.to_owned()),
+        model: model.unwrap_or_default(),
         session_id: String::new(),
         prompt_id: identifier("msg"),
         state: "workspace-pending".into(),
@@ -1049,7 +1218,25 @@ fn dispatch(
     if attempt.agent.is_empty() || attempt.agent == "select" {
         let response =
             path.with_file_name(format!(".agent-picker-{}.response", attempt.attempt_id));
-        attempt.agent = select_agent(&attempt.worktree, &response, None)?;
+        attempt.agent = match select_agent(&attempt.worktree, &response, None) {
+            Ok(agent) => agent,
+            Err(error) => {
+                remove_worktree(&attempt.worktree);
+                return Err(error);
+            }
+        };
+    }
+    if attempt.model.is_empty() {
+        let configured = configured_agent_model(&attempt.worktree, &attempt.agent)?;
+        let response =
+            path.with_file_name(format!(".model-picker-{}.response", attempt.attempt_id));
+        attempt.model = match select_model(&model_choices(configured.as_deref()), &response) {
+            Ok(model) => model,
+            Err(error) => {
+                remove_worktree(&attempt.worktree);
+                return Err(error);
+            }
+        };
     }
     attempt.state = "session-pending".into();
     store
@@ -1292,7 +1479,11 @@ mod tests {
     use super::*;
     #[test]
     fn single_agent_still_requires_a_choice() {
-        let agents = vec![("build".into(), "Build".into())];
+        let agents = vec![PrimaryAgent {
+            id: "build".into(),
+            name: "Build".into(),
+            model: Some("github-copilot/gpt-5.6-terra".into()),
+        }];
         let mut output = Vec::new();
         assert!(choose_agent(&agents, &mut io::Cursor::new(""), &mut output).is_err());
         assert!(
@@ -1305,6 +1496,22 @@ mod tests {
             "build"
         );
         assert!(choose_agent(&agents, &mut io::Cursor::new("q\n"), &mut Vec::new()).is_err());
+    }
+    #[test]
+    fn configured_model_is_first_and_model_choice_requires_input() {
+        let choices = model_choices(Some("github-copilot/gpt-5.6-terra"));
+        assert_eq!(
+            choices.first(),
+            Some(&(
+                "Agent default (github-copilot/gpt-5.6-terra)".into(),
+                "github-copilot/gpt-5.6-terra".into()
+            ))
+        );
+        assert_eq!(
+            choose_model(&choices, &mut io::Cursor::new("0\n2\n"), &mut Vec::new()).unwrap(),
+            "github-copilot/gpt-5.5"
+        );
+        assert!(choose_model(&choices, &mut io::Cursor::new("q\n"), &mut Vec::new()).is_err());
     }
     #[test]
     fn targets_not_focused_selection_drive_validation() {

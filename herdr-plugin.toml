@@ -63,3 +63,11 @@ placement = "popup"
 width = 56
 height = 14
 command = ["sh", "bin/run.sh", "pane"]
+
+[[panes]]
+id = "model-picker"
+title = "select OpenCode model"
+placement = "popup"
+width = 64
+height = 22
+command = ["sh", "bin/run.sh", "pane"]

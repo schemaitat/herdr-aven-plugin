@@ -81,8 +81,6 @@ dispatch_item() {
         - dispatch
         - --agent
         - select
-        - --model
-        - github-copilot/gpt-5.6-terra
       keys: [z d]
       detail_keys: [z D]
       target: focused
