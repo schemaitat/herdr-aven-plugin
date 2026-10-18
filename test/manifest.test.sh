@@ -26,7 +26,14 @@ done
 [ -f "$PLUGIN_ROOT/aven-commands.yaml" ] || fail "missing aven-commands.yaml"
 
 # The bundled example workflow the dispatcher can insert.
-[ -f "$PLUGIN_ROOT/skills/aven/sdd.md" ] || fail "missing skills/aven/sdd.md"
+[ -f "$PLUGIN_ROOT/skills/aven/sdd-plan-implement.md" ] || fail "missing skills/aven/sdd-plan-implement.md"
+[ -f "$PLUGIN_ROOT/skills/aven/sdd-plan.md" ] || fail "missing skills/aven/sdd-plan.md"
+[ -f "$PLUGIN_ROOT/skills/aven/sdd-implement.md" ] || fail "missing skills/aven/sdd-implement.md"
+assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'sdd.plan-worked-out=true' 'planning workflow records its durable marker'
+assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'sdd.plan-kind=single-phase' 'planning workflow labels single-phase plans'
+assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'sdd.plan-kind=multi-phase' 'planning workflow labels multi-phase epics'
+assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'aven dep add <phase-02-ref> <phase-01-ref>' 'planning workflow sequences phases'
+assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-implement.md" 'Do not implement when the root marker is absent' 'implementation workflow requires a plan'
 [ -f "$PLUGIN_ROOT/agents/babysitter.md" ] || fail "missing babysitter agent"
 babysitter=$(cat "$PLUGIN_ROOT/agents/babysitter.md")
 assert_contains "$babysitter" 'mode: primary' 'babysitter is primary-capable'

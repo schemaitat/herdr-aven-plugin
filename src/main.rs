@@ -33,7 +33,13 @@ enum Commands {
         /// OpenCode model in provider/model form.
         #[arg(long, env = "AVEN_DISPATCH_MODEL")]
         model: Option<String>,
-        /// Namespaced bundled workflow under the skills directory (for example, aven/sdd).
+        /// Agent ID to show first when --agent select opens the picker.
+        #[arg(long)]
+        preferred_agent: Option<String>,
+        /// Model to show first when the model picker opens.
+        #[arg(long)]
+        preferred_model: Option<String>,
+        /// Namespaced bundled workflow under the skills directory (for example, aven/sdd-plan).
         #[arg(long, env = "AVEN_DISPATCH_SKILL")]
         skill: Option<String>,
         /// Directory containing bundled workflow files.
@@ -406,9 +412,9 @@ fn model_ref(model: Option<&str>) -> Result<Value> {
 }
 const BABYSITTER_AGENT: &str = include_str!("../agents/babysitter.md");
 const MODEL_CHOICES: &[(&str, &str)] = &[
+    ("Latest Sol", "github-copilot/gpt-6.1-sol"),
+    ("Latest Terra", "github-copilot/gpt-5.6-terra"),
     ("Latest GPT", "github-copilot/gpt-5.5"),
-    ("GPT Sol", "github-copilot/gpt-6.1-sol"),
-    ("GPT Terra", "github-copilot/gpt-5.6-terra"),
     ("GPT Astra", "github-copilot/gpt-6-astra"),
     ("GPT Luna", "github-copilot/gpt-6-luna"),
     ("Claude Opus", "github-copilot/claude-opus-5.5"),
@@ -472,7 +478,7 @@ fn choose_agent(
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<String> {
-    writeln!(output, "Select an OpenCode build agent:\n")?;
+    writeln!(output, "Select an OpenCode agent:\n")?;
     for (index, agent) in agents.iter().enumerate() {
         writeln!(output, "  {}. {} ({})", index + 1, agent.name, agent.id)?;
     }
@@ -492,10 +498,20 @@ fn choose_agent(
     }
 }
 
-fn model_choices(configured: Option<&str>) -> Vec<(String, String)> {
+fn model_choices(configured: Option<&str>, preferred: Option<&str>) -> Vec<(String, String)> {
     let mut choices = Vec::new();
+    if let Some(model) = preferred.filter(|model| !model.is_empty()) {
+        let name = MODEL_CHOICES
+            .iter()
+            .find(|(_, candidate)| *candidate == model)
+            .map(|(name, _)| *name)
+            .unwrap_or(model);
+        choices.push((format!("Preferred ({name})"), model.to_owned()));
+    }
     if let Some(model) = configured.filter(|model| !model.is_empty()) {
-        choices.push((format!("Agent default ({model})"), model.to_owned()));
+        if !choices.iter().any(|(_, choice)| choice == model) {
+            choices.push((format!("Agent default ({model})"), model.to_owned()));
+        }
     }
     for (name, model) in MODEL_CHOICES {
         if !choices.iter().any(|(_, choice)| choice == model) {
@@ -585,7 +601,12 @@ fn select_model(choices: &[(String, String)], response: &Path) -> Result<String>
     bail!("timed out waiting for the Herdr OpenCode model picker")
 }
 
-fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Result<String> {
+fn select_agent(
+    worktree: &str,
+    response: &Path,
+    existing: Option<&str>,
+    preferred: Option<&str>,
+) -> Result<String> {
     let mut agents = available_primary_agents(worktree)?;
     if let Some(existing) = existing {
         // Re-dispatch confirms the existing session, never silently swaps its
@@ -600,6 +621,11 @@ fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Resu
             name: format!("{name} — reopen existing session"),
             model: None,
         }];
+    } else if let Some(preferred) = preferred.filter(|agent| !agent.is_empty())
+        && let Some(index) = agents.iter().position(|agent| agent.id == preferred)
+    {
+        let preferred = agents.remove(index);
+        agents.insert(0, preferred);
     }
     if agents.is_empty() {
         bail!(
@@ -1063,6 +1089,8 @@ fn dispatch(
     dry_run: bool,
     agent: Option<String>,
     model: Option<String>,
+    preferred_agent: Option<String>,
+    preferred_model: Option<String>,
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
     babysitter: bool,
@@ -1114,7 +1142,7 @@ fn dispatch(
         if agent.as_deref().is_none_or(|agent| agent == "select") {
             let response =
                 path.with_file_name(format!(".agent-picker-{}.response", identifier("reopen")));
-            select_agent(&worktree, &response, Some(&existing.agent))?;
+            select_agent(&worktree, &response, Some(&existing.agent), None)?;
         }
         if model.is_none() {
             select_model(
@@ -1218,7 +1246,12 @@ fn dispatch(
     if attempt.agent.is_empty() || attempt.agent == "select" {
         let response =
             path.with_file_name(format!(".agent-picker-{}.response", attempt.attempt_id));
-        attempt.agent = match select_agent(&attempt.worktree, &response, None) {
+        attempt.agent = match select_agent(
+            &attempt.worktree,
+            &response,
+            None,
+            preferred_agent.as_deref(),
+        ) {
             Ok(agent) => agent,
             Err(error) => {
                 remove_worktree(&attempt.worktree);
@@ -1230,7 +1263,10 @@ fn dispatch(
         let configured = configured_agent_model(&attempt.worktree, &attempt.agent)?;
         let response =
             path.with_file_name(format!(".model-picker-{}.response", attempt.attempt_id));
-        attempt.model = match select_model(&model_choices(configured.as_deref()), &response) {
+        attempt.model = match select_model(
+            &model_choices(configured.as_deref(), preferred_model.as_deref()),
+            &response,
+        ) {
             Ok(model) => model,
             Err(error) => {
                 remove_worktree(&attempt.worktree);
@@ -1456,10 +1492,22 @@ fn main() -> Result<()> {
             dry_run,
             agent,
             model,
+            preferred_agent,
+            preferred_model,
             skill,
             skills_dir,
             babysitter,
-        } => dispatch(path, dry_run, agent, model, skill, skills_dir, babysitter),
+        } => dispatch(
+            path,
+            dry_run,
+            agent,
+            model,
+            preferred_agent,
+            preferred_model,
+            skill,
+            skills_dir,
+            babysitter,
+        ),
         Commands::Resume { task } => reconcile(path, &task),
         Commands::Status { task } => status(path, &task),
         Commands::List { running } => list(path, running),
@@ -1499,7 +1547,7 @@ mod tests {
     }
     #[test]
     fn configured_model_is_first_and_model_choice_requires_input() {
-        let choices = model_choices(Some("github-copilot/gpt-5.6-terra"));
+        let choices = model_choices(Some("github-copilot/gpt-5.6-terra"), None);
         assert_eq!(
             choices.first(),
             Some(&(
@@ -1509,9 +1557,18 @@ mod tests {
         );
         assert_eq!(
             choose_model(&choices, &mut io::Cursor::new("0\n2\n"), &mut Vec::new()).unwrap(),
-            "github-copilot/gpt-5.5"
+            "github-copilot/gpt-6.1-sol"
         );
         assert!(choose_model(&choices, &mut io::Cursor::new("q\n"), &mut Vec::new()).is_err());
+    }
+    #[test]
+    fn preferred_model_precedes_the_agent_default() {
+        let choices = model_choices(
+            Some("github-copilot/gpt-5.6-terra"),
+            Some("github-copilot/gpt-6.1-sol"),
+        );
+        assert_eq!(choices[0].1, "github-copilot/gpt-6.1-sol");
+        assert_eq!(choices[1].1, "github-copilot/gpt-5.6-terra");
     }
     #[test]
     fn targets_not_focused_selection_drive_validation() {
@@ -1556,11 +1613,11 @@ mod tests {
     #[test]
     fn namespaced_skill_is_loaded_below_the_skills_root() {
         let root = tempfile::tempdir().unwrap();
-        let skill = root.path().join("aven/sdd.md");
+        let skill = root.path().join("aven/sdd-plan.md");
         fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, "workflow").unwrap();
         assert_eq!(
-            bundled_skill(Some("aven/sdd".into()), Some(root.path().into())).unwrap(),
+            bundled_skill(Some("aven/sdd-plan".into()), Some(root.path().into())).unwrap(),
             Some("workflow".into())
         );
     }

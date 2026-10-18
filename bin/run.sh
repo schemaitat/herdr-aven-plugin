@@ -67,7 +67,7 @@ pane_main() {
       exit 2
     fi
     case "$entrypoint" in
-      agent-picker) heading='Select an OpenCode build agent:' ;;
+      agent-picker) heading='Select an OpenCode agent:' ;;
       model-picker) heading='Select an OpenCode model:' ;;
     esac
     printf '%s\n\n%s\n\nChoice [1-]: ' "$heading" "$choices"

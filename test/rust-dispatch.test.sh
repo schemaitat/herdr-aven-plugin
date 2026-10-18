@@ -89,7 +89,7 @@ esac
 EOF
 chmod +x "$fake/opencode"
 
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd --skills-dir "$PLUGIN_ROOT/skills" >/dev/null
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" >/dev/null
 assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task" --no-focus' 'worktree is created without moving focus away from the picker'
 assert_file_contains "$log" 'herdr-api pane.focus w1:p1' 'dispatch focuses the worktree pane after attaching the session'
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
@@ -102,7 +102,7 @@ assert_file_contains "$log" 'herdr-pane-run argc=4 command=env AVEN_DISPATCH_STO
 agent_start_line=$(grep -n 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' "$log" | head -n 1 | cut -d: -f1)
 prompt_line=$(grep -n 'opencode api POST /api/session/ses_one/prompt' "$log" | head -n 1 | cut -d: -f1)
 [ "$agent_start_line" -lt "$prompt_line" ] || fail 'OpenCode starts before prompt admission schedules execution'
-assert_file_contains "$log" 'Take an aven task from request to shipped' 'explicit skills directory is loaded'
+assert_file_contains "$log" 'Plan then implement an Aven task' 'explicit skills directory is loaded'
 assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
 assert_file_contains "$state" '"agent": "build"' 'primary agent persisted'
 assert_not_contains "$(cat "$log")" 'herdr pane split' 'ordinary dispatch does not create a babysitter pane'

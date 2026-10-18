@@ -18,46 +18,128 @@
 #
 # --- Example: an aven-native task workflow -----------------------------------
 #
-# `sdd` ships active so you can see the workflow pattern, but it is only an
-# example: edit it, rebind it, or delete it. It shows how to use dispatch plus
-# aven for efficient task management — one command takes the selected task from
-# a rough request to shipped, keeping the spec in the task description, the plan
-# in a note, the breakdown in child tasks, and progress in statuses and notes.
+# The three bundled workflows divide planning from implementation:
+# `sdd-plan-implement` plans first and then implements in one session;
+# `sdd-plan` only plans; and `sdd-implement` only implements an already
+# worked-out plan. All are examples: edit, rebind, or delete them to fit your
+# own Aven workflow.
 #
 # --skill names the bundled skill text as a path relative to skills.
-# `aven/sdd` resolves to skills/aven/sdd.md. Write your own namespaced skill file
-# and point another entry at it the same way.
+# `aven/sdd-plan` resolves to skills/aven/sdd-plan.md. Write your own namespaced
+# skill file and point another entry at it the same way.
 
-- name: sdd
-  aliases: [aven-sdd]
-  description: Work the selected task through define, plan, break down, implement (example)
+- name: sdd-plan-implement
+  aliases: [aven-sdd-plan-implement]
+  description: Plan then implement the selected task (example)
   program: aven-dispatch
   args:
     - dispatch
     - --agent
     - select
+    - --preferred-agent
+    - build
+    - --preferred-model
+    - github-copilot/gpt-5.6-terra
     - --skill
-    - aven/sdd
+    - aven/sdd-plan-implement
     - --skills-dir
     - "${PLUGIN_ROOT}/skills"
   keys: [z s]
+  target: focused
+  execution: terminal
+  on_success: quit
+
+# Turn a selected task idea into a durable Aven-only implementation plan. The
+# planning workflow detects its `sdd.plan-worked-out` metadata marker to avoid
+# recreating an existing plan. One phase stays on the task; multiple phases
+# become ordered children of an epic.
+- name: sdd-plan
+  aliases: [aven-sdd-plan]
+  description: Turn the selected task idea into a single-task plan or phased epic
+  program: aven-dispatch
+  args:
+    - dispatch
+    - --agent
+    - select
+    - --preferred-agent
+    - plan
+    - --preferred-model
+    - github-copilot/gpt-6.1-sol
+    - --skill
+    - aven/sdd-plan
+    - --skills-dir
+    - "${PLUGIN_ROOT}/skills"
+  keys: [z p]
+  detail_keys: [z P]
+  target: focused
+  execution: terminal
+  on_success: quit
+
+# Implement only after a plan has been completed with z p or z s. The workflow
+# checks the root task's sdd.plan-worked-out metadata before changing code.
+- name: sdd-implement
+  aliases: [aven-sdd-implement]
+  description: Implement the selected task's already-worked-out plan
+  program: aven-dispatch
+  args:
+    - dispatch
+    - --agent
+    - select
+    - --preferred-agent
+    - build
+    - --preferred-model
+    - github-copilot/gpt-5.6-terra
+    - --skill
+    - aven/sdd-implement
+    - --skills-dir
+    - "${PLUGIN_ROOT}/skills"
+  keys: [z i]
+  detail_keys: [z I]
+  target: focused
+  execution: terminal
+  on_success: quit
+
+# Babysitting is intentionally available only for workflows that implement:
+# the plan-and-implement SDD flow and implementation of an existing plan.
+- name: sdd-plan-implement-babysitter
+  aliases: [aven-sdd-plan-implement-babysitter]
+  description: Plan then implement the selected task with an adjacent babysitter
+  program: aven-dispatch
+  args:
+    - dispatch
+    - --agent
+    - select
+    - --preferred-agent
+    - build
+    - --preferred-model
+    - github-copilot/gpt-5.6-terra
+    - --skill
+    - aven/sdd-plan-implement
+    - --skills-dir
+    - "${PLUGIN_ROOT}/skills"
+    - --babysitter
+  keys: [z S]
   detail_keys: [z S]
   target: focused
   execution: terminal
   on_success: quit
 
-# Opt in to an adjacent babysitter while dispatching the selected task. The
-# dispatcher creates and prompts both OpenCode sessions through the V2 API,
-# leaves the build agent in the worktree's original pane, then attaches the
-# babysitter session in a sibling pane to the right.
-- name: dispatch-babysitter
-  aliases: [dispatch-with-babysitter]
-  description: Implement the selected task with an adjacent autonomous babysitter
+- name: sdd-implement-babysitter
+  aliases: [aven-sdd-implement-babysitter]
+  description: Implement the selected task's plan with an adjacent babysitter
   program: aven-dispatch
   args:
     - dispatch
     - --agent
     - select
+    - --preferred-agent
+    - build
+    - --preferred-model
+    - github-copilot/gpt-5.6-terra
+    - --skill
+    - aven/sdd-implement
+    - --skills-dir
+    - "${PLUGIN_ROOT}/skills"
     - --babysitter
   keys: [z b]
   detail_keys: [z B]

@@ -49,11 +49,16 @@ aven project create "My app" --path "$PWD"
 | `prefix+a` | Open Aven for the focused pane's project |
 | `prefix+shift+c` | Quickly add a task |
 | `z d` in Aven | Dispatch the selected task |
-| `z s` in Aven | Dispatch with the bundled spec/plan/implement workflow |
-| `z b` in Aven | Dispatch with an adjacent babysitter agent |
+| `z s` in Aven | Plan then implement the selected task |
+| `z p` in Aven | Turn the selected task idea into a durable implementation plan |
+| `z i` in Aven | Implement an already worked-out plan |
+| `z S` in Aven | Plan then implement with an adjacent babysitter |
+| `z b` in Aven | Implement an existing plan with an adjacent babysitter |
 
 The default prefix is `ctrl+b`. Task-detail dispatch bindings use uppercase
-`D`, `S`, and `B`. Press `q` to close Aven and return to your pane.
+`D`, `S`, `P`, `I`, and `B`. `z S` runs the SDD babysitter command from task
+detail; ordinary SDD is available from the task list as `z s`. Press `q` to
+close Aven and return to your pane.
 
 ### Dispatch flow
 
@@ -70,8 +75,13 @@ not need to switch to `main`. Worktrees are created/opened without taking
 focus while you choose. Re-dispatch confirms the existing session's agent
 and reuses that session without admitting a duplicate prompt.
 
-The `z s` workflow keeps specs, plans, subtasks, and progress in Aven. The
-optional `z b` babysitter supervises the build agent in a sibling pane.
+The `z s` workflow keeps specs, plans, subtasks, and progress in Aven, then
+implements only after it has set `sdd.plan-worked-out=true`. `z p` plans only:
+it keeps a single-phase plan on the root task or makes a multi-phase plan an
+epic with ordered phase tasks. `z i` enforces the same marker before changing
+code, so it will direct you to plan first rather than infer an incomplete plan.
+Babysitting is available only for the implementation workflows: `z S` for
+plan-then-implement and `z b` for implementation of an existing plan.
 
 ## Configuration
 
@@ -95,9 +105,11 @@ bundled `.opencode/agents/babysitter.md` definition.
 
 ### Agents and custom workflows
 
-Installed commands ask for a build agent, then ask for a model. The selected
-agent's configured model is first, followed by the supported GPT and Claude
-choices. Entering `q` at either picker cancels the dispatch and removes the
+Installed commands ask for an agent, then a model. Planning (`z p`) puts the
+`plan` agent and latest Sol model first; plan-and-implement (`z s`) and
+implementation (`z i`) put the `build` agent and latest Terra model first. The
+picker remains interactive, so any visible agent or supported model can still
+be selected. Entering `q` at either picker cancels the dispatch and removes the
 newly created Herdr worktree. Edit `aven-commands.yaml` to add commands or
 change CLI options. For example:
 
@@ -118,8 +130,10 @@ Use `--agent select` for the picker or `--agent <id>` to bypass it; use
 `AVEN_COMMAND_CONTEXT` and lends the popup terminal to the picker. Herdr
 cannot nest a second popup inside Aven.
 
-Use `--skill aven/sdd --skills-dir /path/to/plugin/skills` for the bundled
-workflow, or add a namespaced Markdown workflow under `skills/`.
+Use `--skill aven/sdd-plan-implement --skills-dir /path/to/plugin/skills` for the bundled
+plan-and-implement workflow, `--skill aven/sdd-plan` for planning only, or
+`--skill aven/sdd-implement` for plan-gated implementation. You can also add a
+namespaced Markdown workflow under `skills/`.
 
 Apply command changes and **close/reopen Aven**:
 

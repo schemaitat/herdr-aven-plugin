@@ -1,8 +1,9 @@
 ---
-description: Example workflow for taking one aven task from a rough request to shipped, with aven as the only task store.
+name: sdd-plan-implement
+description: Plan a selected Aven task with durable metadata, then implement and verify it in the same workflow.
 ---
 
-# Take an aven task from request to shipped
+# Plan then implement an Aven task
 
 > This is an **example** workflow bundled with the plugin, not a built-in
 > command. It shows one efficient way to use `dispatch` plus aven for task
@@ -44,11 +45,11 @@ This creates or reuses the attempt's linked task in the **Dispatcher Logs**
 project, links it to `{ref}`, and appends the event there. Do not include
 credentials, tokens, or prompt text in `--detail`.
 
-## 0. Read the task and find where to resume
+## 0. Check the plan marker and find where to resume
 
 ```sh
-aven context {ref}
-aven show {ref} --full
+aven context {ref} --full
+aven show {ref} --json
 aven epic list {ref}          # existing child tasks, if any
 ```
 
@@ -56,17 +57,22 @@ aven epic list {ref}          # existing child tasks, if any
 earlier notes are omitted it ends with a `read=` command that prints their
 bodies in one call.
 
-Decide where to resume instead of redoing work:
+`sdd.plan-worked-out=true` on the root task is the authoritative signal that an
+ADR-style plan already exists. Decide where to resume instead of redoing work:
 
 | Already present | Skip |
 | --- | --- |
+| `sdd.plan-worked-out=true` | phases 1–3; go directly to phase 4 |
 | the description is a real spec | phase 1 |
 | a note headed `## Plan` | phase 2 |
 | child tasks under the root | phase 3 |
 | nothing yet | start at phase 1 |
 
-Work the phases below in order, but only the ones that are missing, then go
-straight to implementing whatever is still open.
+When the marker is absent, work phases 1–3 in order and set it only after the
+plan is complete. Do not implement before that point. A finished
+`sdd-plan-implement` run therefore plans first and then implements in the same
+session; it never treats
+an old title, description, or unmarked note as a worked-out plan.
 
 ## 1. Define (and refine) the spec in the description
 
@@ -100,15 +106,22 @@ recording it under Assumptions rather than stopping. Only when a choice is
 high-impact and has no reasonable default, leave a short question and ask the
 user — at most three, prioritising scope, then security/privacy, then UX.
 
-Then move the task to active:
+Keep the task `todo` while planning; implementation will move the active work
+item to `active` in phase 4:
 
 ```sh
-aven edit {ref} --status active
+aven edit {ref} --status todo
 ```
 
 ## 2. Plan (as a note on the root task)
 
-Work out *how* before writing code, and keep the plan in aven:
+Work out *how* before writing code. The root `## Plan` note must read as an
+Architectural Decision Record: include **Context**, **Decision** (and why it
+was chosen), **Alternatives considered**, **Consequences**, **Affected files**,
+**Open questions**, **Trade-offs and risks**, and concrete **Done criteria**.
+For a single phase it also contains the ordered unchecked `TASK-NNN` steps;
+for multiple phases it contains a table of phase titles and actual child refs.
+Keep the plan in Aven:
 
 ```sh
 aven note {ref} --stdin <<'EOF'
@@ -127,43 +140,60 @@ Prefer notes over a `plan.md` file: notes travel with the task, survive the
 worktree, and are what the next agent reads. Add more notes as the plan changes
 rather than editing the first one away.
 
-## 3. Break down into aven child tasks
+## 3. Persist the plan shape and its marker
 
-Only decompose when the work is more than a trivial single change. For anything
-with independent or ordered pieces:
+Use one root task for exactly one implementation phase. Set its durable marker
+only after the ADR note, ordered steps, and done criteria are complete:
+
+```sh
+aven edit {ref} --status todo \
+  --metadata sdd.plan-worked-out=true \
+  --metadata sdd.plan-kind=single-phase \
+  --metadata sdd.plan-schema=v1
+```
+
+For two or more strictly ordered phases, make `{ref}` an epic and add one child
+per phase. Do not create parallel branches, a one-child epic, or a child with
+more than one blocker:
 
 1. Make the root task an epic and add a child per piece:
 
    ```sh
-   aven edit {ref} --epic on
-   aven add "<piece title>" --project <key> --status todo --description-stdin <<'EOF'
-   Why this piece exists, plus its own acceptance criteria.
-   EOF
-   aven epic add <child-ref> {ref}
+    aven edit {ref} --epic on --status todo \
+      --metadata sdd.plan-kind=multi-phase \
+      --metadata sdd.plan-schema=v1
+    aven add "<piece title>" --project <key> --status todo --description-stdin <<'EOF'
+    ADR-style phase goal, why this slice exists, ordered TASK-NNN steps,
+    trade-offs and risks, plus its own acceptance criteria.
+    EOF
+    aven epic add <child-ref> {ref}
    ```
 
    Give every child enough context to stand alone: rationale, scope, and
    acceptance criteria, in its own description.
 
-2. Express execution order with dependencies and otherwise unrelated pieces
-   with relations:
+2. Express execution order with one dependency chain:
 
    ```sh
    aven dep add <blocked-child> <blocker-child>   # this before that
-   aven related add <child-a> <child-b>
    ```
 
-3. Record the breakdown on the root task so it is discoverable:
+3. Record the actual child refs in the root ADR plan and finalise the marker:
 
    ```sh
    aven note {ref} --stdin <<'EOF'
    ## Breakdown
    - APP-XXXX piece one (ready first)
-   - APP-YYYY piece two (after APP-XXXX)
-   EOF
-   ```
+    - APP-YYYY piece two (after APP-XXXX)
+    EOF
+    aven edit {ref} --status todo \
+      --metadata sdd.plan-worked-out=true \
+      --metadata sdd.plan-kind=multi-phase \
+      --metadata sdd.plan-schema=v1
+    ```
 
-If the task is a single small change, skip this phase — just implement it.
+Validate that all phases and tasks form one linear chain before setting the
+marker. Phase 4 may run only after `sdd.plan-worked-out=true` exists.
 
 ## 4. Implement, tracking each task in aven
 
