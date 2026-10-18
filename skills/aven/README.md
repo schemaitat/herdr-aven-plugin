@@ -1,7 +1,7 @@
 # Bundled aven workflows
 
 Example agent workflows that the plugin can insert into a dispatch prompt with
-`AVEN_DISPATCH_SKILL`. They are plain prompt text, not code: `bin/dispatch.sh`
+`--skill` (for example, `--skill aven/sdd`). They are plain prompt text, not code: the Rust dispatcher
 drops the YAML front matter, fills `$ARGUMENTS`/`{ARGS}`, `{ref}`, and
 `{title}` from the selected task, and appends the aven handoff guidance.
 
@@ -11,5 +11,5 @@ drops the YAML front matter, fills `$ARGUMENTS`/`{ARGS}`, `{ref}`, and
 
 These are examples to make your own: edit them, copy the pattern into a new
 `<name>.md`, and point an `aven-commands.yaml` entry at it with
-`AVEN_DISPATCH_SKILL: <name>`. Nothing here is required by the plugin, and a
+`--skill <namespace>/<name>`. Nothing here is required by the plugin, and a
 skill file with its own front matter is used verbatim otherwise.

@@ -40,8 +40,8 @@ the pane underneath is exactly as you left it.
   installed next to it, and you can add more in `aven-commands.yaml`.
 - **Follows the pane** — Herdr panes and worktrees each carry their own
   directory, so the popover follows whichever pane you opened it from.
-- **No build step** — POSIX shell, run through `sh`. Nothing to compile or
-  install beyond `aven` itself.
+- **Durable Rust dispatcher** — dispatch is handled by the bundled `aven-dispatch`
+  binary, with persisted attempts and OpenCode V2 recovery commands.
 
 ## Requirements
 
@@ -49,8 +49,8 @@ the pane underneath is exactly as you left it.
 - [aven](https://aventasks.dev) on `PATH`. Set `AVEN_BIN` (see
   [Configuration](#configuration)) if it is installed somewhere Herdr's
   environment does not see.
-- `jq` or `python3` for **dispatch only** (aven's custom-command context is
-  nested JSON; the popover itself needs neither).
+- Rust and Cargo for **dispatch**. Installing Aven commands runs `cargo install --path`
+  for this plugin, which makes `aven-dispatch` available globally through Cargo's bin directory; that directory must be on `PATH`.
 - A coding agent on `PATH`. Dispatch defaults to [opencode](https://opencode.ai);
   `herdr integration install opencode` teaches Herdr to track its
   working/idle/done state.
@@ -166,59 +166,30 @@ worktree workspace where an agent is already working on the task:
 
 What the `dispatch` command does:
 
-1. reads the selected task from aven's versioned JSON context,
-2. creates a Git worktree on a branch named `<project>/<task-suffix>-<slug>`
-   (`herdr worktree create`), or opens the task's existing worktree
-   (`herdr worktree open`) when that branch is already on disk,
-3. starts the agent in the worktree's root pane (`herdr agent start`), or
-   prompts the agent already there,
-4. prompts it with the ref, title, and description, telling it to use
-   `aven context`, `aven note`, and `aven edit … --status done` as it works
-   (`herdr agent prompt`),
-5. sets the task to `active` and leaves a handoff note naming the worktree,
-   branch, and pane.
+1. passes the selected task's versioned Aven JSON context to the bundled Rust
+   `aven-dispatch` binary,
+2. re-reads and validates the selected task, then creates or reopens a Git
+   worktree on a stable branch derived from the immutable task ID,
+3. focuses the worktree, creates an OpenCode V2 session, admits a durable prompt, and opens that session in the worktree's root OpenCode terminal,
+4. sets the task to `active` and records dispatcher metadata plus a handoff note,
+5. persists the attempt in `.aven-dispatch/state.json` so dispatches can be
+   inspected, reconciled, or interrupted without admitting a duplicate prompt.
 
-Task text is passed to `herdr` and `aven` only as argv or standard input, never
-evaluated as shell, so titles and descriptions need no escaping.
+Task text is passed as JSON, argv, or standard input and is never evaluated as
+shell. Titles and descriptions therefore need no manual escaping.
 
 ### Configuration
 
-Set these in the environment Herdr starts from, or in the `env:` map of an
+Configure dispatch behavior with CLI arguments in an
 [extra command](#extra-commands). `install-aven-command` owns the built-in
-`dispatch` entry, so a hand edit to its `env:` map is dropped the next time the
-installer runs.
+`dispatch` entry, so edit `aven-commands.yaml` and rerun the installer rather
+than editing its generated block.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AVEN_DISPATCH_AGENT` | `opencode` | Agent to start in the worktree |
-| `AVEN_DISPATCH_KIND` | the agent name | Herdr agent kind passed to `agent start` |
-| `AVEN_DISPATCH_BASE` | Herdr's choice | Base ref for the new branch |
-| `AVEN_DISPATCH_PROMPT` | `Implement {ref}: {title}` | Opening instruction for the agent; `{ref}` and `{title}` are filled from the selected task |
-| `AVEN_DISPATCH_SKILL` | unset | Name of a bundled workflow under `skills/aven` (e.g. `sdd`); its text replaces `AVEN_DISPATCH_PROMPT` |
-| `AVEN_DISPATCH_NO_FOCUS` | unset | `1` leaves focus where it is instead of switching to the worktree |
-| `AVEN_DISPATCH_DRY_RUN` | unset | `1` prints the plan and changes nothing |
-| `AVEN_DISPATCH_BACKEND` | `shell` | Set to `rust` to opt into the durable OpenCode V2 dispatcher |
+| `AVEN_DISPATCH_STORE` | `.aven-dispatch/state.json` | Persisted dispatcher attempt store |
 
-`AVEN_DISPATCH_PROMPT` starts any agent workflow, and `AVEN_DISPATCH_SKILL`
-takes precedence by inserting a bundled workflow (see the
-[example task workflow](#example-an-aven-native-task-workflow)). Either way the
-aven handoff guidance is appended, so the agent still reads the task and leaves
-notes.
-
-### Rust OpenCode V2 dispatcher (preview)
-
-The shell dispatcher remains the default migration fallback. To route the
-existing **`z d`** and **`z s`** entries through the Rust dispatcher without
-changing Aven's safe stdin context handling, set this in the environment that
-starts Herdr:
-
-```sh
-export AVEN_DISPATCH_BACKEND=rust
-```
-
-The first use builds the bundled binary with Cargo; deployers can build it in
-advance and set `AVEN_DISPATCH_BIN=/path/to/aven-dispatch`. The binary accepts
-the versioned Aven command context on stdin and supports:
+Installing the Aven commands installs or updates the bundled binary with `cargo install --path`; later dispatches invoke the global CLI directly. The binary accepts the versioned Aven command context on stdin and supports:
 
 ```sh
 aven-dispatch doctor
@@ -229,23 +200,29 @@ aven-dispatch reconcile HAP-FTYE
 aven-dispatch interrupt HAP-FTYE
 ```
 
-Operational state defaults to `.aven-dispatch/state.json` (override with
-`AVEN_DISPATCH_STORE`). It links immutable task IDs, attempt IDs,
-branch/worktree, OpenCode session IDs, caller-selected prompt IDs, and pending
-Aven mutations. It never stores credentials in Aven. `status` surfaces pending
-OpenCode permissions/forms without approving them, and prompt admission is not
-task completion. `list` prints all persisted attempts; `list --running` limits
-the output to attempts whose dispatcher execution state is `running`.
+Operational state links immutable task IDs, attempt IDs, branch/worktree,
+OpenCode session IDs, caller-selected prompt IDs, and pending Aven mutations.
+It never stores credentials in Aven. `status` surfaces pending OpenCode
+permissions/forms without approving them, and prompt admission is not task
+completion. `list` prints all persisted attempts; `list --running` limits the
+output to attempts whose dispatcher execution state is `running`.
 
-Set the primary OpenCode agent for a dispatch with `--agent <name>` (or the
-`AVEN_DISPATCH_AGENT` environment variable). The selected agent is sent during
-session creation and persisted with the attempt, so operators can see which
-agent owns a running dispatch:
+The installed `dispatch` and SDD workflows use the `build` agent and `github-copilot/gpt-5.6-terra` model. Set a different primary OpenCode agent with `--agent <name>` and an explicit model with
+`--model <provider/model>`. Both are sent during session creation and persisted
+with the attempt. The plugin's `.opencode/` directory is copied into a worktree
+only when it has no existing `.opencode/`; dispatch refuses to overwrite a
+project-owned OpenCode configuration. The plugin starts with
+[`.opencode/opencode.jsonc`](.opencode/opencode.jsonc); add agents, provider
+settings, permissions, or other OpenCode V2 configuration there. It is copied
+as a new worktree-local `.opencode/` directory before OpenCode creates the
+session.
 
 ```sh
-aven-dispatch dispatch --agent build < context.json
-# equivalent for an Aven custom-command environment
-export AVEN_DISPATCH_AGENT=build
+aven-dispatch dispatch \
+  --agent build \
+  --model provider/model \
+  --opencode-config-dir /path/to/herdr-aven-plugin/.opencode \
+  < context.json
 ```
 
 Example extra command, wired to a second agent (the full file is documented
@@ -254,14 +231,17 @@ Example extra command, wired to a second agent (the full file is documented
 ```yaml
 - name: dispatch-claude
   description: Implement the selected task with Claude in a Herdr worktree
-  program: sh
-  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+  program: aven-dispatch
+  args:
+    - dispatch
+    - --agent
+    - claude
+    - --opencode-config-dir
+    - "${PLUGIN_ROOT}/.opencode"
   keys: [z c]
   target: focused
   execution: wait
   on_success: quit
-  env:
-    AVEN_DISPATCH_AGENT: claude
 ```
 
 ### Example: an aven-native task workflow
@@ -273,12 +253,11 @@ an example, not a built-in command: edit it, rebind it, or delete it in
 
 | In the popover | Command | Inserted workflow |
 | --- | --- | --- |
-| `z s` | `sdd` | `skills/aven/sdd.md` |
+| `z s` | `sdd` | `skills/aven/sdd.md` (`--skill aven/sdd`) |
 
-The command sets `AVEN_DISPATCH_SKILL: sdd`, and `dispatch.sh` inserts that
-file's text into the agent prompt with the task as its `$ARGUMENTS`, dropping
-the file's front matter and filling `{ref}` and `{title}`. The file is plain
-prompt text that ships in the plugin, so **nothing extra needs installing**.
+The command sets `--skill aven/sdd`; the Rust dispatcher loads that
+bundled workflow and prepends it to the task prompt. The file is plain prompt
+text that ships in the plugin, so **nothing extra needs installing**.
 
 The workflow keeps aven as the only task store: it writes the spec into the
 selected task's description, the plan into a note, the breakdown into real aven
@@ -287,10 +266,10 @@ and `aven dep add`), and tracks progress with task statuses and notes — no
 `specs/`, `plan.md`, or `tasks.md` files. It resumes from what is already in
 aven, so running it again on the same task continues instead of starting over.
 
-It uses the plugin's generic `AVEN_DISPATCH_SKILL` mechanism, so it is not wired
-into the plugin itself. To make your own workflow, add a `<name>.md` under
-`skills/aven/` and an `aven-commands.yaml` entry that sets
-`AVEN_DISPATCH_SKILL: <name>`; see
+It uses the dispatcher's generic `--skill` option, so it is not
+wired into the plugin itself. To make your own workflow, add a `<namespace>/<name>.md`
+under `skills/` and an `aven-commands.yaml` entry that passes
+`--skill <namespace>/<name>`; see
 [Extra commands](#extra-commands) and `skills/aven/README.md`.
 
 The command targets the task's worktree: re-running it opens and reuses the
@@ -315,7 +294,7 @@ Reopen the popover afterwards; aven reads `tui.commands` at startup.
 Each active entry is written at the file's left margin (`- name:`) with its
 fields indented relative to it. The installer indents the whole entry under
 `tui.commands` and replaces `${PLUGIN_ROOT}` with the plugin directory, so a
-command can point at `bin/dispatch.sh` or another script here. Fields and
+command can invoke the globally installed `aven-dispatch` CLI or another program. Fields and
 defaults follow aven's [custom TUI command
 schema](https://aventasks.dev/custom-commands/); `name` and `program` are
 required, and names must be unique across custom and built-in commands. Set
@@ -353,7 +332,7 @@ saved layout.
 
 Dispatch is the mirror image: `install-aven-command` writes a `tui.commands`
 entry into aven's own `config.yaml` whose program is `sh` with
-`bin/dispatch.sh` as its argument (aven execs programs directly, and this keeps
+the global `aven-dispatch` CLI (aven execs programs directly, and this keeps
 the script runnable wherever it lives). Because the popover is a child of the
 plugin pane, aven and its command inherit `HERDR_BIN_PATH` and
 `HERDR_SOCKET_PATH`, so the dispatcher can drive Herdr from inside the popup.
@@ -374,9 +353,8 @@ herdr plugin pane open --plugin aven.tasks --entrypoint tui --placement overlay
 | `AVEN_BIN` | Path or command name of the aven executable, when it is not on `PATH` |
 
 Herdr sets the rest of the plugin environment (`HERDR_PLUGIN_*`,
-`HERDR_BIN_PATH`); you do not set those yourself. Dispatch has its own
-`AVEN_DISPATCH_*` overrides, listed
-[above](#dispatch-a-task-to-an-agent).
+`HERDR_BIN_PATH`); you do not set those yourself. Configure dispatcher
+workflows with their explicit CLI options in `aven-commands.yaml`.
 
 ## Troubleshooting
 
@@ -416,7 +394,8 @@ about an existing `tui:` section, merge the printed block by hand.
 request.** The workflow only tells the agent to use aven; it runs whatever aven
 and the selected task provide. Check that the agent has `aven` on its `PATH`
 and can read the task (`aven context <ref>`), and that the command's
-`AVEN_DISPATCH_SKILL` points at a file under `skills/aven/`.
+`--skill` identifies a namespaced file under `skills/`; for example,
+`--skill aven/sdd` resolves to `skills/aven/sdd.md`.
 
 **Dispatch says it needs `jq` or `python3`.** Installing jq or Python 3 is
 enough; the popover itself does not need either.
@@ -433,11 +412,13 @@ track the agent's state.
 
 ## Development
 
-The plugin is POSIX shell, run through `sh`, so there is nothing to build. Run
-the tests with:
+The popover and installer actions are POSIX shell; the dispatcher is Rust. Run
+the project checks with:
 
 ```sh
-sh test/run.sh
+just fmt
+just check
+just test
 ```
 
 The suite covers the manifest, the context parsing that picks the popover
@@ -445,19 +426,16 @@ directory and reads task text (all JSON backends, missing keys, paths with
 spaces, stale directories), the exact flags each pane entrypoint launches aven
 with, action dispatch, key-binding install/idempotency/conflict/restore,
 `doctor`, the aven-command installer (the default dispatch + workflow block,
-`aven-commands.yaml` extras, the in-place rewrite and restore), and the
-dispatcher's `herdr worktree create` / `agent start` / `agent prompt` argv
-including task titles with quotes, a `AVEN_DISPATCH_PROMPT` override, and
-`AVEN_DISPATCH_SKILL` insertion. The tests run aven and herdr through `/bin/sh`
-and `/bin/echo`, so they never start the real TUI, create a worktree, or touch
-your configs.
+`aven-commands.yaml` extras, the in-place rewrite and restore), and the Rust dispatcher's worktree/session/prompt admission, persisted retries, reconciliation,
+and interruption. Tests replace external programs with fixtures, so they never
+start the real TUI, create a worktree, or touch your configs.
 
 The entry points are small and worth reading first:
 
 ```
 herdr-plugin.toml            manifest: five actions, two popup panes
 bin/run.sh                   action dispatcher (open, compose, ...) and pane launcher
-bin/dispatch.sh              aven custom command: task -> worktree -> agent -> note
+src/main.rs                  durable Aven -> OpenCode V2 dispatcher
 aven-commands.yaml           extra aven commands (the example workflow + examples)
 skills/aven/                 example agent workflows the dispatcher can insert
 lib/plugin.sh                context JSON, directory resolution, aven lookup, replace_all

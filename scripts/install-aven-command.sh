@@ -50,6 +50,23 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 block=$tmp/block
 
+# Install the Rust dispatcher into Cargo's global bin directory before writing
+# commands that invoke it by name. Aven executes custom commands directly, so
+# the installed binary must be available on PATH in the environment that starts
+# Aven/Herdr.
+if ! command -v cargo >/dev/null 2>&1; then
+  printf 'warning: cargo is required to install aven-dispatch; no Aven commands were changed\n'
+  exit 1
+fi
+if ! cargo install --path "$PLUGIN_ROOT" --force >&2; then
+  printf 'warning: cargo could not install aven-dispatch; no Aven commands were changed\n'
+  exit 1
+fi
+if ! command -v aven-dispatch >/dev/null 2>&1; then
+  printf "warning: aven-dispatch was installed but is not on PATH; add Cargo's bin directory to PATH, then retry\n"
+  exit 1
+fi
+
 # --- build the managed block ------------------------------------------------
 
 # The built-in dispatch command. ${PLUGIN_ROOT} is replaced below.
@@ -58,9 +75,15 @@ dispatch_item() {
     - name: dispatch
       aliases: [custom-dispatch]
       description: Implement the selected task with a coding agent in a Herdr worktree
-      program: sh
+      program: aven-dispatch
       args:
-        - ${PLUGIN_ROOT}/bin/dispatch.sh
+        - dispatch
+        - --agent
+        - build
+        - --model
+        - github-copilot/gpt-5.6-terra
+        - --opencode-config-dir
+        - ${PLUGIN_ROOT}/.opencode
       keys: [z d]
       detail_keys: [z D]
       target: focused

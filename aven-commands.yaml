@@ -5,8 +5,8 @@
 #   herdr plugin action invoke aven.tasks.install-aven-command
 #
 # Every active entry is indented under tui.commands and has ${PLUGIN_ROOT}
-# replaced with this plugin's directory, so it can point at bin/dispatch.sh or
-# another script here. Write each entry at the file's left margin ("- name:")
+# replaced with this plugin's directory, so it can pass the bundled workflow
+# directory to the globally installed Rust CLI. Write each entry at the file's left margin ("- name:")
 # with its fields indented relative to it; comment and blank lines are dropped.
 #
 # Fields follow aven's custom-command schema
@@ -24,22 +24,31 @@
 # request to shipped, keeping the spec in the task description, the plan in a
 # note, the breakdown in child tasks, and progress in statuses and notes.
 #
-# AVEN_DISPATCH_SKILL names the bundled skill text in skills/aven/sdd.md that
-# bin/dispatch.sh inserts into the agent prompt, with the task as its input.
-# Write your own skill file and point another entry at it the same way.
+# --skill names the bundled skill text as a path relative to skills.
+# `aven/sdd` resolves to skills/aven/sdd.md. Write your own namespaced skill file
+# and point another entry at it the same way.
 
 - name: sdd
   aliases: [aven-sdd]
   description: Work the selected task through define, plan, break down, implement (example)
-  program: sh
-  args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+  program: aven-dispatch
+  args:
+    - dispatch
+    - --agent
+    - build
+    - --model
+    - github-copilot/gpt-5.6-terra
+    - --skill
+    - aven/sdd
+    - --skills-dir
+    - "${PLUGIN_ROOT}/skills"
+    - --opencode-config-dir
+    - "${PLUGIN_ROOT}/.opencode"
   keys: [z s]
   detail_keys: [z S]
   target: focused
   execution: wait
   on_success: quit
-  env:
-    AVEN_DISPATCH_SKILL: sdd
 
 # --- More examples -----------------------------------------------------------
 #
@@ -48,25 +57,30 @@
 # - name: dispatch-claude
 #   aliases: [custom-dispatch-claude]
 #   description: Implement the selected task with Claude in a Herdr worktree
-#   program: sh
-#   args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+#   program: aven-dispatch
+#   args:
+#     - dispatch
+#     - --agent
+#     - claude
+#     - --opencode-config-dir
+#     - "${PLUGIN_ROOT}/.opencode"
 #   keys: [z c]
 #   detail_keys: [z C]
 #   target: focused
 #   execution: wait
 #   on_success: quit
-#   env:
-#     AVEN_DISPATCH_AGENT: claude
+# Dispatch with an explicit model on "z m".
 #
-# Dispatch from a fresh branch based on main on "z m".
-#
-# - name: dispatch-main
-#   description: Implement the selected task on a branch based on main
-#   program: sh
-#   args: ["${PLUGIN_ROOT}/bin/dispatch.sh"]
+# - name: dispatch-model
+#   description: Implement the selected task with a specific OpenCode model
+#   program: aven-dispatch
+#   args:
+#     - dispatch
+#     - --model
+#     - provider/model
+#     - --opencode-config-dir
+#     - "${PLUGIN_ROOT}/.opencode"
 #   keys: [z m]
 #   target: focused
 #   execution: wait
 #   on_success: quit
-#   env:
-#     AVEN_DISPATCH_BASE: main

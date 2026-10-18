@@ -22,12 +22,12 @@ for action in open compose install-keybindings install-aven-command doctor; do
 done
 
 # The aven custom command the installer wires up.
-[ -f "$PLUGIN_ROOT/bin/dispatch.sh" ] || fail "missing bin/dispatch.sh"
 [ -f "$PLUGIN_ROOT/scripts/install-aven-command.sh" ] || fail "missing scripts/install-aven-command.sh"
 [ -f "$PLUGIN_ROOT/aven-commands.yaml" ] || fail "missing aven-commands.yaml"
 
 # The bundled example workflow the dispatcher can insert.
 [ -f "$PLUGIN_ROOT/skills/aven/sdd.md" ] || fail "missing skills/aven/sdd.md"
+[ -f "$PLUGIN_ROOT/.opencode/opencode.jsonc" ] || fail "missing plugin OpenCode configuration"
 
 # Panes, both popovers, one per entrypoint.
 assert_contains "$body" 'id = "tui"'

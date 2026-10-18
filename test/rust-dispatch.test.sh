@@ -26,7 +26,8 @@ EOF
 cat > "$fake/herdr" <<'EOF'
 #!/bin/sh
 printf 'herdr %s\n' "$*" >> "$RUST_DISPATCH_LOG"
-printf '%s\n' '{"result":{"worktree":{"path":"/worktree"},"root_pane":{"pane_id":"w1:p1"}}}'
+mkdir -p "$RUST_WORKTREE"
+printf '{"result":{"worktree":{"path":"%s"},"root_pane":{"pane_id":"w1:p1"}}}\n' "$RUST_WORKTREE"
 EOF
 cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
@@ -61,10 +62,16 @@ esac
 EOF
 chmod +x "$fake/opencode"
 
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build >/dev/null
-assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task"' 'stable worktree branch'
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd --skills-dir "$PLUGIN_ROOT/skills" --opencode-config-dir "$PLUGIN_ROOT/.opencode" >/dev/null
+assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task" --focus' 'stable worktree branch'
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
+assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
+assert_file_contains "$work/worktree/.opencode/opencode.jsonc" '"$schema"' 'plugin OpenCode config copied to worktree'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
+assert_file_contains "$log" 'herdr agent start dispatch-att_' 'OpenCode terminal agent starts in worktree pane'
+assert_file_contains "$log" '--kind opencode --pane w1:p1 -- --session ses_one' 'terminal attaches durable OpenCode session'
+assert_file_contains "$log" 'herdr agent focus w1:p1' 'terminal agent is focused'
+assert_file_contains "$log" 'Take an aven task from request to shipped' 'explicit skills directory is loaded'
 assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
 assert_file_contains "$state" '"agent": "build"' 'primary agent persisted'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/running"

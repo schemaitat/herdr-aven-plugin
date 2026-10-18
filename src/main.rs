@@ -6,7 +6,7 @@ use std::{
     collections::BTreeMap,
     env, fs,
     io::{self, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -29,6 +29,18 @@ enum Commands {
         /// Primary OpenCode agent for the created session (or AVEN_DISPATCH_AGENT).
         #[arg(long, env = "AVEN_DISPATCH_AGENT")]
         agent: Option<String>,
+        /// OpenCode model in provider/model form.
+        #[arg(long, env = "AVEN_DISPATCH_MODEL")]
+        model: Option<String>,
+        /// Plugin .opencode directory to copy into a worktree before session creation.
+        #[arg(long, env = "AVEN_DISPATCH_OPENCODE_CONFIG_DIR")]
+        opencode_config_dir: Option<PathBuf>,
+        /// Namespaced bundled workflow under the skills directory (for example, aven/sdd).
+        #[arg(long, env = "AVEN_DISPATCH_SKILL")]
+        skill: Option<String>,
+        /// Directory containing bundled workflow files.
+        #[arg(long, env = "AVEN_DISPATCH_SKILLS_DIR")]
+        skills_dir: Option<PathBuf>,
     },
     /// Resume an existing attempt without creating a second session.
     Resume { task: String },
@@ -140,6 +152,8 @@ struct Attempt {
     pane: String,
     #[serde(default)]
     agent: String,
+    #[serde(default)]
+    model: String,
     #[serde(default)]
     session_id: String,
     prompt_id: String,
@@ -308,6 +322,68 @@ fn branch(project: &str, task_id: &str) -> String {
         task_id.to_ascii_lowercase()
     )
 }
+fn model_ref(model: Option<&str>) -> Result<Value> {
+    let Some(model) = model.filter(|model| !model.is_empty()) else {
+        return Ok(Value::Null);
+    };
+    let (provider_id, model) = model
+        .split_once('/')
+        .context("--model must use provider/model form")?;
+    if provider_id.is_empty() || model.is_empty() || model.contains('/') {
+        bail!("--model must use provider/model form");
+    }
+    let (id, variant) = match model.split_once('#') {
+        Some((id, variant)) if !id.is_empty() && !variant.is_empty() => (id, Some(variant)),
+        Some(_) => bail!("--model variant must follow model as provider/model#variant"),
+        None => (model, None),
+    };
+    let mut value = json!({"providerID": provider_id, "id": id});
+    if let Some(variant) = variant {
+        value["variant"] = Value::String(variant.to_owned());
+    }
+    Ok(value)
+}
+fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("create OpenCode config directory {}", destination.display()))?;
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("read OpenCode config directory {}", source.display()))?
+    {
+        let entry = entry?;
+        let destination = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_directory(&entry.path(), &destination)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), destination)?;
+        } else {
+            bail!(
+                "unsupported entry in OpenCode config directory: {}",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+fn install_opencode_config(worktree: &str, source: Option<&Path>) -> Result<()> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    if !source.is_dir() {
+        bail!(
+            "OpenCode config directory does not exist: {}",
+            source.display()
+        );
+    }
+    let destination = Path::new(worktree).join(".opencode");
+    if destination.exists() {
+        bail!(
+            "worktree already has {}; refusing to overwrite project OpenCode configuration",
+            destination.display()
+        );
+    }
+    copy_directory(source, &destination)
+}
 
 fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> {
     let output = aven(
@@ -367,7 +443,11 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
             attempt.branch.clone(),
         ]);
     }
-    args.extend(["--label".into(), format!("{} {}", attempt.task_ref, title)]);
+    args.extend([
+        "--label".into(),
+        format!("{} {}", attempt.task_ref, title),
+        "--focus".into(),
+    ]);
     let output = run("herdr", &args, None)?;
     let value: Value = serde_json::from_str(&output)?;
     let worktree = value
@@ -382,11 +462,87 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
         .to_owned();
     Ok((worktree, pane))
 }
-fn prompt(task: &Value, reference: &str) -> String {
-    format!(
-        "Implement {reference}. Aven is the source of truth: re-read `aven context {reference} --full`, record handoffs and verification in Aven notes, and do not mark the task done until verification/review succeeds.\n\nTask context:\n{}",
+fn terminal_agent_name(attempt: &Attempt) -> String {
+    format!("dispatch-{}", attempt.attempt_id.to_ascii_lowercase())
+        .chars()
+        .map(|character| {
+            if character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '-'
+                || character == '_'
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+fn start_terminal_agent(attempt: &Attempt) -> Result<()> {
+    let name = terminal_agent_name(attempt);
+    run(
+        "herdr",
+        &[
+            "agent".into(),
+            "start".into(),
+            name,
+            "--kind".into(),
+            "opencode".into(),
+            "--pane".into(),
+            attempt.pane.clone(),
+            "--".into(),
+            "--session".into(),
+            attempt.session_id.clone(),
+        ],
+        None,
+    )?;
+    run(
+        "herdr",
+        &["agent".into(), "focus".into(), attempt.pane.clone()],
+        None,
+    )?;
+    Ok(())
+}
+fn bundled_skill(skill: Option<String>, skills_dir: Option<PathBuf>) -> Result<Option<String>> {
+    let Some(skill) = skill.or_else(|| env::var("AVEN_DISPATCH_SKILL").ok()) else {
+        return Ok(None);
+    };
+    if skill.is_empty() {
+        return Ok(None);
+    }
+    if skill.split('/').any(|segment| {
+        segment.is_empty()
+            || !segment
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        bail!("invalid AVEN_DISPATCH_SKILL: {skill}");
+    }
+    let skills_dir = skills_dir.unwrap_or_else(|| {
+        env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+            .join("skills")
+    });
+    let path = skills_dir.join(skill).with_extension("md");
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("read bundled dispatch skill {}", path.display()))?;
+    Ok(Some(text))
+}
+fn prompt(
+    task: &Value,
+    reference: &str,
+    skill: Option<String>,
+    skills_dir: Option<PathBuf>,
+) -> Result<String> {
+    let opening =
+        bundled_skill(skill, skills_dir)?.unwrap_or_else(|| format!("Implement {reference}."));
+    Ok(format!(
+        "{opening}\n\nAven is the source of truth: re-read `aven context {reference} --full`, record handoffs and verification in Aven notes, and do not mark the task done until verification/review succeeds.\n\nTask context:\n{}",
         serde_json::to_string_pretty(task).unwrap()
-    )
+    ))
 }
 fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     let metadata = [
@@ -432,7 +588,15 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(path: PathBuf, dry_run: bool, agent: Option<String>) -> Result<()> {
+fn dispatch(
+    path: PathBuf,
+    dry_run: bool,
+    agent: Option<String>,
+    model: Option<String>,
+    opencode_config_dir: Option<PathBuf>,
+    skill: Option<String>,
+    skills_dir: Option<PathBuf>,
+) -> Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let context = parse_context(&input)?;
@@ -454,6 +618,7 @@ fn dispatch(path: PathBuf, dry_run: bool, agent: Option<String>) -> Result<()> {
         worktree: String::new(),
         pane: String::new(),
         agent: agent.unwrap_or_default(),
+        model: model.clone().unwrap_or_default(),
         session_id: String::new(),
         prompt_id: identifier("msg"),
         state: "workspace-pending".into(),
@@ -486,6 +651,11 @@ fn dispatch(path: PathBuf, dry_run: bool, agent: Option<String>) -> Result<()> {
         &attempt,
         &selected.task.title,
     )?;
+    if let Err(error) = install_opencode_config(&worktree, opencode_config_dir.as_deref()) {
+        store.store.attempts.remove(&attempt.task_id);
+        store.save()?;
+        return Err(error);
+    }
     attempt.worktree = worktree;
     attempt.pane = pane;
     attempt.state = "session-pending".into();
@@ -501,6 +671,7 @@ fn dispatch(path: PathBuf, dry_run: bool, agent: Option<String>) -> Result<()> {
             "title": format!("{} {}", attempt.task_ref, selected.task.title),
             "location": {"directory": attempt.worktree},
             "agent": if attempt.agent.is_empty() { Value::Null } else { Value::String(attempt.agent.clone()) },
+            "model": model_ref(model.as_deref())?,
         })),
     )?;
     attempt.session_id = field(&session, "/data/id")?.to_owned();
@@ -514,13 +685,14 @@ fn dispatch(path: PathBuf, dry_run: bool, agent: Option<String>) -> Result<()> {
         "POST",
         &format!("/api/session/{}/prompt", attempt.session_id),
         Some(
-            json!({"id": attempt.prompt_id, "text": prompt(&task, &attempt.task_ref), "resume": true}),
+            json!({"id": attempt.prompt_id, "text": prompt(&task, &attempt.task_ref, skill, skills_dir)?, "resume": true}),
         ),
     )?;
     let admitted = field(&admission, "/data/id")?;
     if admitted != attempt.prompt_id {
         bail!("OpenCode admitted an unexpected message id");
     }
+    start_terminal_agent(&attempt)?;
     attempt.state = "running".into();
     attempt.aven_update_pending = true;
     store
@@ -669,7 +841,22 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let path = store_path(cli.store);
     match cli.command {
-        Commands::Dispatch { dry_run, agent } => dispatch(path, dry_run, agent),
+        Commands::Dispatch {
+            dry_run,
+            agent,
+            model,
+            opencode_config_dir,
+            skill,
+            skills_dir,
+        } => dispatch(
+            path,
+            dry_run,
+            agent,
+            model,
+            opencode_config_dir,
+            skill,
+            skills_dir,
+        ),
         Commands::Resume { task } => reconcile(path, &task),
         Commands::Status { task } => status(path, &task),
         Commands::List { running } => list(path, running),
@@ -686,6 +873,69 @@ mod tests {
     fn targets_not_focused_selection_drive_validation() {
         let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).unwrap();
         assert!(selected_for(&context).is_err());
+    }
+    #[test]
+    fn terminal_agent_name_is_a_safe_herdr_name() {
+        let attempt = Attempt {
+            task_id: String::new(),
+            task_ref: String::new(),
+            attempt_id: "att_ABC.123".into(),
+            branch: String::new(),
+            worktree: String::new(),
+            pane: String::new(),
+            agent: String::new(),
+            model: String::new(),
+            session_id: String::new(),
+            prompt_id: String::new(),
+            state: String::new(),
+            aven_update_pending: false,
+            log_cursor: String::new(),
+            aven: Invocation {
+                aven_exe: String::new(),
+                db_path: None,
+                workspace: None,
+                origin_cwd: String::new(),
+            },
+            created_at: 0,
+        };
+        assert_eq!(terminal_agent_name(&attempt), "dispatch-att_abc-123");
+    }
+    #[test]
+    fn model_option_becomes_an_opencode_model_ref() {
+        assert_eq!(
+            model_ref(Some("provider/model#fast")).unwrap(),
+            json!({"providerID": "provider", "id": "model", "variant": "fast"})
+        );
+        assert!(model_ref(Some("missing-provider")).is_err());
+    }
+    #[test]
+    fn plugin_opencode_config_is_copied_without_overwriting() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("plugin/.opencode");
+        let worktree = root.path().join("worktree");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("opencode.jsonc"), "{}").unwrap();
+        install_opencode_config(worktree.to_str().unwrap(), Some(&source)).unwrap();
+        assert_eq!(
+            fs::read_to_string(worktree.join(".opencode/opencode.jsonc")).unwrap(),
+            "{}"
+        );
+        assert!(install_opencode_config(worktree.to_str().unwrap(), Some(&source)).is_err());
+    }
+    #[test]
+    fn namespaced_skill_is_loaded_below_the_skills_root() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("aven/sdd.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(&skill, "workflow").unwrap();
+        assert_eq!(
+            bundled_skill(Some("aven/sdd".into()), Some(root.path().into())).unwrap(),
+            Some("workflow".into())
+        );
+    }
+    #[test]
+    fn unsafe_skill_path_is_rejected() {
+        assert!(bundled_skill(Some("aven/../sdd".into()), None).is_err());
     }
     #[test]
     fn branch_uses_immutable_id() {

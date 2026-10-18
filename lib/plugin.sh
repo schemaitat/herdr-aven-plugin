@@ -1,6 +1,6 @@
 # Shared helpers for the aven.tasks Herdr plugin.
 #
-# POSIX sh only. Sourced by bin/run.sh, bin/dispatch.sh and the scripts under
+# POSIX sh only. Sourced by bin/run.sh and the scripts under
 # scripts/. Everything here reads the environment Herdr injects into plugin
 # commands:
 #
