@@ -5,10 +5,11 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, IsTerminal, Read, Write},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Parser)]
@@ -226,9 +227,25 @@ fn identifier(prefix: &str) -> String {
 }
 fn store_path(value: Option<PathBuf>) -> PathBuf {
     value.unwrap_or_else(|| {
-        env::current_dir()
-            .unwrap()
-            .join(".aven-dispatch/state.json")
+        let directory = env::current_dir().unwrap();
+        // All linked checkouts share the primary checkout's existing store.
+        // This resolves a filesystem path only: it never switches branches or
+        // moves Herdr focus to the primary checkout.
+        let primary = run_in(
+            "git",
+            &["worktree".into(), "list".into(), "--porcelain".into()],
+            None,
+            Some(&directory),
+        )
+        .ok()
+        .and_then(|listing| {
+            listing
+                .lines()
+                .find_map(|line| line.strip_prefix("worktree "))
+                .map(PathBuf::from)
+        })
+        .unwrap_or(directory);
+        primary.join(".aven-dispatch/state.json")
     })
 }
 fn absolute_path(path: PathBuf) -> Result<PathBuf> {
@@ -426,41 +443,115 @@ fn available_primary_agents(worktree: &str) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-fn select_agent(worktree: &str) -> Result<String> {
-    let agents = available_primary_agents(worktree)?;
+fn choose_agent(
+    agents: &[(String, String)],
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<String> {
+    writeln!(output, "Select an OpenCode build agent:\n")?;
+    for (index, (id, name)) in agents.iter().enumerate() {
+        writeln!(output, "  {}. {} ({})", index + 1, name, id)?;
+    }
+    loop {
+        write!(output, "\nChoice [1-{}], or q to cancel: ", agents.len())?;
+        output.flush()?;
+        let mut choice = String::new();
+        if input.read_line(&mut choice)? == 0 || matches!(choice.trim(), "" | "q" | "Q") {
+            bail!("OpenCode agent selection was canceled");
+        }
+        if let Ok(index) = choice.trim().parse::<usize>()
+            && let Some(agent) = index.checked_sub(1).and_then(|index| agents.get(index))
+        {
+            return Ok(agent.0.clone());
+        }
+        writeln!(output, "Enter a number from 1 to {}, or q.", agents.len())?;
+    }
+}
+
+fn select_agent(worktree: &str, response: &Path, existing: Option<&str>) -> Result<String> {
+    let mut agents = available_primary_agents(worktree)?;
+    if let Some(existing) = existing {
+        // Re-dispatch confirms the existing session, never silently swaps its
+        // agent or admits another prompt. It must still display the picker.
+        let name = agents
+            .iter()
+            .find(|(id, _)| id == existing)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or(existing);
+        agents = vec![(
+            existing.to_owned(),
+            format!("{name} — reopen existing session"),
+        )];
+    }
     if agents.is_empty() {
         bail!(
             "OpenCode has no visible primary agents in {}; configure one and retry",
             worktree
         );
     }
-    if agents.len() == 1 {
-        return Ok(agents[0].0.clone());
+
+    // Aven's terminal execution mode lends us the existing Herdr popup and
+    // supplies JSON via AVEN_COMMAND_CONTEXT. Opening another popup here fails
+    // with ui_busy: Herdr has only one session-modal popup slot.
+    if env::var_os("AVEN_COMMAND_CONTEXT").is_some() {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            bail!("Aven terminal dispatch requires an interactive terminal");
+        }
+        return choose_agent(&agents, &mut io::stdin().lock(), &mut io::stdout().lock());
+    }
+    if env::var("HERDR_PLUGIN_ENTRYPOINT_ID").as_deref() == Ok("tui") {
+        bail!(
+            "Aven dispatch needs execution: terminal to reuse its Herdr popup; update the installed Aven commands and reopen Aven"
+        );
     }
 
-    let mut terminal = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .context("open /dev/tty for OpenCode agent selection; pass --agent <id> when dispatch is non-interactive")?;
-    writeln!(terminal, "Select an OpenCode build agent for {worktree}:")?;
-    for (index, (id, name)) in agents.iter().enumerate() {
-        writeln!(terminal, "  {}. {} ({})", index + 1, name, id)?;
-    }
-    loop {
-        write!(terminal, "Choice [1-{}]: ", agents.len())?;
-        terminal.flush()?;
-        let mut choice = String::new();
-        if std::io::BufReader::new(&terminal).read_line(&mut choice)? == 0 {
+    let choices = agents
+        .iter()
+        .enumerate()
+        .map(|(index, (id, name))| format!("  {}. {} ({})", index + 1, name, id))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ids = agents
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response_path = response;
+    let response = response_path
+        .to_str()
+        .context("agent picker response path is not valid UTF-8")?;
+    let _ = fs::remove_file(response);
+    run(
+        "herdr",
+        &[
+            "plugin".into(),
+            "pane".into(),
+            "open".into(),
+            "--plugin".into(),
+            "aven.tasks".into(),
+            "--entrypoint".into(),
+            "agent-picker".into(),
+            "--env".into(),
+            format!("AVEN_DISPATCH_PICKER_RESPONSE={response}"),
+            "--env".into(),
+            format!("AVEN_DISPATCH_PICKER_CHOICES={choices}"),
+            "--env".into(),
+            format!("AVEN_DISPATCH_PICKER_IDS={ids}"),
+        ],
+        None,
+    )?;
+    for _ in 0..1200 {
+        if response_path.exists() {
+            let selected = fs::read_to_string(response_path)?.trim().to_owned();
+            let _ = fs::remove_file(response_path);
+            if agents.iter().any(|(id, _)| id == &selected) {
+                return Ok(selected);
+            }
             bail!("OpenCode agent selection was canceled");
         }
-        if let Ok(index) = choice.trim().parse::<usize>()
-            && let Some((id, _)) = agents.get(index.saturating_sub(1))
-        {
-            return Ok(id.clone());
-        }
-        writeln!(terminal, "Enter a number from 1 to {}.", agents.len())?;
+        std::thread::sleep(Duration::from_millis(100));
     }
+    bail!("timed out waiting for the Herdr OpenCode agent picker")
 }
 
 fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> {
@@ -524,7 +615,7 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
     args.extend([
         "--label".into(),
         format!("{} {}", attempt.task_ref, title),
-        "--focus".into(),
+        "--no-focus".into(),
     ]);
     let output = run("herdr", &args, None)?;
     let value: Value = serde_json::from_str(&output)?;
@@ -542,6 +633,33 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
 }
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+fn focus_pane(pane: &str) -> Result<()> {
+    // The CLI exposes directional pane focus only. The public socket API can
+    // focus this exact pane across workspaces without relying on agent detection.
+    let socket = env::var_os("HERDR_SOCKET_PATH").context("HERDR_SOCKET_PATH is not set")?;
+    let mut stream = UnixStream::connect(socket).context("connect to Herdr for pane focus")?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    let id = identifier("focus");
+    writeln!(
+        stream,
+        "{}",
+        json!({"id": id, "method": "pane.focus", "params": {"pane_id": pane}})
+    )?;
+    let mut response = String::new();
+    io::BufReader::new(stream).read_line(&mut response)?;
+    let response: Value = serde_json::from_str(&response).context("Herdr pane focus response")?;
+    if response.get("id").and_then(Value::as_str) != Some(&id) {
+        bail!("Herdr pane focus returned an unexpected request id");
+    }
+    if let Some(error) = response.get("error") {
+        bail!("Herdr pane focus failed: {error}");
+    }
+    if response.get("result").is_none() {
+        bail!("Herdr pane focus returned no result");
+    }
+    Ok(())
 }
 fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Result<()> {
     run(
@@ -787,12 +905,37 @@ fn dispatch(
     skills_dir: Option<PathBuf>,
     babysitter: bool,
 ) -> Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    let input = if let Some(context) = env::var_os("AVEN_COMMAND_CONTEXT") {
+        fs::read_to_string(context).context("read Aven terminal command context")?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        input
+    };
     let context = parse_context(&input)?;
     let selected = selected_for(&context)?;
     let task = refresh_task(&context, selected)?;
     let mut store = LockedStore::open(path.clone())?;
+    if !store.store.attempts.contains_key(&selected.task.id)
+        && let Some(snapshot) = task
+            .pointer("/metadata/dispatch.attempt")
+            .and_then(Value::as_str)
+    {
+        // Older dispatches may have used a checkout-local store. Aven's
+        // task-scoped snapshot preserves that session across checkout changes.
+        let recovered: Attempt =
+            serde_json::from_str(snapshot).context("read Aven dispatcher attempt snapshot")?;
+        if recovered.task_id != selected.task.id {
+            bail!("Aven dispatcher snapshot belongs to a different task");
+        }
+        store
+            .store
+            .attempts
+            .insert(recovered.task_id.clone(), recovered);
+        if !dry_run {
+            store.save()?;
+        }
+    }
     if let Some(existing) = store.store.attempts.get(&selected.task.id).cloned() {
         if dry_run {
             println!(
@@ -806,6 +949,11 @@ fn dispatch(
             &existing,
             &selected.task.title,
         )?;
+        if agent.as_deref().is_none_or(|agent| agent == "select") {
+            let response =
+                path.with_file_name(format!(".agent-picker-{}.response", identifier("reopen")));
+            select_agent(&worktree, &response, Some(&existing.agent))?;
+        }
         let mut reopened = existing;
         reopened.worktree = worktree;
         reopened.pane = pane;
@@ -846,6 +994,7 @@ fn dispatch(
             .attempts
             .insert(reopened.task_id.clone(), reopened.clone());
         store.save()?;
+        focus_pane(&reopened.pane)?;
         println!(
             "reopened {} in OpenCode session {} (attempt {})",
             reopened.task_ref, reopened.session_id, reopened.attempt_id
@@ -898,7 +1047,9 @@ fn dispatch(
     attempt.worktree = worktree;
     attempt.pane = pane;
     if attempt.agent.is_empty() || attempt.agent == "select" {
-        attempt.agent = select_agent(&attempt.worktree)?;
+        let response =
+            path.with_file_name(format!(".agent-picker-{}.response", attempt.attempt_id));
+        attempt.agent = select_agent(&attempt.worktree, &response, None)?;
     }
     attempt.state = "session-pending".into();
     store
@@ -961,6 +1112,7 @@ fn dispatch(
             .insert(attempt.task_id.clone(), attempt.clone());
         store.save()?;
     }
+    focus_pane(&attempt.pane)?;
     println!(
         "admitted {} to OpenCode session {} (attempt {})",
         attempt.task_ref, attempt.session_id, attempt.attempt_id
@@ -1138,6 +1290,22 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn single_agent_still_requires_a_choice() {
+        let agents = vec![("build".into(), "Build".into())];
+        let mut output = Vec::new();
+        assert!(choose_agent(&agents, &mut io::Cursor::new(""), &mut output).is_err());
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("1. Build (build)")
+        );
+        assert_eq!(
+            choose_agent(&agents, &mut io::Cursor::new("0\n2\n1\n"), &mut Vec::new()).unwrap(),
+            "build"
+        );
+        assert!(choose_agent(&agents, &mut io::Cursor::new("q\n"), &mut Vec::new()).is_err());
+    }
     #[test]
     fn targets_not_focused_selection_drive_validation() {
         let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).unwrap();

@@ -43,6 +43,18 @@ run_pane
 assert_file_contains "$FAKE_AVEN_LOG" "cwd=$notedir"
 assert_file_contains "$FAKE_AVEN_LOG" "args=tui -p --add-task-only"
 
+# Agent picker is a Herdr popup that returns the selected OpenCode ID through
+# the response file instead of consuming the Aven command's JSON stdin.
+picker_response=$work/picker-response
+HERDR_PLUGIN_ENTRYPOINT_ID=agent-picker
+AVEN_DISPATCH_PICKER_RESPONSE=$picker_response
+AVEN_DISPATCH_PICKER_CHOICES='  1. Build (build)'
+AVEN_DISPATCH_PICKER_IDS=build
+export AVEN_DISPATCH_PICKER_RESPONSE AVEN_DISPATCH_PICKER_CHOICES AVEN_DISPATCH_PICKER_IDS
+printf '1\n' | run_pane
+assert_file_contains "$picker_response" 'build'
+unset AVEN_DISPATCH_PICKER_RESPONSE AVEN_DISPATCH_PICKER_CHOICES AVEN_DISPATCH_PICKER_IDS
+
 # A stale focused-pane directory falls back to the workspace directory.
 HERDR_PLUGIN_CONTEXT_JSON=$(printf '{"focused_pane_cwd":"%s/gone","workspace_cwd":"%s"}' "$work" "$notedir")
 : > "$FAKE_AVEN_LOG"

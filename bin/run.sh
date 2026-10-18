@@ -58,6 +58,27 @@ action_main() {
 pane_main() {
   entrypoint=${HERDR_PLUGIN_ENTRYPOINT_ID:-tui}
 
+  if [ "$entrypoint" = agent-picker ]; then
+    response=${AVEN_DISPATCH_PICKER_RESPONSE:-}
+    choices=${AVEN_DISPATCH_PICKER_CHOICES:-}
+    ids=${AVEN_DISPATCH_PICKER_IDS:-}
+    if [ -z "$response" ] || [ -z "$choices" ] || [ -z "$ids" ]; then
+      printf 'agent picker was opened without dispatch choices.\n' >&2
+      exit 2
+    fi
+    printf 'Select an OpenCode build agent:\n\n%s\n\nChoice [1-]: ' "$choices"
+    IFS= read -r choice || choice=q
+    case "$choice" in
+      q|Q|"") selected=cancelled ;;
+      *[!0-9]*) selected=cancelled ;;
+      *) selected=$(printf '%s\n' "$ids" | sed -n "${choice}p")
+         [ -n "$selected" ] || selected=cancelled ;;
+    esac
+    temporary="${response}.new"
+    (umask 077 && printf '%s\n' "$selected" > "$temporary" && mv "$temporary" "$response")
+    exit 0
+  fi
+
   # Start where the focused pane was, so `aven tui -p` infers the project from
   # the current directory and falls back to workspace scope when there is none.
   start_dir=$(resolve_start_dir)

@@ -45,7 +45,7 @@
   keys: [z s]
   detail_keys: [z S]
   target: focused
-  execution: wait
+  execution: terminal
   on_success: quit
 
 # Opt in to an adjacent babysitter while dispatching the selected task. The
@@ -66,7 +66,7 @@
   keys: [z b]
   detail_keys: [z B]
   target: focused
-  execution: wait
+  execution: terminal
   on_success: quit
 
 # --- More examples -----------------------------------------------------------

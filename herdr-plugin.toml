@@ -55,3 +55,11 @@ placement = "popup"
 width = "80%"
 height = 30
 command = ["sh", "bin/run.sh", "pane"]
+
+[[panes]]
+id = "agent-picker"
+title = "select OpenCode agent"
+placement = "popup"
+width = 56
+height = 14
+command = ["sh", "bin/run.sh", "pane"]

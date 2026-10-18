@@ -11,6 +11,14 @@ mkdir -p "$fake"
 log=$work/calls
 state=$work/state.json
 export RUST_DISPATCH_LOG=$log
+export HERDR_SOCKET_PATH=$work/herdr.sock
+python3 "$PLUGIN_ROOT/test/herdr-socket-fixture.py" &
+socket_fixture=$!
+trap 'kill "$socket_fixture" 2>/dev/null || true' EXIT HUP INT TERM
+while [ ! -S "$HERDR_SOCKET_PATH" ]; do
+  kill -0 "$socket_fixture" 2>/dev/null || fail 'Herdr socket fixture failed'
+  sleep 0.05
+done
 
 cat > "$fake/aven" <<'EOF'
 #!/bin/sh
@@ -27,6 +35,16 @@ EOF
 cat > "$fake/herdr" <<'EOF'
 #!/bin/sh
 printf 'herdr %s\n' "$*" >> "$RUST_DISPATCH_LOG"
+if [ "$1" = plugin ] && [ "$2" = pane ] && [ "$3" = open ]; then
+  for argument in "$@"; do
+    case "$argument" in
+      AVEN_DISPATCH_PICKER_RESPONSE=*) response=${argument#AVEN_DISPATCH_PICKER_RESPONSE=} ;;
+    esac
+  done
+  [ -n "${response:-}" ] && printf '%s\n' configured-build > "$response"
+  printf '%s\n' '{}'
+  exit 0
+fi
 if [ "$1" = pane ] && [ "$2" = run ]; then
   printf 'herdr-pane-run argc=%s command=%s\n' "$#" "$4" >> "$RUST_DISPATCH_LOG"
 fi
@@ -72,7 +90,8 @@ EOF
 chmod +x "$fake/opencode"
 
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd --skills-dir "$PLUGIN_ROOT/skills" >/dev/null
-assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task" --focus' 'stable worktree branch'
+assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task" --no-focus' 'worktree is created without moving focus away from the picker'
+assert_file_contains "$log" 'herdr-api pane.focus w1:p1' 'dispatch focuses the worktree pane after attaching the session'
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
 [ ! -e "$work/worktree/.opencode/opencode.jsonc" ] || fail 'ordinary dispatch must not add an OpenCode config'
@@ -104,18 +123,24 @@ assert_file_contains "$babysitter_state" '"babysitter_session_id": "ses_babysitt
 assert_file_contains "$work/worktree-babysitter/.opencode/agents/babysitter.md" 'You are the babysitter' 'only the babysitter agent is injected'
 [ ! -e "$work/worktree-babysitter/.opencode/opencode.jsonc" ] || fail 'babysitter dispatch must not add an OpenCode config'
 
-# `--agent select` reads the configured worktree agents from the OpenCode V2
-# API. One available primary agent is selected without needing a terminal.
+# `--agent select` always opens the Herdr popup picker, including when OpenCode
+# reports only one visible primary agent. The selected ID returns through a
+# private response file, so the Aven command's JSON stdin remains untouched.
 selector_state=$work/selector-state.json
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$selector_state" RUST_WORKTREE="$work/worktree-selector" cargo run --quiet -- dispatch --agent select >/dev/null
-assert_file_contains "$selector_state" '"agent": "configured-build"' 'selector uses the OpenCode API agent id'
-assert_file_contains "$selector_state" '"model": "github-copilot/gpt-5.6-terra"' 'selector keeps the build model fixed'
+assert_file_contains "$selector_state" '"agent": "configured-build"' 'picker returns the selected OpenCode agent id'
+assert_file_contains "$log" 'herdr plugin pane open --plugin aven.tasks --entrypoint agent-picker' 'selector opens the Herdr popup picker'
 assert_file_contains "$log" 'opencode api GET /api/agent' 'selector lists agents through the OpenCode API'
+
+# The actual installed Aven commands use execution: terminal. Their context
+# arrives via a protected file and stdin/stdout belong to the existing popup.
+PATH="$fake:$PATH" python3 "$PLUGIN_ROOT/test/terminal-picker.py" "$work" "$context"
+
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/running"
 assert_file_contains "$work/running" '"task_ref": "APP-1"' 'list reports running dispatch'
 assert_file_contains "$work/running" '"state": "running"' 'list filters to running dispatches'
 before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch > "$work/retry"
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build > "$work/retry"
 after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 assert_eq "$after" "$before" 're-dispatch does not admit a second prompt'
 assert_file_contains "$work/retry" 'reopened APP-1 in OpenCode session ses_one' 're-dispatch reopens the persisted session'

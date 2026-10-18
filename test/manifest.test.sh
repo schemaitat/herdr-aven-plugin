@@ -42,6 +42,7 @@ assert_file_contains "$PLUGIN_ROOT/README.md" 'OpenCode V2 API' 'documented API-
 # Panes, both popovers, one per entrypoint.
 assert_contains "$body" 'id = "tui"'
 assert_contains "$body" 'id = "compose"'
+assert_contains "$body" 'id = "agent-picker"'
 assert_contains "$body" 'placement = "popup"'
 
 # Every command is invoked through sh and points at a real file.

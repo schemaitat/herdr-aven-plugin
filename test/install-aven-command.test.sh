@@ -43,6 +43,8 @@ assert_file_lacks "$config" "--opencode-config-dir" "plugin does not inject Open
 assert_file_contains "$CARGO_INSTALL_LOG" "cargo install --path $PLUGIN_ROOT --force"
 assert_file_contains "$config" "keys: [z d]"
 assert_file_contains "$config" "target: focused"
+assert_file_contains "$config" "execution: terminal" "picker reuses the Aven popup terminal"
+assert_file_lacks "$config" "execution: wait" "all installed selectors use terminal execution"
 assert_file_contains "$config" "on_success: quit"
 
 # The aven-native workflow example is installed next to dispatch by default.

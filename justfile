@@ -11,6 +11,11 @@ test:
     cargo test --workspace
     sh test/run.sh
 
+# Real Herdr/Aven popup lifecycle in an isolated session; no real agent runs.
+test-e2e:
+    cargo build --workspace
+    python3 test/herdr-popup-e2e.py
+
 check:
     cargo check --workspace
 

@@ -86,7 +86,7 @@ dispatch_item() {
       keys: [z d]
       detail_keys: [z D]
       target: focused
-      execution: wait
+      execution: terminal
       on_success: quit
 EOF
 }
