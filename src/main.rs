@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -48,6 +48,9 @@ enum Commands {
         /// Create an adjacent API-owned babysitter session for this build agent.
         #[arg(long)]
         babysitter: bool,
+        /// Implementation topology; legacy dispatches default to single-session.
+        #[arg(long, value_enum)]
+        mode: Option<ExecutionMode>,
     },
     /// Resume an existing attempt without creating a second session.
     Resume { task: String },
@@ -172,6 +175,18 @@ struct Attempt {
     #[serde(default)]
     model: String,
     #[serde(default)]
+    execution_mode: ExecutionMode,
+    #[serde(default)]
+    coordinator_session_id: String,
+    #[serde(default)]
+    coordinator_agent: String,
+    #[serde(default)]
+    coordinator_model: String,
+    #[serde(default)]
+    auto_permissions: bool,
+    #[serde(default)]
+    phases: Vec<PhaseAttempt>,
+    #[serde(default)]
     session_id: String,
     prompt_id: String,
     state: String,
@@ -191,6 +206,35 @@ struct Attempt {
     babysitter_prompt_id: String,
     aven: Invocation,
     created_at: u64,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+enum ExecutionMode {
+    #[default]
+    SingleSession,
+    Subsessions,
+    Worktrees,
+}
+impl ExecutionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleSession => "single-session",
+            Self::Subsessions => "subsessions",
+            Self::Worktrees => "worktrees",
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PhaseAttempt {
+    task_ref: String,
+    branch: String,
+    worktree: String,
+    pane: String,
+    session_id: String,
+    prompt_id: String,
+    commit: String,
+    integrated_commit: String,
+    state: String,
 }
 fn default_workflow() -> String {
     "default".into()
@@ -431,7 +475,50 @@ fn model_ref(model: Option<&str>) -> Result<Value> {
     }
     Ok(value)
 }
+fn autonomous_permissions() -> Value {
+    json!([{"action":"*", "resource":"*", "effect":"allow"}])
+}
+fn choose_mode(input: &mut impl BufRead, output: &mut impl Write) -> Result<ExecutionMode> {
+    writeln!(
+        output,
+        "Select implementation mode:\n\n  1. Single session (default)\n  2. Native subsessions\n  3. Cumulative worktrees"
+    )?;
+    loop {
+        write!(
+            output,
+            "\nChoice [1-3], Enter for single session, or q to cancel: "
+        )?;
+        output.flush()?;
+        let mut value = String::new();
+        if input.read_line(&mut value)? == 0 || matches!(value.trim(), "q" | "Q") {
+            bail!("implementation mode selection was canceled");
+        }
+        match value.trim() {
+            "" | "1" => return Ok(ExecutionMode::SingleSession),
+            "2" => return Ok(ExecutionMode::Subsessions),
+            "3" => return Ok(ExecutionMode::Worktrees),
+            _ => writeln!(output, "Enter 1, 2, 3, or q.")?,
+        }
+    }
+}
+fn select_mode(requested: Option<ExecutionMode>, workflow: &str) -> Result<ExecutionMode> {
+    if workflow != "implementation" {
+        if requested.is_some() {
+            bail!("--mode applies only to implementation workflows");
+        }
+        return Ok(ExecutionMode::SingleSession);
+    }
+    if let Some(mode) = requested {
+        return Ok(mode);
+    }
+    if env::var_os("AVEN_COMMAND_CONTEXT").is_some() {
+        return choose_mode(&mut io::stdin().lock(), &mut io::stdout().lock());
+    }
+    Ok(ExecutionMode::SingleSession)
+}
 const BABYSITTER_AGENT: &str = include_str!("../agents/babysitter.md");
+const ORCHESTRATOR_AGENT: &str = include_str!("../agents/orchestrator.md");
+const ORCHESTRATOR_MODEL: &str = "github-copilot/gpt-6-luna";
 const MODEL_CHOICES: &[(&str, &str)] = &[
     ("Latest Sol", "github-copilot/gpt-6.1-sol"),
     ("Latest Terra", "github-copilot/gpt-5.6-terra"),
@@ -465,6 +552,22 @@ fn install_babysitter_agent(worktree: &str) -> Result<()> {
         .with_context(|| format!("create babysitter agent directory {}", parent.display()))?;
     fs::write(&destination, BABYSITTER_AGENT)
         .with_context(|| format!("write bundled babysitter agent {}", destination.display()))
+}
+fn install_orchestrator_agent(worktree: &str) -> Result<()> {
+    let destination = Path::new(worktree).join(".opencode/agents/orchestrator.md");
+    if destination.exists() {
+        if fs::read_to_string(&destination)? != ORCHESTRATOR_AGENT {
+            bail!("existing orchestrator agent differs; refusing to overwrite user configuration");
+        }
+        return Ok(());
+    }
+    fs::create_dir_all(
+        destination
+            .parent()
+            .context("orchestrator agent has no parent")?,
+    )?;
+    fs::write(destination, ORCHESTRATOR_AGENT)?;
+    Ok(())
 }
 
 fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
@@ -1121,6 +1224,7 @@ fn dispatch(
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
     babysitter: bool,
+    requested_mode: Option<ExecutionMode>,
 ) -> Result<()> {
     let input = if let Some(context) = env::var_os("AVEN_COMMAND_CONTEXT") {
         fs::read_to_string(context).context("read Aven terminal command context")?
@@ -1167,6 +1271,14 @@ fn dispatch(
         }
     }
     if let Some(existing) = store.store.attempts.get(&key).cloned() {
+        if let Some(mode) = requested_mode
+            && mode != existing.execution_mode
+        {
+            bail!(
+                "attempt already uses {} mode; reopen preserves its saved topology",
+                existing.execution_mode.as_str()
+            );
+        }
         if dry_run {
             println!(
                 "would reopen {} in OpenCode session {} (attempt {})",
@@ -1244,6 +1356,12 @@ fn dispatch(
         pane: String::new(),
         agent: agent.unwrap_or_default(),
         model: model.unwrap_or_default(),
+        execution_mode: select_mode(requested_mode, workflow)?,
+        coordinator_session_id: String::new(),
+        coordinator_agent: String::new(),
+        coordinator_model: String::new(),
+        auto_permissions: true,
+        phases: Vec::new(),
         session_id: String::new(),
         prompt_id: identifier("msg"),
         state: "workspace-pending".into(),
@@ -1312,17 +1430,29 @@ fn dispatch(
     attempt.state = "session-pending".into();
     store_attempt(&mut store, attempt.clone());
     store.save()?;
+    if attempt.execution_mode == ExecutionMode::Worktrees {
+        install_orchestrator_agent(&attempt.worktree)?;
+    }
+    let (session_agent, session_model) = if attempt.execution_mode == ExecutionMode::Worktrees {
+        ("orchestrator".to_owned(), ORCHESTRATOR_MODEL.to_owned())
+    } else {
+        (attempt.agent.clone(), attempt.model.clone())
+    };
     let session = opencode(
         "POST",
         "/api/session",
         Some(json!({
             "title": format!("{} {}", attempt.task_ref, selected.task.title),
             "location": {"directory": attempt.worktree},
-            "agent": if attempt.agent.is_empty() { Value::Null } else { Value::String(attempt.agent.clone()) },
-            "model": model_ref(Some(&attempt.model))?,
+            "agent": if session_agent.is_empty() { Value::Null } else { Value::String(session_agent.clone()) },
+            "model": model_ref(Some(&session_model))?,
+            "permissions": autonomous_permissions(),
         })),
     )?;
     attempt.session_id = field(&session, "/data/id")?.to_owned();
+    attempt.coordinator_session_id = attempt.session_id.clone();
+    attempt.coordinator_agent = session_agent;
+    attempt.coordinator_model = session_model;
     // Launch the OpenCode CLI in the worktree pane before scheduling the prompt.
     // The CLI attaches to the API-created session by its durable ID.
     attempt.state = "terminal-pending".into();
@@ -1505,6 +1635,7 @@ fn main() -> Result<()> {
             skill,
             skills_dir,
             babysitter,
+            mode,
         } => dispatch(
             path,
             dry_run,
@@ -1515,6 +1646,7 @@ fn main() -> Result<()> {
             skill,
             skills_dir,
             babysitter,
+            mode,
         ),
         Commands::Resume { task } => reconcile(path, &task),
         Commands::Status { task } => status(path, &task),
@@ -1669,6 +1801,12 @@ mod tests {
             pane: "w1:p1".into(),
             agent: "build".into(),
             model: "provider/model".into(),
+            execution_mode: ExecutionMode::SingleSession,
+            coordinator_session_id: "ses_1".into(),
+            coordinator_agent: "build".into(),
+            coordinator_model: "provider/model".into(),
+            auto_permissions: true,
+            phases: Vec::new(),
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
             state: "running".into(),

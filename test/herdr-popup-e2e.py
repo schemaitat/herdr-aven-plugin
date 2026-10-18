@@ -255,7 +255,7 @@ else:
         wait_until(lambda: snapshot()["focused_pane_id"] == selected["pane"], "worktree pane focus")
         assert selected["agent"] == "review"
         assert len(posts()) == 2 and posts()[0]["agent"] == "review", posts()
-        assert posts()[0]["model"] == {"providerID": "github-copilot", "id": "gpt-5.5"}, posts()
+        assert posts()[0]["model"] == {"providerID": "github-copilot", "id": "gpt-6.1-sol"}, posts()
         context = json.loads(run(["aven", "context", task_ref, "--json"]))
         assert context["task"]["status"] == "active" and context["notes"]
         print("PASS: chosen agent admitted once, Aven handoff saved, then worktree focused", flush=True)

@@ -42,11 +42,15 @@ note before proceeding.
 - For a single-phase root task, implement `{ref}`.
 - For a selected multi-phase child, verify it is unblocked with `aven list
   --ready --project <key>` and implement that child only.
-- For a selected multi-phase root epic, inspect `aven epic list {ref}` and work
-  **every** child in dependency order in this one OpenCode session and its one
-  worktree. Do not dispatch child tasks separately, switch worktrees, skip a
-  blocked phase, or run phases in parallel. Continue through the next child
-  until every epic child is done or a real blocker is recorded.
+- For a selected multi-phase root epic, inspect `aven epic list {ref}` and use
+  the dispatcher attempt's saved execution mode. Single-session works every
+  child in its one session/worktree; subsessions use exactly one native child
+  at a time in the shared worktree; worktrees use the fixed Luna coordinator
+  and cumulative fast-forward-only phase branches. Do not dispatch children
+  separately, run phases in parallel, or admit a successor before predecessor
+  verification and (for worktrees) integration evidence exist.
+
+The backward-compatible single-session default works **every** child in dependency order in this one OpenCode session and worktree.
 
 Mark each task `active` immediately before changing it:
 

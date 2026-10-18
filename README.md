@@ -84,8 +84,11 @@ Babysitting is available only for the implementation workflows: `z S` for
 plan-then-implement and `z b` for implementation of an existing plan.
 
 For a multi-phase plan, select the **root epic** and run `z s` or `z i` once.
-That one implementation session stays in the epic's single worktree and works
-every phase child in dependency order; do not dispatch the children separately.
+Implementation supports `single-session` (the compatible default),
+`subsessions`, and `worktrees`; use `--mode` for unattended dispatch. Worktree
+mode always uses the bundled fixed-Luna, 1000-step coordinator while the chosen
+agent/model applies only to phase workers. Reopened attempts retain their saved
+mode rather than silently changing topology.
 When `z p` precedes `z i`, planning and implementation retain separate OpenCode
 sessions so they can use different agents/models, but both use the same
 deterministic task worktree branch.
