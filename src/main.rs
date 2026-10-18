@@ -41,6 +41,9 @@ enum Commands {
         /// Directory containing bundled workflow files.
         #[arg(long, env = "AVEN_DISPATCH_SKILLS_DIR")]
         skills_dir: Option<PathBuf>,
+        /// Start a babysitter in an adjacent Herdr pane for this build agent.
+        #[arg(long)]
+        babysitter: bool,
     },
     /// Resume an existing attempt without creating a second session.
     Resume { task: String },
@@ -162,6 +165,16 @@ struct Attempt {
     aven_update_pending: bool,
     #[serde(default)]
     log_cursor: String,
+    #[serde(default)]
+    babysitter: bool,
+    #[serde(default)]
+    babysitter_pane: String,
+    #[serde(default)]
+    babysitter_agent: String,
+    #[serde(default)]
+    babysitter_session_id: String,
+    #[serde(default)]
+    babysitter_prompt_id: String,
     aven: Invocation,
     created_at: u64,
 }
@@ -478,6 +491,22 @@ fn terminal_agent_name(attempt: &Attempt) -> String {
         })
         .collect()
 }
+fn babysitter_agent_name(attempt: &Attempt) -> String {
+    format!("babysitter-{}", attempt.attempt_id.to_ascii_lowercase())
+        .chars()
+        .map(|character| {
+            if character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '-'
+                || character == '_'
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
 fn start_terminal_agent(attempt: &Attempt) -> Result<()> {
     let name = terminal_agent_name(attempt);
     run(
@@ -490,6 +519,8 @@ fn start_terminal_agent(attempt: &Attempt) -> Result<()> {
             "opencode".into(),
             "--pane".into(),
             attempt.pane.clone(),
+            "--timeout".into(),
+            "120000".into(),
             "--".into(),
             "--session".into(),
             attempt.session_id.clone(),
@@ -499,6 +530,76 @@ fn start_terminal_agent(attempt: &Attempt) -> Result<()> {
     run(
         "herdr",
         &["agent".into(), "focus".into(), attempt.pane.clone()],
+        None,
+    )?;
+    Ok(())
+}
+fn start_babysitter(attempt: &mut Attempt) -> Result<()> {
+    let session = opencode(
+        "POST",
+        "/api/session",
+        Some(json!({
+            "title": format!("Babysit {}", attempt.task_ref),
+            "location": {"directory": attempt.worktree},
+            "agent": "babysitter",
+            "model": model_ref(Some("github-copilot/gpt-6-luna"))?,
+            // This is the API equivalent of starting this opt-in session with
+            // `opencode --auto`: allow requests unless a configuration rule
+            // explicitly denies them.
+            "permissions": [{"action": "*", "resource": "*", "effect": "allow"}],
+        })),
+    )?;
+    attempt.babysitter_session_id = field(&session, "/data/id")?.to_owned();
+    attempt.babysitter_prompt_id = identifier("msg");
+    let admission = opencode(
+        "POST",
+        &format!("/api/session/{}/prompt", attempt.babysitter_session_id),
+        Some(json!({
+            "id": attempt.babysitter_prompt_id,
+            "text": format!(
+                "Supervise build agent {} for task {}. Begin the 60-second monitoring protocol now and stay with it until the task is verified resolved.",
+                terminal_agent_name(attempt),
+                attempt.task_ref
+            ),
+            "resume": true,
+        })),
+    )?;
+    if field(&admission, "/data/id")? != attempt.babysitter_prompt_id {
+        bail!("OpenCode admitted an unexpected babysitter message id");
+    }
+    let output = run(
+        "herdr",
+        &[
+            "pane".into(),
+            "split".into(),
+            attempt.pane.clone(),
+            "--direction".into(),
+            "right".into(),
+            "--cwd".into(),
+            attempt.worktree.clone(),
+            "--no-focus".into(),
+        ],
+        None,
+    )?;
+    let response: Value = serde_json::from_str(&output).context("Herdr pane split response")?;
+    attempt.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
+    attempt.babysitter_agent = babysitter_agent_name(attempt);
+    run(
+        "herdr",
+        &[
+            "agent".into(),
+            "start".into(),
+            attempt.babysitter_agent.clone(),
+            "--kind".into(),
+            "opencode".into(),
+            "--pane".into(),
+            attempt.babysitter_pane.clone(),
+            "--timeout".into(),
+            "120000".into(),
+            "--".into(),
+            "--session".into(),
+            attempt.babysitter_session_id.clone(),
+        ],
         None,
     )?;
     Ok(())
@@ -596,6 +697,7 @@ fn dispatch(
     opencode_config_dir: Option<PathBuf>,
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
+    babysitter: bool,
 ) -> Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
@@ -624,6 +726,11 @@ fn dispatch(
         state: "workspace-pending".into(),
         aven_update_pending: false,
         log_cursor: String::new(),
+        babysitter,
+        babysitter_pane: String::new(),
+        babysitter_agent: String::new(),
+        babysitter_session_id: String::new(),
+        babysitter_prompt_id: String::new(),
         aven: context.invocation.clone(),
         created_at: now(),
     };
@@ -693,6 +800,9 @@ fn dispatch(
         bail!("OpenCode admitted an unexpected message id");
     }
     start_terminal_agent(&attempt)?;
+    if attempt.babysitter {
+        start_babysitter(&mut attempt)?;
+    }
     attempt.state = "running".into();
     attempt.aven_update_pending = true;
     store
@@ -848,6 +958,7 @@ fn main() -> Result<()> {
             opencode_config_dir,
             skill,
             skills_dir,
+            babysitter,
         } => dispatch(
             path,
             dry_run,
@@ -856,6 +967,7 @@ fn main() -> Result<()> {
             opencode_config_dir,
             skill,
             skills_dir,
+            babysitter,
         ),
         Commands::Resume { task } => reconcile(path, &task),
         Commands::Status { task } => status(path, &task),
@@ -890,6 +1002,11 @@ mod tests {
             state: String::new(),
             aven_update_pending: false,
             log_cursor: String::new(),
+            babysitter: false,
+            babysitter_pane: String::new(),
+            babysitter_agent: String::new(),
+            babysitter_session_id: String::new(),
+            babysitter_prompt_id: String::new(),
             aven: Invocation {
                 aven_exe: String::new(),
                 db_path: None,
@@ -899,6 +1016,7 @@ mod tests {
             created_at: 0,
         };
         assert_eq!(terminal_agent_name(&attempt), "dispatch-att_abc-123");
+        assert_eq!(babysitter_agent_name(&attempt), "babysitter-att_abc-123");
     }
     #[test]
     fn model_option_becomes_an_opencode_model_ref() {

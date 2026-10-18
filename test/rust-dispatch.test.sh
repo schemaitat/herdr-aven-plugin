@@ -27,7 +27,10 @@ cat > "$fake/herdr" <<'EOF'
 #!/bin/sh
 printf 'herdr %s\n' "$*" >> "$RUST_DISPATCH_LOG"
 mkdir -p "$RUST_WORKTREE"
-printf '{"result":{"worktree":{"path":"%s"},"root_pane":{"pane_id":"w1:p1"}}}\n' "$RUST_WORKTREE"
+case " $* " in
+  *" pane split "*) printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
+  *) printf '{"result":{"worktree":{"path":"%s"},"root_pane":{"pane_id":"w1:p1"}}}\n' "$RUST_WORKTREE" ;;
+esac
 EOF
 cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
@@ -54,8 +57,8 @@ cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
 printf 'opencode %s\n' "$*" >> "$RUST_DISPATCH_LOG"
 case " $* " in
-  *" POST /api/session "*) printf '%s\n' '{"data":{"id":"ses_one"}}' ;;
-  *" POST /api/session/ses_one/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
+  *" POST /api/session/"*"/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
+  *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
   *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
@@ -67,13 +70,31 @@ assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/di
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
 assert_file_contains "$work/worktree/.opencode/opencode.jsonc" '"$schema"' 'plugin OpenCode config copied to worktree'
+assert_file_contains "$work/worktree/.opencode/agents/babysitter.md" 'model: github-copilot/gpt-6-luna' 'bundled babysitter copied to worktree'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
 assert_file_contains "$log" 'herdr agent start dispatch-att_' 'OpenCode terminal agent starts in worktree pane'
-assert_file_contains "$log" '--kind opencode --pane w1:p1 -- --session ses_one' 'terminal attaches durable OpenCode session'
+assert_file_contains "$log" '--kind opencode --pane w1:p1 --timeout 120000 -- --session ses_one' 'terminal attaches durable OpenCode session'
 assert_file_contains "$log" 'herdr agent focus w1:p1' 'terminal agent is focused'
 assert_file_contains "$log" 'Take an aven task from request to shipped' 'explicit skills directory is loaded'
 assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
 assert_file_contains "$state" '"agent": "build"' 'primary agent persisted'
+assert_not_contains "$(cat "$log")" 'herdr pane split' 'ordinary dispatch does not create a babysitter pane'
+
+# Babysitting is opt-in: both sessions are admitted through the OpenCode API,
+# then Herdr attaches the babysitter beside the build pane.
+babysitter_state=$work/babysitter-state.json
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --babysitter --opencode-config-dir "$PLUGIN_ROOT/.opencode" >/dev/null
+assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'babysitter splits next to build pane'
+assert_file_contains "$log" 'herdr agent start babysitter-att_' 'babysitter starts in split pane'
+assert_file_contains "$log" '"agent":"babysitter"' 'babysitter session created through OpenCode API'
+assert_file_contains "$log" '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' 'babysitter API session uses Luna'
+assert_file_contains "$log" 'opencode api POST /api/session/ses_babysitter/prompt' 'babysitter prompt admitted through OpenCode API'
+assert_file_contains "$log" '--kind opencode --pane w1:p2 --timeout 120000 -- --session ses_babysitter' 'terminal attaches API-owned babysitter session'
+assert_not_contains "$(cat "$log")" 'herdr agent prompt babysitter-' 'Herdr does not prompt the babysitter session'
+assert_file_contains "$log" 'Supervise build agent dispatch-att_' 'babysitter receives build identity'
+assert_file_contains "$babysitter_state" '"babysitter": true' 'opt-in babysitter persisted'
+assert_file_contains "$babysitter_state" '"babysitter_pane": "w1:p2"' 'babysitter pane persisted'
+assert_file_contains "$babysitter_state" '"babysitter_session_id": "ses_babysitter"' 'babysitter API session persisted'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/running"
 assert_file_contains "$work/running" '"task_ref": "APP-1"' 'list reports running dispatch'
 assert_file_contains "$work/running" '"state": "running"' 'list filters to running dispatches'

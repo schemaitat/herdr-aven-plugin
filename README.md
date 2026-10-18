@@ -194,6 +194,7 @@ Installing the Aven commands installs or updates the bundled binary with `cargo 
 ```sh
 aven-dispatch doctor
 aven-dispatch dispatch --agent build < context.json
+aven-dispatch dispatch --agent build --babysitter < context.json
 aven-dispatch list --running
 aven-dispatch status HAP-FTYE
 aven-dispatch reconcile HAP-FTYE
@@ -254,6 +255,7 @@ an example, not a built-in command: edit it, rebind it, or delete it in
 | In the popover | Command | Inserted workflow |
 | --- | --- | --- |
 | `z s` | `sdd` | `skills/aven/sdd.md` (`--skill aven/sdd`) |
+| `z b` | `dispatch-babysitter` | Dispatch with an adjacent opt-in babysitter (`--babysitter`) |
 
 The command sets `--skill aven/sdd`; the Rust dispatcher loads that
 bundled workflow and prepends it to the task prompt. The file is plain prompt
@@ -276,14 +278,39 @@ The command targets the task's worktree: re-running it opens and reuses the
 worktree and the agent session already there (`herdr worktree open`), so the
 work continues in one place.
 
+### Supervise a build agent
+
+The bundled OpenCode configuration includes a `babysitter` primary agent. To
+opt in when dispatching a task, select it in the Aven popover and press
+**`z b`** (or run `:dispatch-babysitter`). The dispatcher starts the normal
+build agent in the worktree's original pane, splits an adjacent pane to its
+right, and starts the babysitter there with the build agent's exact Herdr
+identity.
+
+The babysitter checks Herdr status and the build-agent pane every 60 seconds,
+recovers from routine stalls, and escalates to a human only when safe
+autonomous recovery is exhausted. The equivalent direct dispatcher invocation
+is:
+
+```sh
+aven-dispatch dispatch --agent build --babysitter < context.json
+```
+
+The dispatcher creates and prompts both the build and babysitter sessions with
+the OpenCode V2 API before Herdr attaches their terminals. The babysitter's
+opt-in session receives API permission rules equivalent to `--auto`; this is
+scoped to that session and does not change the default dispatch agent or every
+other OpenCode session. The babysitter still treats unknown, destructive, and
+ambiguous actions as escalation cases.
+
 ### Extra commands
 
 `aven-commands.yaml` in the plugin directory declares the commands
 `install-aven-command` writes under `tui.commands`, after the built-in
-`dispatch`. It ships with the one
-[example workflow](#example-an-aven-native-task-workflow) active and more
-examples commented out. Comment out or add an entry, then re-run the installer
-to apply the change:
+`dispatch`. It ships with the
+[example workflow](#example-an-aven-native-task-workflow) and the opt-in
+`dispatch-babysitter` command active; more examples are commented out. Comment
+out or add an entry, then re-run the installer to apply the change:
 
 ```sh
 herdr plugin action invoke aven.tasks.install-aven-command

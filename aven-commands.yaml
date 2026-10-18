@@ -18,11 +18,11 @@
 #
 # --- Example: an aven-native task workflow -----------------------------------
 #
-# This ships active so you can see the pattern, but it is only an example: edit
-# it, rebind it, or delete it. It shows how to use dispatch plus aven for
-# efficient task management — one command takes the selected task from a rough
-# request to shipped, keeping the spec in the task description, the plan in a
-# note, the breakdown in child tasks, and progress in statuses and notes.
+# `sdd` ships active so you can see the workflow pattern, but it is only an
+# example: edit it, rebind it, or delete it. It shows how to use dispatch plus
+# aven for efficient task management — one command takes the selected task from
+# a rough request to shipped, keeping the spec in the task description, the plan
+# in a note, the breakdown in child tasks, and progress in statuses and notes.
 #
 # --skill names the bundled skill text as a path relative to skills.
 # `aven/sdd` resolves to skills/aven/sdd.md. Write your own namespaced skill file
@@ -46,6 +46,29 @@
     - "${PLUGIN_ROOT}/.opencode"
   keys: [z s]
   detail_keys: [z S]
+  target: focused
+  execution: wait
+  on_success: quit
+
+# Opt in to an adjacent babysitter while dispatching the selected task. The
+# dispatcher creates and prompts both OpenCode sessions through the V2 API,
+# leaves the build agent in the worktree's original pane, then attaches the
+# babysitter session in a sibling pane to the right.
+- name: dispatch-babysitter
+  aliases: [dispatch-with-babysitter]
+  description: Implement the selected task with an adjacent autonomous babysitter
+  program: aven-dispatch
+  args:
+    - dispatch
+    - --agent
+    - build
+    - --model
+    - github-copilot/gpt-5.6-terra
+    - --babysitter
+    - --opencode-config-dir
+    - "${PLUGIN_ROOT}/.opencode"
+  keys: [z b]
+  detail_keys: [z B]
   target: focused
   execution: wait
   on_success: quit

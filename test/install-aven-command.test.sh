@@ -53,6 +53,10 @@ assert_file_contains "$config" "aven/sdd" "workflow skill name"
 assert_file_contains "$config" "--skills-dir" "workflow skills directory"
 assert_file_contains "$config" "$PLUGIN_ROOT/skills" "workflow skills directory path"
 assert_contains "$out" "installed: sdd (extra)" "workflow command reported"
+assert_file_contains "$config" "name: dispatch-babysitter" "opt-in babysitter command"
+assert_file_contains "$config" "--babysitter" "opt-in babysitter flag"
+assert_file_contains "$config" "keys: [z b]" "babysitter command key"
+assert_contains "$out" "installed: dispatch-babysitter (extra)" "babysitter command reported"
 
 # aven can parse the result.
 aven config get sync.enabled >/dev/null ||
