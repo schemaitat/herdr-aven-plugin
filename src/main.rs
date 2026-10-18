@@ -234,6 +234,13 @@ fn store_path(value: Option<PathBuf>) -> PathBuf {
             .join(".aven-dispatch/state.json")
     })
 }
+fn absolute_path(path: PathBuf) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(env::current_dir()?.join(path))
+    }
+}
 
 fn run(program: &str, args: &[String], input: Option<&str>) -> Result<String> {
     let mut command = Command::new(program);
@@ -519,20 +526,27 @@ fn create_worktree(origin: &str, attempt: &Attempt, title: &str) -> Result<(Stri
         .to_owned();
     Ok((worktree, pane))
 }
-fn start_opencode_in_pane(pane: &str, session_id: &str) -> Result<()> {
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Result<()> {
     run(
         "herdr",
         &[
             "pane".into(),
             "run".into(),
             pane.into(),
-            format!("opencode --session {session_id}"),
+            format!(
+                "env AVEN_DISPATCH_STORE={} opencode --session {}",
+                shell_quote(&store_path.to_string_lossy()),
+                shell_quote(session_id),
+            ),
         ],
         None,
     )?;
     Ok(())
 }
-fn start_babysitter(attempt: &mut Attempt) -> Result<()> {
+fn start_babysitter(attempt: &mut Attempt, store_path: &Path) -> Result<()> {
     let session = opencode(
         "POST",
         "/api/session",
@@ -561,7 +575,11 @@ fn start_babysitter(attempt: &mut Attempt) -> Result<()> {
     )?;
     let response: Value = serde_json::from_str(&output).context("Herdr pane split response")?;
     attempt.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
-    start_opencode_in_pane(&attempt.babysitter_pane, &attempt.babysitter_session_id)?;
+    start_opencode_in_pane(
+        &attempt.babysitter_pane,
+        &attempt.babysitter_session_id,
+        store_path,
+    )?;
     attempt.babysitter_prompt_id = identifier("msg");
     let admission = opencode(
         "POST",
@@ -762,7 +780,7 @@ fn dispatch(
     let context = parse_context(&input)?;
     let selected = selected_for(&context)?;
     let task = refresh_task(&context, selected)?;
-    let mut store = LockedStore::open(path)?;
+    let mut store = LockedStore::open(path.clone())?;
     if let Some(existing) = store.store.attempts.get(&selected.task.id).cloned() {
         if dry_run {
             println!(
@@ -785,7 +803,7 @@ fn dispatch(
             .attempts
             .insert(reopened.task_id.clone(), reopened.clone());
         store.save()?;
-        start_opencode_in_pane(&reopened.pane, &reopened.session_id)?;
+        start_opencode_in_pane(&reopened.pane, &reopened.session_id, &path)?;
         if reopened.babysitter && !reopened.babysitter_session_id.is_empty() {
             let output = run(
                 "herdr",
@@ -804,7 +822,11 @@ fn dispatch(
             let response: Value =
                 serde_json::from_str(&output).context("Herdr pane split response")?;
             reopened.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
-            start_opencode_in_pane(&reopened.babysitter_pane, &reopened.babysitter_session_id)?;
+            start_opencode_in_pane(
+                &reopened.babysitter_pane,
+                &reopened.babysitter_session_id,
+                &path,
+            )?;
         }
         reopened.state = "running".into();
         store
@@ -896,7 +918,7 @@ fn dispatch(
         .attempts
         .insert(attempt.task_id.clone(), attempt.clone());
     store.save()?;
-    start_opencode_in_pane(&attempt.pane, &attempt.session_id)?;
+    start_opencode_in_pane(&attempt.pane, &attempt.session_id, &path)?;
     attempt.state = "prompt-pending".into();
     store
         .store
@@ -915,7 +937,7 @@ fn dispatch(
         bail!("OpenCode admitted an unexpected message id");
     }
     if attempt.babysitter {
-        start_babysitter(&mut attempt)?;
+        start_babysitter(&mut attempt, &path)?;
     }
     attempt.state = "running".into();
     attempt.aven_update_pending = true;
@@ -1079,7 +1101,7 @@ fn doctor() -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let path = store_path(cli.store);
+    let path = absolute_path(store_path(cli.store))?;
     match cli.command {
         Commands::Dispatch {
             dry_run,

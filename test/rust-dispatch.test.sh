@@ -75,9 +75,10 @@ assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode se
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
 assert_file_contains "$work/worktree/.opencode/opencode.jsonc" '"$schema"' 'plugin OpenCode config copied to worktree'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
-assert_file_contains "$log" 'herdr pane run w1:p1 opencode --session ses_one' 'OpenCode starts in the worktree pane with its durable session'
-assert_file_contains "$log" 'herdr-pane-run argc=4 command=opencode --session ses_one' 'OpenCode command is one pane-run argument, not Herdr options'
-agent_start_line=$(grep -n 'herdr pane run w1:p1 opencode --session ses_one' "$log" | head -n 1 | cut -d: -f1)
+assert_file_contains "$log" 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' 'OpenCode inherits the dispatcher store in the worktree pane'
+assert_file_contains "$log" 'opencode --session '\''ses_one'\''' 'OpenCode starts in the worktree pane with its durable session'
+assert_file_contains "$log" 'herdr-pane-run argc=4 command=env AVEN_DISPATCH_STORE=' 'OpenCode command is one pane-run argument, not Herdr options'
+agent_start_line=$(grep -n 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' "$log" | head -n 1 | cut -d: -f1)
 prompt_line=$(grep -n 'opencode api POST /api/session/ses_one/prompt' "$log" | head -n 1 | cut -d: -f1)
 [ "$agent_start_line" -lt "$prompt_line" ] || fail 'OpenCode starts before prompt admission schedules execution'
 assert_file_contains "$log" 'Take an aven task from request to shipped' 'explicit skills directory is loaded'
@@ -93,7 +94,8 @@ assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'b
 assert_file_contains "$log" '"agent":"babysitter"' 'babysitter session created through OpenCode API'
 assert_file_contains "$log" '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' 'babysitter API session uses Luna'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_babysitter/prompt' 'babysitter prompt admitted through OpenCode API'
-assert_file_contains "$log" 'herdr pane run w1:p2 opencode --session ses_babysitter' 'babysitter pane attaches API-owned session'
+assert_file_contains "$log" 'herdr pane run w1:p2 env AVEN_DISPATCH_STORE=' 'babysitter inherits the dispatcher store when its API-owned session attaches'
+assert_file_contains "$log" 'opencode --session '\''ses_babysitter'\''' 'babysitter pane attaches API-owned session'
 assert_file_contains "$log" 'Supervise build OpenCode session ses_one in Herdr pane w1:p1' 'babysitter receives build identity'
 assert_file_contains "$babysitter_state" '"babysitter": true' 'opt-in babysitter persisted'
 assert_file_contains "$babysitter_state" '"babysitter_session_id": "ses_babysitter"' 'babysitter API session persisted'
