@@ -34,7 +34,7 @@ assert_contains "$out" "installed: dispatch (keys: z d)" "installed line"
 assert_file_contains "$config" "# Managed by herdr-aven-plugin"
 assert_file_contains "$config" "# End of the herdr-aven-plugin managed block."
 assert_file_contains "$config" "name: dispatch"
-assert_file_contains "$config" "program: aven-dispatch"
+assert_file_contains "$config" "program: $fake/aven-dispatch"
 assert_file_contains "$config" "args:"
 assert_file_contains "$config" "- dispatch"
 assert_file_contains "$config" "- build" "default build agent"
@@ -160,7 +160,7 @@ EOF
 out=$(run_installer)
 assert_contains "$out" "updated: $legacy/config.yaml" "legacy block updated"
 assert_file_contains "$legacy/config.yaml" "local:" "legacy prefix kept"
-assert_file_contains "$legacy/config.yaml" "program: aven-dispatch" "legacy block replaced"
+assert_file_contains "$legacy/config.yaml" "program: $fake/aven-dispatch" "legacy block replaced"
 assert_file_contains "$legacy/config.yaml" "# End of the herdr-aven-plugin managed block."
 aven config get sync.enabled >/dev/null || fail "migrated config does not parse"
 

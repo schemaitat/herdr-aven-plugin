@@ -66,6 +66,7 @@ if ! command -v aven-dispatch >/dev/null 2>&1; then
   printf "warning: aven-dispatch was installed but is not on PATH; add Cargo's bin directory to PATH, then retry\n"
   exit 1
 fi
+dispatcher=$(command -v aven-dispatch)
 
 # --- build the managed block ------------------------------------------------
 
@@ -119,6 +120,14 @@ substitute_root() {
   replace_all '${PLUGIN_ROOT}' "$PLUGIN_ROOT"
 }
 
+# Aven may be started by the long-running Herdr server, whose PATH need not
+# contain Cargo's bin directory even when this installer does. Persist the
+# resolved executable path so custom commands such as z b are launchable from
+# the popup as well as an interactive shell.
+substitute_dispatcher() {
+  replace_all 'program: aven-dispatch' "program: $dispatcher"
+}
+
 build_block() {
   printf '%s\n' "$start_marker"
   printf 'tui:\n'
@@ -128,7 +137,7 @@ build_block() {
   printf '%s\n' "$end_marker"
 }
 
-build_block | substitute_root > "$block"
+build_block | substitute_root | substitute_dispatcher > "$block"
 
 # report_installed: the stdout lines naming the commands that were written.
 report_installed() {
