@@ -170,7 +170,7 @@ What the `dispatch` command does:
    `aven-dispatch` binary,
 2. re-reads and validates the selected task, then creates or reopens a Git
    worktree on a stable branch derived from the immutable task ID,
-3. focuses the worktree, creates an OpenCode V2 session, admits a durable prompt, and opens that session in the worktree's root OpenCode terminal,
+3. focuses the worktree, creates an OpenCode V2 session, runs `herdr pane run <pane> "opencode --session <id>"` in the worktree's root pane, then admits the durable prompt,
 4. sets the task to `active` and records dispatcher metadata plus a handoff note,
 5. persists the attempt in `.aven-dispatch/state.json` so dispatches can be
    inspected, reconciled, or interrupted without admitting a duplicate prompt.
@@ -198,6 +198,7 @@ aven-dispatch dispatch --agent build --babysitter < context.json
 aven-dispatch list --running
 aven-dispatch status HAP-FTYE
 aven-dispatch reconcile HAP-FTYE
+aven-dispatch log HAP-FTYE --event operator-debug --detail "reproduced after restart"
 aven-dispatch interrupt HAP-FTYE
 ```
 
@@ -207,6 +208,11 @@ It never stores credentials in Aven. `status` surfaces pending OpenCode
 permissions/forms without approving them, and prompt admission is not task
 completion. `list` prints all persisted attempts; `list --running` limits the
 output to attempts whose dispatcher execution state is `running`.
+
+Use `aven-dispatch log` to create a task in Aven's **Dispatcher Logs** project,
+link it to a source task, and append a compact diagnostic event. Dispatch itself
+does not create log tasks or write log events automatically. Log entries contain
+identifiers and supplied detail, never prompt text or credentials.
 
 The installed `dispatch` and SDD workflows use the `build` agent and `github-copilot/gpt-5.6-terra` model. Set a different primary OpenCode agent with `--agent <name>` and an explicit model with
 `--model <provider/model>`. Both are sent during session creation and persisted
