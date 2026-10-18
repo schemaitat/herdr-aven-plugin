@@ -35,15 +35,13 @@
   args:
     - dispatch
     - --agent
-    - build
+    - select
     - --model
     - github-copilot/gpt-5.6-terra
     - --skill
     - aven/sdd
     - --skills-dir
     - "${PLUGIN_ROOT}/skills"
-    - --opencode-config-dir
-    - "${PLUGIN_ROOT}/.opencode"
   keys: [z s]
   detail_keys: [z S]
   target: focused
@@ -61,12 +59,10 @@
   args:
     - dispatch
     - --agent
-    - build
+    - select
     - --model
     - github-copilot/gpt-5.6-terra
     - --babysitter
-    - --opencode-config-dir
-    - "${PLUGIN_ROOT}/.opencode"
   keys: [z b]
   detail_keys: [z B]
   target: focused
@@ -85,8 +81,6 @@
 #     - dispatch
 #     - --agent
 #     - claude
-#     - --opencode-config-dir
-#     - "${PLUGIN_ROOT}/.opencode"
 #   keys: [z c]
 #   detail_keys: [z C]
 #   target: focused
@@ -101,8 +95,6 @@
 #     - dispatch
 #     - --model
 #     - provider/model
-#     - --opencode-config-dir
-#     - "${PLUGIN_ROOT}/.opencode"
 #   keys: [z m]
 #   target: focused
 #   execution: wait

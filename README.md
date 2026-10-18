@@ -193,8 +193,8 @@ Installing the Aven commands installs or updates the bundled binary with `cargo 
 
 ```sh
 aven-dispatch doctor
-aven-dispatch dispatch --agent build < context.json
-aven-dispatch dispatch --agent build --babysitter < context.json
+aven-dispatch dispatch --agent select < context.json
+aven-dispatch dispatch --agent select --babysitter < context.json
 aven-dispatch list --running
 aven-dispatch status HAP-FTYE
 aven-dispatch reconcile HAP-FTYE
@@ -214,21 +214,19 @@ link it to a source task, and append a compact diagnostic event. Dispatch itself
 does not create log tasks or write log events automatically. Log entries contain
 identifiers and supplied detail, never prompt text or credentials.
 
-The installed `dispatch` and SDD workflows use the `build` agent and `github-copilot/gpt-5.6-terra` model. Set a different primary OpenCode agent with `--agent <name>` and an explicit model with
-`--model <provider/model>`. Both are sent during session creation and persisted
-with the attempt. The plugin's `.opencode/` directory is copied into a worktree
-only when it has no existing `.opencode/`; dispatch refuses to overwrite a
-project-owned OpenCode configuration. The plugin starts with
-[`.opencode/opencode.jsonc`](.opencode/opencode.jsonc); add agents, provider
-settings, permissions, or other OpenCode V2 configuration there. It is copied
-as a new worktree-local `.opencode/` directory before OpenCode creates the
-session.
+The installed `dispatch` and SDD workflows open an interactive selector of the
+visible primary agents supplied by OpenCode V2's `GET /api/agent` endpoint for
+the new worktree. The selected agent and fixed `github-copilot/gpt-5.6-terra`
+model are sent during session creation and persisted with the attempt. Pass
+`--agent <name>` to bypass the selector in a custom workflow. Dispatch never
+writes or copies `opencode.json`, `opencode.jsonc`, provider settings,
+permissions, or any other OpenCode configuration: each worktree uses the
+configuration its owner already chose.
 
 ```sh
 aven-dispatch dispatch \
-  --agent build \
-  --model provider/model \
-  --opencode-config-dir /path/to/herdr-aven-plugin/.opencode \
+  --agent select \
+  --model github-copilot/gpt-5.6-terra \
   < context.json
 ```
 
@@ -243,8 +241,6 @@ Example extra command, wired to a second agent (the full file is documented
     - dispatch
     - --agent
     - claude
-    - --opencode-config-dir
-    - "${PLUGIN_ROOT}/.opencode"
   keys: [z c]
   target: focused
   execution: wait
@@ -286,8 +282,7 @@ work continues in one place.
 
 ### Supervise a build agent
 
-The bundled OpenCode configuration includes a `babysitter` primary agent. To
-opt in when dispatching a task, select it in the Aven popover and press
+To opt in when dispatching a task, select it in the Aven popover and press
 **`z b`** (or run `:dispatch-babysitter`). The dispatcher starts the normal
 build agent in the worktree's original pane, splits an adjacent pane to its
 right, and starts the babysitter there with the build agent's exact Herdr
@@ -299,11 +294,14 @@ autonomous recovery is exhausted. The equivalent direct dispatcher invocation
 is:
 
 ```sh
-aven-dispatch dispatch --agent build --babysitter < context.json
+aven-dispatch dispatch --agent select --babysitter < context.json
 ```
 
-The dispatcher creates and prompts both the build and babysitter sessions with
-the OpenCode V2 API before Herdr attaches their terminals. The babysitter's
+The dispatcher writes only its bundled `babysitter` primary-agent definition to
+`.opencode/agents/babysitter.md` when this opt-in command is used; it never
+creates or replaces an OpenCode config file. The dispatcher creates and prompts
+both the selected build and babysitter sessions with the OpenCode V2 API before
+Herdr attaches their terminals. The babysitter's
 opt-in session receives API permission rules equivalent to `--auto`; this is
 scoped to that session and does not change the default dispatch agent or every
 other OpenCode session. The babysitter still treats unknown, destructive, and

@@ -80,11 +80,9 @@ dispatch_item() {
       args:
         - dispatch
         - --agent
-        - build
+        - select
         - --model
         - github-copilot/gpt-5.6-terra
-        - --opencode-config-dir
-        - ${PLUGIN_ROOT}/.opencode
       keys: [z d]
       detail_keys: [z D]
       target: focused

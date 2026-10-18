@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{self, Read},
+    io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -32,9 +32,6 @@ enum Commands {
         /// OpenCode model in provider/model form.
         #[arg(long, env = "AVEN_DISPATCH_MODEL")]
         model: Option<String>,
-        /// Plugin .opencode directory to copy into a worktree before session creation.
-        #[arg(long, env = "AVEN_DISPATCH_OPENCODE_CONFIG_DIR")]
-        opencode_config_dir: Option<PathBuf>,
         /// Namespaced bundled workflow under the skills directory (for example, aven/sdd).
         #[arg(long, env = "AVEN_DISPATCH_SKILL")]
         skill: Option<String>,
@@ -242,9 +239,17 @@ fn absolute_path(path: PathBuf) -> Result<PathBuf> {
     }
 }
 
-fn run(program: &str, args: &[String], input: Option<&str>) -> Result<String> {
+fn run_in(
+    program: &str,
+    args: &[String],
+    input: Option<&str>,
+    directory: Option<&Path>,
+) -> Result<String> {
     let mut command = Command::new(program);
     command.args(args);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
     if input.is_some() {
         command.stdin(std::process::Stdio::piped());
     }
@@ -267,6 +272,9 @@ fn run(program: &str, args: &[String], input: Option<&str>) -> Result<String> {
         );
     }
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+fn run(program: &str, args: &[String], input: Option<&str>) -> Result<String> {
+    run_in(program, args, input, None)
 }
 fn aven_args(invocation: &Invocation, command: &[&str]) -> Vec<String> {
     let mut args = Vec::new();
@@ -295,11 +303,19 @@ fn opencode(method: &str, path: &str, data: Option<Value>) -> Result<Value> {
     serde_json::from_str(&output).with_context(|| format!("OpenCode returned non-JSON for {path}"))
 }
 fn opencode_text(method: &str, path: &str, data: Option<Value>) -> Result<String> {
+    opencode_text_in(method, path, data, None)
+}
+fn opencode_text_in(
+    method: &str,
+    path: &str,
+    data: Option<Value>,
+    directory: Option<&Path>,
+) -> Result<String> {
     let mut args = vec!["api".into(), method.into(), path.into()];
     if let Some(data) = data {
         args.extend(["--data".into(), serde_json::to_string(&data)?]);
     }
-    run("opencode", &args, None)
+    run_in("opencode", &args, None, directory)
 }
 fn field<'a>(value: &'a Value, pointer: &str) -> Result<&'a str> {
     value
@@ -371,82 +387,80 @@ fn model_ref(model: Option<&str>) -> Result<Value> {
     }
     Ok(value)
 }
-fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination)
-        .with_context(|| format!("create OpenCode config directory {}", destination.display()))?;
-    for entry in fs::read_dir(source)
-        .with_context(|| format!("read OpenCode config directory {}", source.display()))?
-    {
-        let entry = entry?;
-        let destination = destination.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_directory(&entry.path(), &destination)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), destination)?;
-        } else {
-            bail!(
-                "unsupported entry in OpenCode config directory: {}",
-                entry.path().display()
-            );
-        }
-    }
-    Ok(())
-}
-fn directories_are_equal(left: &Path, right: &Path) -> Result<bool> {
-    if !left.is_dir() || !right.is_dir() {
-        return Ok(false);
-    }
-    let left_entries: BTreeMap<_, _> = fs::read_dir(left)?
-        .map(|entry| entry.map(|entry| (entry.file_name(), entry)))
-        .collect::<std::io::Result<_>>()?;
-    let right_entries: BTreeMap<_, _> = fs::read_dir(right)?
-        .map(|entry| entry.map(|entry| (entry.file_name(), entry)))
-        .collect::<std::io::Result<_>>()?;
-    if left_entries.len() != right_entries.len() {
-        return Ok(false);
-    }
-    for (name, left_entry) in left_entries {
-        let Some(right_entry) = right_entries.get(&name) else {
-            return Ok(false);
-        };
-        let left_type = left_entry.file_type()?;
-        let right_type = right_entry.file_type()?;
-        if left_type.is_dir() && right_type.is_dir() {
-            if !directories_are_equal(&left_entry.path(), &right_entry.path())? {
-                return Ok(false);
-            }
-        } else if left_type.is_file() && right_type.is_file() {
-            if fs::read(left_entry.path())? != fs::read(right_entry.path())? {
-                return Ok(false);
-            }
-        } else {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-fn install_opencode_config(worktree: &str, source: Option<&Path>) -> Result<()> {
-    let Some(source) = source else {
-        return Ok(());
-    };
-    if !source.is_dir() {
-        bail!(
-            "OpenCode config directory does not exist: {}",
-            source.display()
-        );
-    }
-    let destination = Path::new(worktree).join(".opencode");
+const BABYSITTER_AGENT: &str = include_str!("../agents/babysitter.md");
+const BUILD_MODEL: &str = "github-copilot/gpt-5.6-terra";
+
+/// Add only the bundled babysitter agent. The worktree's OpenCode config stays
+/// entirely user-owned: in particular, no opencode.json/opencode.jsonc is
+/// created or copied by dispatch.
+fn install_babysitter_agent(worktree: &str) -> Result<()> {
+    let destination = Path::new(worktree).join(".opencode/agents/babysitter.md");
     if destination.exists() {
-        if directories_are_equal(source, &destination)? {
-            return Ok(());
-        }
+        return Ok(());
+    }
+    let parent = destination
+        .parent()
+        .context("babysitter agent destination has no parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create babysitter agent directory {}", parent.display()))?;
+    fs::write(&destination, BABYSITTER_AGENT)
+        .with_context(|| format!("write bundled babysitter agent {}", destination.display()))
+}
+
+fn available_primary_agents(worktree: &str) -> Result<Vec<(String, String)>> {
+    let output = opencode_text_in("GET", "/api/agent", None, Some(Path::new(worktree)))?;
+    let response: Value = serde_json::from_str(&output).context("OpenCode agent list response")?;
+    let agents = response
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .context("/data")?;
+    Ok(agents
+        .iter()
+        .filter(|agent| agent.pointer("/mode").and_then(Value::as_str) == Some("primary"))
+        .filter(|agent| agent.pointer("/hidden").and_then(Value::as_bool) != Some(true))
+        .filter_map(|agent| {
+            let id = agent.pointer("/id").and_then(Value::as_str)?;
+            let name = agent.pointer("/name").and_then(Value::as_str).unwrap_or(id);
+            Some((id.to_owned(), name.to_owned()))
+        })
+        .collect())
+}
+
+fn select_agent(worktree: &str) -> Result<String> {
+    let agents = available_primary_agents(worktree)?;
+    if agents.is_empty() {
         bail!(
-            "worktree already has {}; refusing to overwrite project OpenCode configuration",
-            destination.display()
+            "OpenCode has no visible primary agents in {}; configure one and retry",
+            worktree
         );
     }
-    copy_directory(source, &destination)
+    if agents.len() == 1 {
+        return Ok(agents[0].0.clone());
+    }
+
+    let mut terminal = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("open /dev/tty for OpenCode agent selection; pass --agent <id> when dispatch is non-interactive")?;
+    writeln!(terminal, "Select an OpenCode build agent for {worktree}:")?;
+    for (index, (id, name)) in agents.iter().enumerate() {
+        writeln!(terminal, "  {}. {} ({})", index + 1, name, id)?;
+    }
+    loop {
+        write!(terminal, "Choice [1-{}]: ", agents.len())?;
+        terminal.flush()?;
+        let mut choice = String::new();
+        if std::io::BufReader::new(&terminal).read_line(&mut choice)? == 0 {
+            bail!("OpenCode agent selection was canceled");
+        }
+        if let Ok(index) = choice.trim().parse::<usize>()
+            && let Some((id, _)) = agents.get(index.saturating_sub(1))
+        {
+            return Ok(id.clone());
+        }
+        writeln!(terminal, "Enter a number from 1 to {}.", agents.len())?;
+    }
 }
 
 fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> {
@@ -547,6 +561,7 @@ fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Re
     Ok(())
 }
 fn start_babysitter(attempt: &mut Attempt, store_path: &Path) -> Result<()> {
+    install_babysitter_agent(&attempt.worktree)?;
     let session = opencode(
         "POST",
         "/api/session",
@@ -768,7 +783,6 @@ fn dispatch(
     dry_run: bool,
     agent: Option<String>,
     model: Option<String>,
-    opencode_config_dir: Option<PathBuf>,
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
     babysitter: bool,
@@ -846,7 +860,9 @@ fn dispatch(
         worktree: String::new(),
         pane: String::new(),
         agent: agent.unwrap_or_default(),
-        model: model.clone().unwrap_or_default(),
+        // Agent choice is interactive, but the build model deliberately stays
+        // fixed until model selection is introduced as a separate workflow.
+        model: model.unwrap_or_else(|| BUILD_MODEL.to_owned()),
         session_id: String::new(),
         prompt_id: identifier("msg"),
         state: "workspace-pending".into(),
@@ -874,23 +890,16 @@ fn dispatch(
         );
         return Ok(());
     }
-    store
-        .store
-        .attempts
-        .insert(attempt.task_id.clone(), attempt.clone());
-    store.save()?;
     let (worktree, pane) = create_worktree(
         &context.invocation.origin_cwd,
         &attempt,
         &selected.task.title,
     )?;
-    if let Err(error) = install_opencode_config(&worktree, opencode_config_dir.as_deref()) {
-        store.store.attempts.remove(&attempt.task_id);
-        store.save()?;
-        return Err(error);
-    }
     attempt.worktree = worktree;
     attempt.pane = pane;
+    if attempt.agent.is_empty() || attempt.agent == "select" {
+        attempt.agent = select_agent(&attempt.worktree)?;
+    }
     attempt.state = "session-pending".into();
     store
         .store
@@ -904,7 +913,7 @@ fn dispatch(
             "title": format!("{} {}", attempt.task_ref, selected.task.title),
             "location": {"directory": attempt.worktree},
             "agent": if attempt.agent.is_empty() { Value::Null } else { Value::String(attempt.agent.clone()) },
-            "model": model_ref(model.as_deref())?,
+            "model": model_ref(Some(&attempt.model))?,
         })),
     )?;
     attempt.session_id = field(&session, "/data/id")?.to_owned();
@@ -1108,20 +1117,10 @@ fn main() -> Result<()> {
             dry_run,
             agent,
             model,
-            opencode_config_dir,
             skill,
             skills_dir,
             babysitter,
-        } => dispatch(
-            path,
-            dry_run,
-            agent,
-            model,
-            opencode_config_dir,
-            skill,
-            skills_dir,
-            babysitter,
-        ),
+        } => dispatch(path, dry_run, agent, model, skill, skills_dir, babysitter),
         Commands::Resume { task } => reconcile(path, &task),
         Commands::Status { task } => status(path, &task),
         Commands::List { running } => list(path, running),
@@ -1153,22 +1152,31 @@ mod tests {
         assert!(model_ref(Some("missing-provider")).is_err());
     }
     #[test]
-    fn plugin_opencode_config_is_copied_without_overwriting() {
+    fn babysitter_agent_is_injected_without_a_config_file() {
         let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("plugin/.opencode");
         let worktree = root.path().join("worktree");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(source.join("opencode.jsonc"), "{}").unwrap();
-        install_opencode_config(worktree.to_str().unwrap(), Some(&source)).unwrap();
+        install_babysitter_agent(worktree.to_str().unwrap()).unwrap();
         assert_eq!(
-            fs::read_to_string(worktree.join(".opencode/opencode.jsonc")).unwrap(),
-            "{}"
+            fs::read_to_string(worktree.join(".opencode/agents/babysitter.md")).unwrap(),
+            BABYSITTER_AGENT
         );
-        // A tracked plugin configuration is already present in worktrees made
-        // from this repository. It is safe to reuse when byte-for-byte equal.
-        install_opencode_config(worktree.to_str().unwrap(), Some(&source)).unwrap();
-        fs::write(worktree.join(".opencode/opencode.jsonc"), "different").unwrap();
-        assert!(install_opencode_config(worktree.to_str().unwrap(), Some(&source)).is_err());
+        assert!(!worktree.join(".opencode/opencode.jsonc").exists());
+    }
+    #[test]
+    fn agent_list_keeps_visible_primary_agents_only() {
+        let response = json!({"data": [
+            {"id": "build", "name": "Build", "mode": "primary", "hidden": false},
+            {"id": "hidden", "mode": "primary", "hidden": true},
+            {"id": "subagent", "mode": "subagent", "hidden": false}
+        ]});
+        let agents = response["data"].as_array().unwrap();
+        let selected: Vec<_> = agents
+            .iter()
+            .filter(|agent| agent.pointer("/mode").and_then(Value::as_str) == Some("primary"))
+            .filter(|agent| agent.pointer("/hidden").and_then(Value::as_bool) != Some(true))
+            .filter_map(|agent| agent.pointer("/id").and_then(Value::as_str))
+            .collect();
+        assert_eq!(selected, vec!["build"]);
     }
     #[test]
     fn namespaced_skill_is_loaded_below_the_skills_root() {

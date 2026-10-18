@@ -42,7 +42,8 @@ printf 'opencode %s\n' "$*" >> "$RUST_DISPATCH_LOG"
 case " $* " in
   *" POST /api/session "*) printf '%s\n' '{"data":{"id":"ses_one"}}' ;;
   *" POST /api/session/ses_one/prompt "*) printf '%s\n' "$*" | grep -q 'msg_' || exit 1; printf '%s\n' '{"data":{"id":"msg_expected"}}' ;;
-  *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
+   *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","mode":"primary","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -61,19 +62,20 @@ cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
 printf 'opencode %s\n' "$*" >> "$RUST_DISPATCH_LOG"
 case " $* " in
-  *" POST /api/session/"*"/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
-  *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
-  *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-  *) printf '%s\n' '{"data":[]}' ;;
+   *" POST /api/session/"*"/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
+   *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
+   *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","mode":"primary","hidden":false}]}' ;;
+   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
 chmod +x "$fake/opencode"
 
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd --skills-dir "$PLUGIN_ROOT/skills" --opencode-config-dir "$PLUGIN_ROOT/.opencode" >/dev/null
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd --skills-dir "$PLUGIN_ROOT/skills" >/dev/null
 assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task" --focus' 'stable worktree branch'
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
-assert_file_contains "$work/worktree/.opencode/opencode.jsonc" '"$schema"' 'plugin OpenCode config copied to worktree'
+[ ! -e "$work/worktree/.opencode/opencode.jsonc" ] || fail 'ordinary dispatch must not add an OpenCode config'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
 assert_file_contains "$log" 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' 'OpenCode inherits the dispatcher store in the worktree pane'
 assert_file_contains "$log" 'opencode --session '\''ses_one'\''' 'OpenCode starts in the worktree pane with its durable session'
@@ -89,7 +91,7 @@ assert_not_contains "$(cat "$log")" 'herdr pane split' 'ordinary dispatch does n
 # Babysitting is opt-in: both sessions are created and prompted through the
 # OpenCode API, then the second API session is attached in the sibling pane.
 babysitter_state=$work/babysitter-state.json
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --babysitter --opencode-config-dir "$PLUGIN_ROOT/.opencode" >/dev/null
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --babysitter >/dev/null
 assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'babysitter splits next to build pane'
 assert_file_contains "$log" '"agent":"babysitter"' 'babysitter session created through OpenCode API'
 assert_file_contains "$log" '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' 'babysitter API session uses Luna'
@@ -99,6 +101,16 @@ assert_file_contains "$log" 'opencode --session '\''ses_babysitter'\''' 'babysit
 assert_file_contains "$log" 'Supervise build OpenCode session ses_one in Herdr pane w1:p1' 'babysitter receives build identity'
 assert_file_contains "$babysitter_state" '"babysitter": true' 'opt-in babysitter persisted'
 assert_file_contains "$babysitter_state" '"babysitter_session_id": "ses_babysitter"' 'babysitter API session persisted'
+assert_file_contains "$work/worktree-babysitter/.opencode/agents/babysitter.md" 'You are the babysitter' 'only the babysitter agent is injected'
+[ ! -e "$work/worktree-babysitter/.opencode/opencode.jsonc" ] || fail 'babysitter dispatch must not add an OpenCode config'
+
+# `--agent select` reads the configured worktree agents from the OpenCode V2
+# API. One available primary agent is selected without needing a terminal.
+selector_state=$work/selector-state.json
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$selector_state" RUST_WORKTREE="$work/worktree-selector" cargo run --quiet -- dispatch --agent select >/dev/null
+assert_file_contains "$selector_state" '"agent": "configured-build"' 'selector uses the OpenCode API agent id'
+assert_file_contains "$selector_state" '"model": "github-copilot/gpt-5.6-terra"' 'selector keeps the build model fixed'
+assert_file_contains "$log" 'opencode api GET /api/agent' 'selector lists agents through the OpenCode API'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/running"
 assert_file_contains "$work/running" '"task_ref": "APP-1"' 'list reports running dispatch'
 assert_file_contains "$work/running" '"state": "running"' 'list filters to running dispatches'
