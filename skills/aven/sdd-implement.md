@@ -27,8 +27,8 @@ Find the plan root:
 - If `{ref}` is an epic child, its context identifies `epic_parent`. Read that
   parent with `aven context <parent-ref> --full` and `aven show <parent-ref>
   --json`; it is the root only when it has `sdd.plan-worked-out=true` and
-  `sdd.plan-kind=multi-phase`. This is the durable fallback for phase tasks
-  provisioned by cumulative worktrees.
+   `sdd.plan-kind=multi-phase`. This is the durable fallback for
+   dispatcher-provisioned phase tasks.
 - Otherwise there is no worked-out plan.
 
 **Do not implement when the root marker is absent or not `true`.** Leave the
@@ -49,14 +49,10 @@ note before proceeding.
 - For a selected multi-phase child, verify it is unblocked with `aven list
   --ready --project <key>` and implement that child only.
 - For a selected multi-phase root epic, inspect `aven epic list {ref}` and use
-  the dispatcher attempt's saved execution mode. Single-session works every
-  child in its one session/worktree; subsessions use exactly one native child
-  at a time in the shared worktree; worktrees use the fixed Luna coordinator
-  and cumulative fast-forward-only phase branches. Do not dispatch children
+  the dispatcher-supplied **Execution mode** guidance for this attempt. Do not
+  infer or coordinate a different execution topology. Do not dispatch children
   separately, run phases in parallel, or admit a successor before predecessor
-  verification and (for worktrees) integration evidence exist.
-
-The backward-compatible single-session default works **every** child in dependency order in this one OpenCode session and worktree.
+  verification and any required integration evidence.
 
 Mark each task `active` immediately before changing it:
 

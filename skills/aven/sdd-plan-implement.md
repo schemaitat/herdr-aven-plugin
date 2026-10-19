@@ -204,11 +204,11 @@ aven list --ready --project <key>
 aven epic list {ref}
 ```
 
-For a multi-phase root epic selected through `z s`, retain the attempt's saved
-execution mode. Single-session uses the existing worktree, subsessions use one
-native phase child at a time, and worktrees use the fixed Luna coordinator plus
-cumulative clean fast-forward integration. Do not dispatch children separately,
-run phases in parallel, or release a successor before predecessor verification.
+For a multi-phase root epic selected through `z s`, follow only the
+dispatcher-supplied **Execution mode** guidance for this attempt. Do not infer
+or coordinate a different execution topology. Do not dispatch children
+separately, run phases in parallel, or release a successor before predecessor
+verification.
 For each piece, and for the root task when it is not decomposed:
 
 1. Mark it active: `aven edit <ref> --status active`.

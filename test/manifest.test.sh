@@ -34,7 +34,7 @@ assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'sdd.plan-kind=singl
 assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'sdd.plan-kind=multi-phase' 'planning workflow labels multi-phase epics'
 assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-plan.md" 'aven dep add <phase-02-ref> <phase-01-ref>' 'planning workflow sequences phases'
 assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-implement.md" 'Do not implement when the root marker is absent' 'implementation workflow requires a plan'
-assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-implement.md" 'every** child in dependency order in this one OpenCode session' 'epic implementation uses one session and worktree'
+assert_file_contains "$PLUGIN_ROOT/skills/aven/sdd-implement.md" 'dispatcher-supplied **Execution mode** guidance' 'implementation workflow defers topology to the selected execution mode'
 [ -f "$PLUGIN_ROOT/agents/babysitter.md" ] || fail "missing babysitter agent"
 babysitter=$(cat "$PLUGIN_ROOT/agents/babysitter.md")
 assert_contains "$babysitter" 'mode: primary' 'babysitter is primary-capable'

@@ -1189,7 +1189,7 @@ fn bundled_skill(skill: Option<String>, skills_dir: Option<PathBuf>) -> Result<O
         .with_context(|| format!("read bundled dispatch skill {}", path.display()))?;
     Ok(Some(text))
 }
-fn prompt(
+fn workflow_prompt(
     task: &Value,
     reference: &str,
     skill: Option<String>,
@@ -1202,17 +1202,51 @@ fn prompt(
         serde_json::to_string_pretty(task).unwrap()
     ))
 }
+fn execution_guidance(mode: ExecutionMode) -> &'static str {
+    match mode {
+        ExecutionMode::SingleSession => {
+            "Work every planned item in dependency order in this OpenCode session and its existing worktree. Do not coordinate or provision cumulative worktrees."
+        }
+        ExecutionMode::Subsessions => {
+            "Use native subsessions for planned child work one at a time in this worktree. Verify each predecessor before beginning its successor; do not coordinate or provision cumulative worktrees."
+        }
+        ExecutionMode::Worktrees => {
+            "You are the coordinator for cumulative worktrees. Do not implement a phase in this worktree; preserve the ordered worker and integration lifecycle below."
+        }
+    }
+}
+fn root_prompt(
+    task: &Value,
+    reference: &str,
+    skill: Option<String>,
+    skills_dir: Option<PathBuf>,
+    mode: ExecutionMode,
+    topology: Option<&str>,
+) -> Result<String> {
+    let topology = match mode {
+        ExecutionMode::Worktrees => {
+            topology.context("worktree mode requires coordinator topology")?
+        }
+        ExecutionMode::SingleSession | ExecutionMode::Subsessions => "",
+    };
+    Ok(format!(
+        "{}\n\n## Execution mode\n\n{}{}",
+        workflow_prompt(task, reference, skill, skills_dir)?,
+        execution_guidance(mode),
+        topology,
+    ))
+}
 fn phase_prompt(
     task: &Value,
     phase: &PhaseAttempt,
-    root: &Attempt,
+    root_ref: &str,
     skills_dir: Option<PathBuf>,
 ) -> Result<String> {
     Ok(format!(
         "You are phase `{}` of the approved root epic `{}`. The root has `sdd.plan-worked-out=true` and `sdd.plan-kind=multi-phase`; its plan is the authoritative plan gate for this phase. Work only in your phase worktree and never modify the coordinator worktree. Your predecessor must be verified and integrated before you begin.\n\n{}",
         phase.task_ref,
-        root.task_ref,
-        prompt(
+        root_ref,
+        workflow_prompt(
             task,
             &phase.task_ref,
             Some("aven/sdd-implement".into()),
@@ -1304,7 +1338,6 @@ fn provision_phase_worktrees(
             title: ready.title.clone(),
         },
     )?;
-    let root = attempt.clone();
     let mut ready = ready.clone();
     ready.prompt_id = identifier("msg");
     let admission = opencode(
@@ -1312,7 +1345,7 @@ fn provision_phase_worktrees(
         &format!("/api/session/{}/prompt", ready.session_id),
         Some(json!({
             "id": ready.prompt_id,
-            "text": phase_prompt(&task, &ready, &root, skills_dir)?,
+            "text": phase_prompt(&task, &ready, &attempt.task_ref, skills_dir)?,
             "resume": true,
         })),
     )?;
@@ -1719,20 +1752,21 @@ fn dispatch(
     attempt.state = "prompt-pending".into();
     store_attempt(&mut store, attempt.clone());
     store.save()?;
+    let topology = (attempt.execution_mode == ExecutionMode::Worktrees)
+        .then(|| coordinator_topology(&attempt));
     let admission = opencode(
         "POST",
         &format!("/api/session/{}/prompt", attempt.session_id),
         Some(json!({
             "id": attempt.prompt_id,
-            "text": format!(
-                "{}{}",
-                prompt(&task, &attempt.task_ref, skill, skills_dir)?,
-                if attempt.execution_mode == ExecutionMode::Worktrees {
-                    coordinator_topology(&attempt)
-                } else {
-                    String::new()
-                }
-            ),
+            "text": root_prompt(
+                &task,
+                &attempt.task_ref,
+                skill,
+                skills_dir,
+                attempt.execution_mode,
+                topology.as_deref(),
+            )?,
             "resume": true
         })),
     )?;
@@ -2326,7 +2360,7 @@ fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
             &format!("/api/session/{}/prompt", admitted.session_id),
             Some(json!({
                 "id": admitted.prompt_id,
-                "text": phase_prompt(&task, &admitted, attempt, None)?,
+                "text": phase_prompt(&task, &admitted, &attempt.task_ref, None)?,
                 "resume": true,
             })),
         )?;
@@ -2526,6 +2560,82 @@ mod tests {
     #[test]
     fn unsafe_skill_path_is_rejected() {
         assert!(bundled_skill(Some("aven/../sdd".into()), None).is_err());
+    }
+    #[test]
+    fn root_prompts_include_only_the_selected_execution_mode() {
+        let task = json!({"task": {"id": "task-1", "title": "prompt scope"}});
+        let topology = "\n\n## Pre-provisioned cumulative worktrees\n\n- `APP-P1` — worker";
+        let single = root_prompt(
+            &task,
+            "APP-1",
+            None,
+            None,
+            ExecutionMode::SingleSession,
+            None,
+        )
+        .unwrap();
+        assert!(single.contains("Work every planned item"));
+        assert!(!single.contains("Pre-provisioned cumulative worktrees"));
+        assert!(!single.contains("native subsessions"));
+        let bundled = bundled_skill(
+            Some("aven/sdd-implement".into()),
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skills")),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!bundled.contains("cumulative worktrees"));
+        assert!(!bundled.contains("native subsessions"));
+
+        let subsessions =
+            root_prompt(&task, "APP-1", None, None, ExecutionMode::Subsessions, None).unwrap();
+        assert!(subsessions.contains("Use native subsessions"));
+        assert!(!subsessions.contains("Pre-provisioned cumulative worktrees"));
+        assert!(!subsessions.contains("Work every planned item"));
+
+        let worktrees = root_prompt(
+            &task,
+            "APP-1",
+            None,
+            None,
+            ExecutionMode::Worktrees,
+            Some(topology),
+        )
+        .unwrap();
+        assert!(worktrees.contains("You are the coordinator"));
+        assert_eq!(
+            worktrees
+                .matches("Pre-provisioned cumulative worktrees")
+                .count(),
+            1
+        );
+        assert!(worktrees.contains("`APP-P1` — worker"));
+    }
+    #[test]
+    fn phase_prompt_is_scoped_to_its_worker_worktree() {
+        let phase = PhaseAttempt {
+            task_id: "phase-1".into(),
+            task_ref: "APP-P1".into(),
+            title: "first phase".into(),
+            branch: "app/phase-1".into(),
+            worktree: "/phase-1".into(),
+            pane: "w1:p1".into(),
+            session_id: "ses_1".into(),
+            prompt_id: "msg_1".into(),
+            commit: String::new(),
+            integrated_commit: String::new(),
+            state: "running".into(),
+        };
+        let prompt = phase_prompt(
+            &json!({"task": {"id": "phase-1"}}),
+            &phase,
+            "APP-ROOT",
+            None,
+        )
+        .unwrap();
+        assert!(prompt.contains("Work only in your phase worktree"));
+        assert!(prompt.contains("approved root epic `APP-ROOT`"));
+        assert!(!prompt.contains("Pre-provisioned cumulative worktrees"));
+        assert!(!prompt.contains("You are the coordinator"));
     }
     #[test]
     fn branch_uses_immutable_id() {
