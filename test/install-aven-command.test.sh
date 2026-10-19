@@ -72,6 +72,10 @@ assert_file_contains "$config" "--babysitter" "implementation babysitter flag"
 assert_file_contains "$config" "keys: [z b]" "implementation babysitter command key"
 assert_contains "$out" "installed: sdd-plan-implement-babysitter (extra)" "SDD babysitter command reported"
 assert_contains "$out" "installed: sdd-implement-babysitter (extra)" "implementation babysitter command reported"
+assert_file_contains "$config" "name: dispatch-reset" "reset workflow command"
+assert_file_contains "$config" "keys: [z r]" "reset workflow key"
+assert_file_contains "$config" "detail_keys: [z R]" "reset workflow detail key"
+assert_file_contains "$config" "args: [reset]" "reset has no implicit confirmation"
 
 # aven can parse the result.
 aven config get sync.enabled >/dev/null ||

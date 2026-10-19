@@ -52,11 +52,12 @@ aven project create "My app" --path "$PWD"
 | `z s` in Aven | Plan then implement the selected task |
 | `z p` in Aven | Turn the selected task idea into a durable implementation plan |
 | `z i` in Aven | Implement an already worked-out plan |
+| `z r` in Aven | Reset dispatch and planning state for the focused task |
 | `z S` in Aven | Plan then implement with an adjacent babysitter |
 | `z b` in Aven | Implement an existing plan with an adjacent babysitter |
 
 The default prefix is `ctrl+b`. Task-detail dispatch bindings use uppercase
-`D`, `S`, `P`, `I`, and `B`. `z S` runs the SDD babysitter command from task
+`D`, `S`, `P`, `I`, `B`, and `R`. `z S` runs the SDD babysitter command from task
 detail; ordinary SDD is available from the task list as `z s`. Press `q` to
 close Aven and return to your pane.
 
@@ -163,12 +164,34 @@ aven-dispatch list --running
 aven-dispatch status HAP-XXXX
 aven-dispatch reconcile HAP-XXXX
 aven-dispatch interrupt HAP-XXXX
+aven-dispatch reset HAP-XXXX --dry-run
+aven-dispatch reset HAP-XXXX --yes
 ```
 
 `status` includes pending permissions and questions without approving them.
 `interrupt` stops execution without marking the task done. For direct dispatch,
 pass Aven's versioned command context on stdin; opt-in babysitting uses
 `aven-dispatch dispatch --agent select --babysitter`.
+
+### Reset a task safely
+
+`z r` (or `aven-dispatch reset <task>`) starts the task over at the dispatcher
+boundary. It inventories every workflow snapshot, asks for a default-No
+confirmation, then interrupts any associated active OpenCode coordinator,
+worker, or babysitter session and waits for them to become inactive before
+cleanup. It refuses reset if session activity cannot be inspected. Use
+`--dry-run` to inspect the target and preserved artifacts; scripts must pass
+`--yes` deliberately.
+
+On success reset removes local/Aven dispatch attempts and the three SDD plan
+markers, returns the root task to ordinary `todo`, and writes a superseding
+audit note. Generated phase children are detached only when their ownership
+metadata proves they belong to the root; ambiguous children cause a refusal.
+Task identity, spec, notes, attachments, unrelated task metadata and links,
+OpenCode sessions, Git branches, worktrees, and source files are retained.
+Reset never deletes sessions or cleans a checkout. Plan the task again before
+implementation; a generation fence prevents old snapshots from being
+reconciled into the new plan.
 
 ## Development
 

@@ -147,6 +147,19 @@
   execution: terminal
   on_success: quit
 
+# Discard only dispatcher/planning state for the focused task. This deliberately
+# has no --yes flag: the terminal prompt is the final destructive-action guard.
+- name: dispatch-reset
+  aliases: [aven-dispatch-reset]
+  description: Reset dispatch and plan state for the focused task
+  program: aven-dispatch
+  args: [reset]
+  keys: [z r]
+  detail_keys: [z R]
+  target: focused
+  execution: terminal
+  on_success: quit
+
 # --- More examples -----------------------------------------------------------
 #
 # Dispatch the selected task to Claude on "z c" instead of opencode.

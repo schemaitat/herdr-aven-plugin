@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{self, BufRead, IsTerminal, Read, Write},
     os::unix::net::UnixStream,
@@ -73,6 +73,17 @@ enum Commands {
     },
     /// Interrupt OpenCode execution; this never changes the Aven task to done/canceled.
     Interrupt { task: String },
+    /// Safely discard dispatch and planning state for one task without deleting code or history.
+    Reset {
+        /// Task ref, or omit when invoked by an Aven focused-task command.
+        task: Option<String>,
+        /// Perform the reset without the interactive default-No confirmation.
+        #[arg(long)]
+        yes: bool,
+        /// Print the reset inventory without changing Aven, the store, or sessions.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate local Aven and OpenCode V2 capabilities without mutation.
     Doctor,
 }
@@ -196,6 +207,9 @@ struct Attempt {
     log_cursor: String,
     #[serde(default)]
     log_task_ref: String,
+    /// Task-scoped reset generation. Missing values are legacy generation zero.
+    #[serde(default)]
+    generation: u64,
     #[serde(default)]
     babysitter: bool,
     #[serde(default)]
@@ -894,6 +908,41 @@ fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> 
     }
     Ok(task)
 }
+fn refresh_task_by_ref(invocation: &Invocation, reference: &str) -> Result<Value> {
+    let output = aven(invocation, &["context", reference, "--json"], None)?;
+    serde_json::from_str(&output).context("Aven context --json output")
+}
+fn task_generation(task: &Value) -> Result<u64> {
+    match task
+        .pointer("/metadata/dispatch.reset-generation")
+        .and_then(Value::as_str)
+    {
+        Some(value) => value.parse().context("invalid dispatch.reset-generation"),
+        None => Ok(0),
+    }
+}
+fn reset_incomplete(task: &Value) -> bool {
+    task.pointer("/metadata/dispatch.reset-state")
+        .and_then(Value::as_str)
+        == Some("incomplete")
+}
+fn ensure_attempt_current(task: &Value, attempt: &Attempt) -> Result<()> {
+    if reset_incomplete(task) {
+        bail!(
+            "task reset is incomplete; rerun aven-dispatch reset after resolving its preflight error"
+        );
+    }
+    let generation = task_generation(task)?;
+    if attempt.generation != generation {
+        bail!(
+            "attempt {} belongs to reset generation {}, but task is generation {}; dispatch a fresh session",
+            attempt.attempt_id,
+            attempt.generation,
+            generation
+        );
+    }
+    Ok(())
+}
 fn create_worktree(
     origin: &str,
     branch: &str,
@@ -1280,6 +1329,8 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     // per role permits recovery from any checkout without locating a
     // checkout-local state file. Planning and implementation therefore retain
     // separate sessions while sharing the selected task's worktree branch.
+    let current = refresh_task_by_ref(invocation, &attempt.task_ref)?;
+    ensure_attempt_current(&current, attempt)?;
     let metadata = vec![
         "dispatch.backend=opencode-v2".to_owned(),
         format!("dispatch.session-id={}", attempt.session_id),
@@ -1430,6 +1481,10 @@ fn dispatch(
     let context = parse_context(&input)?;
     let selected = selected_for(&context)?;
     let task = refresh_task(&context, selected)?;
+    if reset_incomplete(&task) {
+        bail!("task reset is incomplete; rerun aven-dispatch reset instead of admitting work");
+    }
+    let generation = task_generation(&task)?;
     let mut store = LockedStore::open(path.clone())?;
     let workflow = workflow_for_skill(skill.as_deref());
     let key = attempt_key(&selected.task.id, workflow);
@@ -1459,12 +1514,14 @@ fn dispatch(
         if recovered.workflow != workflow {
             bail!("Aven dispatcher snapshot belongs to a different workflow role");
         }
+        ensure_attempt_current(&task, &recovered)?;
         store_attempt(&mut store, recovered);
         if !dry_run {
             store.save()?;
         }
     }
     if let Some(existing) = store.store.attempts.get(&key).cloned() {
+        ensure_attempt_current(&task, &existing)?;
         if let Some(mode) = requested_mode
             && mode != existing.execution_mode
         {
@@ -1563,6 +1620,7 @@ fn dispatch(
         aven_update_pending: false,
         log_cursor: String::new(),
         log_task_ref: String::new(),
+        generation,
         babysitter,
         babysitter_pane: String::new(),
         babysitter_session_id: String::new(),
@@ -1703,6 +1761,330 @@ fn find_attempt<'a>(store: &'a LockedStore, task: &str) -> Result<&'a Attempt> {
         .find(|a| a.task_id == task || a.task_ref == task)
         .context("no dispatcher attempt for task")
 }
+fn reset_context(task: Option<String>) -> Result<(Invocation, String)> {
+    let input = env::var_os("AVEN_COMMAND_CONTEXT")
+        .map(fs::read_to_string)
+        .transpose()
+        .context("read Aven terminal command context")?;
+    let context = input.as_deref().map(parse_context).transpose()?;
+    match (task, context.as_ref()) {
+        (Some(task), Some(context)) => {
+            let selected = selected_for(context)?;
+            if task != selected.reference() && task != selected.task.id {
+                bail!("explicit reset task does not match the focused Aven task");
+            }
+            Ok((context.invocation.clone(), selected.reference().to_owned()))
+        }
+        (Some(task), None) => Ok((
+            Invocation {
+                aven_exe: String::new(),
+                db_path: None,
+                workspace: None,
+                origin_cwd: env::current_dir()?.display().to_string(),
+            },
+            task,
+        )),
+        (None, Some(context)) => {
+            let selected = selected_for(context)?;
+            Ok((context.invocation.clone(), selected.reference().to_owned()))
+        }
+        (None, None) => bail!("reset requires a task ref outside an Aven focused-task command"),
+    }
+}
+fn metadata_attempts(task: &Value, task_id: &str) -> Result<Vec<Attempt>> {
+    let empty = serde_json::Map::new();
+    let metadata = task
+        .get("metadata")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+    let mut attempts = Vec::new();
+    for (key, value) in metadata {
+        if key == "dispatch.attempt" || key.starts_with("dispatch.attempt.") {
+            let snapshot = value
+                .as_str()
+                .with_context(|| format!("{key} must be a JSON string"))?;
+            let attempt: Attempt = serde_json::from_str(snapshot)
+                .with_context(|| format!("invalid {key} snapshot"))?;
+            if attempt.task_id != task_id {
+                bail!("{key} snapshot belongs to a different immutable task");
+            }
+            attempts.push(attempt);
+        }
+    }
+    Ok(attempts)
+}
+fn attempt_session_ids(attempt: &Attempt) -> Vec<&str> {
+    let mut ids = vec![
+        attempt.session_id.as_str(),
+        attempt.coordinator_session_id.as_str(),
+        attempt.babysitter_session_id.as_str(),
+    ];
+    ids.extend(attempt.phases.iter().map(|phase| phase.session_id.as_str()));
+    ids.into_iter().filter(|id| !id.is_empty()).collect()
+}
+fn json_contains_string(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(value) => value == expected,
+        Value::Array(values) => values
+            .iter()
+            .any(|value| json_contains_string(value, expected)),
+        Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key == expected || json_contains_string(value, expected)),
+        _ => false,
+    }
+}
+fn active_sessions(sessions: &[String], active: &Value) -> Vec<String> {
+    sessions
+        .iter()
+        .filter(|id| json_contains_string(active, id))
+        .cloned()
+        .collect()
+}
+fn interrupt_and_drain_sessions(sessions: &[String]) -> Result<()> {
+    let unique: BTreeSet<_> = sessions.iter().collect();
+    for session in unique {
+        opencode("POST", &format!("/api/session/{session}/interrupt"), None)
+            .with_context(|| format!("interrupt associated OpenCode session {session}"))?;
+    }
+    for _ in 0..60 {
+        let active = opencode("GET", "/api/session/active", None)
+            .context("cannot confirm OpenCode sessions stopped after reset interrupt")?;
+        let running = active_sessions(sessions, &active);
+        if running.is_empty() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    bail!(
+        "associated OpenCode session(s) remained active after interrupt: {}",
+        active_sessions(sessions, &opencode("GET", "/api/session/active", None)?).join(", ")
+    );
+}
+fn owned_reset_children(
+    invocation: &Invocation,
+    root: &Value,
+    root_ref: &str,
+) -> Result<Vec<String>> {
+    let root_id = field(root, "/task/id")?;
+    let empty = Vec::new();
+    let children = root
+        .pointer("/epic_children")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let mut owned = Vec::new();
+    for child in children {
+        let reference = child
+            .get("ref")
+            .and_then(Value::as_str)
+            .context("epic child is missing ref")?;
+        let child = refresh_task_by_ref(invocation, reference)?;
+        let metadata = child
+            .get("metadata")
+            .and_then(Value::as_object)
+            .context("epic child has no metadata")?;
+        let owner = metadata.get("sdd.plan-root").and_then(Value::as_str);
+        let phase = metadata.get("sdd.phase").and_then(Value::as_str);
+        if matches!(owner, Some(owner) if owner == root_id || owner == root_ref)
+            && phase.is_some_and(|phase| !phase.is_empty())
+        {
+            owned.push(reference.to_owned());
+        } else {
+            bail!(
+                "direct child {reference} is not a generated phase owned by {root_ref}; refusing reset"
+            );
+        }
+    }
+    Ok(owned)
+}
+fn confirm_reset(reference: &str, attempts: usize) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        bail!("reset mutates state only with --yes when no interactive terminal is available");
+    }
+    print!(
+        "Reset {reference}, clearing {attempts} dispatch attempt(s) and its plan marker? [y/N] "
+    );
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+        bail!("reset canceled; no state was changed");
+    }
+    Ok(())
+}
+fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool) -> Result<()> {
+    let (invocation, reference) = reset_context(requested_task)?;
+    let root = refresh_task_by_ref(&invocation, &reference)?;
+    let task_id = field(&root, "/task/id")?.to_owned();
+    let existing_generation = task_generation(&root)?;
+    let recovering = reset_incomplete(&root);
+    let generation = if recovering {
+        existing_generation
+    } else {
+        existing_generation + 1
+    };
+    let mut store = LockedStore::open(path)?;
+    let mut attempts: BTreeMap<String, Attempt> = store
+        .store
+        .attempts
+        .values()
+        .filter(|attempt| attempt.task_id == task_id)
+        .map(|attempt| (attempt.attempt_id.clone(), attempt.clone()))
+        .collect();
+    for attempt in metadata_attempts(&root, &task_id)? {
+        attempts.insert(attempt.attempt_id.clone(), attempt);
+    }
+    let mut children = owned_reset_children(&invocation, &root, &reference)?;
+    if recovering {
+        let operation = root
+            .pointer("/metadata/dispatch.reset-operation")
+            .and_then(Value::as_str)
+            .context("incomplete reset is missing its operation record")?;
+        let operation: Value =
+            serde_json::from_str(operation).context("invalid incomplete reset operation record")?;
+        if operation.get("generation").and_then(Value::as_u64) != Some(generation) {
+            bail!("incomplete reset operation generation does not match task generation");
+        }
+        for child in operation
+            .get("detached_children")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if !children.iter().any(|current| current == child) {
+                children.push(child.to_owned());
+            }
+        }
+    }
+    let active = opencode("GET", "/api/session/active", None)
+        .context("cannot establish OpenCode session activity; reset refuses to guess")?;
+    let sessions: Vec<String> = attempts
+        .values()
+        .flat_map(attempt_session_ids)
+        .map(str::to_owned)
+        .collect();
+    let running = active_sessions(&sessions, &active);
+    println!(
+        "reset target={reference} generation={} attempts={} sessions={} generated_children={}",
+        generation,
+        attempts.len(),
+        sessions.len(),
+        children.len()
+    );
+    if !running.is_empty() {
+        println!(
+            "hard reset will interrupt associated active session(s): {}",
+            running.join(", ")
+        );
+    }
+    if dry_run {
+        println!(
+            "dry run: no Aven metadata, state store, sessions, worktrees, branches, or files were changed"
+        );
+        return Ok(());
+    }
+    if !yes {
+        confirm_reset(&reference, attempts.len())?;
+    }
+    if !running.is_empty() {
+        interrupt_and_drain_sessions(&running)?;
+    }
+    if !recovering {
+        let operation = json!({"schema":"aven-dispatch-reset/v1", "generation": generation, "state":"incomplete", "attempt_ids": attempts.keys().collect::<Vec<_>>(), "sessions": sessions, "detached_children": children});
+        let begin = vec![
+            "edit".to_owned(),
+            reference.clone(),
+            "--metadata".into(),
+            format!("dispatch.reset-generation={generation}"),
+            "--metadata".into(),
+            "dispatch.reset-state=incomplete".into(),
+            "--metadata".into(),
+            format!("dispatch.reset-operation={operation}"),
+        ];
+        run(
+            if invocation.aven_exe.is_empty() {
+                "aven"
+            } else {
+                &invocation.aven_exe
+            },
+            &{
+                let mut args = aven_args(&invocation, &[]);
+                args.extend(begin);
+                args
+            },
+            None,
+        )?;
+    }
+    store
+        .store
+        .attempts
+        .retain(|_, attempt| attempt.task_id != task_id);
+    store.save()?;
+    for child in &children {
+        let _ = aven(&invocation, &["epic", "remove", child, &reference], None);
+    }
+    let mut cleanup = vec![
+        "edit".to_owned(),
+        reference.clone(),
+        "--status".into(),
+        "todo".into(),
+        "--epic".into(),
+        "off".into(),
+    ];
+    let existing_metadata = root.get("metadata").and_then(Value::as_object);
+    for key in [
+        "dispatch.backend",
+        "dispatch.session-id",
+        "dispatch.attempt-id",
+        "dispatch.state",
+        "dispatch.workflow",
+        "dispatch.branch",
+        "dispatch.attempt",
+        "dispatch.attempt.default",
+        "dispatch.attempt.planning",
+        "dispatch.attempt.implementation",
+        "sdd.plan-worked-out",
+        "sdd.plan-kind",
+        "sdd.plan-schema",
+    ] {
+        // Aven treats removal of an absent custom field as an error. A reset
+        // commonly follows an aborted dispatch, so optional legacy/workflow
+        // fields must be removed only when this task actually has them.
+        if existing_metadata.is_some_and(|metadata| metadata.contains_key(key)) {
+            cleanup.extend(["--remove-metadata".into(), key.into()]);
+        }
+    }
+    cleanup.extend(["--metadata".into(), "dispatch.reset-state=completed".into(), "--metadata".into(), format!("dispatch.reset-operation={}", json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"completed", "detached_children":children}))]);
+    run(
+        if invocation.aven_exe.is_empty() {
+            "aven"
+        } else {
+            &invocation.aven_exe
+        },
+        &{
+            let mut args = aven_args(&invocation, &[]);
+            args.extend(cleanup);
+            args
+        },
+        None,
+    )?;
+    let note = format!(
+        "## Dispatcher reset\n\nReset generation {} supersedes the prior dispatch and plan. Removed {} attempt record(s) from the shared store and Aven snapshots. Preserved sessions, branches, worktrees, source files, specification, notes, and history. Detached generated phase task(s): {}. Plan again before implementation.",
+        generation,
+        attempts.len(),
+        if children.is_empty() {
+            "none".into()
+        } else {
+            children.join(", ")
+        }
+    );
+    aven(&invocation, &["note", &reference, "--stdin"], Some(&note))?;
+    println!(
+        "reset complete for {reference}; plan and dispatch state were cleared without deleting source artifacts"
+    );
+    Ok(())
+}
 fn status(path: PathBuf, task: &str) -> Result<()> {
     let store = LockedStore::open(path)?;
     let attempt = find_attempt(&store, task)?;
@@ -1754,6 +2136,10 @@ fn interrupt(path: PathBuf, task: &str) -> Result<()> {
 fn reconcile(path: PathBuf, task: &str) -> Result<()> {
     let mut store = LockedStore::open(path.clone())?;
     let mut attempt = find_attempt(&store, task)?.clone();
+    ensure_attempt_current(
+        &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
+        &attempt,
+    )?;
     if attempt.aven_update_pending && write_aven_links(&attempt.aven, &attempt).is_ok() {
         attempt.aven_update_pending = false;
         store_attempt(&mut store, attempt.clone());
@@ -1856,6 +2242,10 @@ fn phase_session_succeeded(phase: &PhaseAttempt) -> Result<bool> {
     )
 }
 fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
+    ensure_attempt_current(
+        &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
+        attempt,
+    )?;
     let mut changed = false;
     for index in 0..attempt.phases.len() {
         let phase = attempt.phases[index].clone();
@@ -2007,6 +2397,7 @@ fn main() -> Result<()> {
             detail,
         } => log_event(path, &task, &event, &detail),
         Commands::Interrupt { task } => interrupt(path, &task),
+        Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
         Commands::Doctor => doctor(),
     }
 }
@@ -2162,6 +2553,7 @@ mod tests {
             aven_update_pending: false,
             log_cursor: String::new(),
             log_task_ref: "DL-1".into(),
+            generation: 0,
             babysitter: false,
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),
@@ -2179,5 +2571,71 @@ mod tests {
         assert_eq!(record["source_task"], "APP-1");
         assert_eq!(record["event"], "completed");
         assert_eq!(record["detail"], "verified");
+    }
+    #[test]
+    fn reset_generation_defaults_to_zero_and_fences_stale_attempts() {
+        let mut attempt = Attempt {
+            task_id: "task-id".into(),
+            task_ref: "APP-1".into(),
+            workflow: "default".into(),
+            attempt_id: "att_1".into(),
+            branch: String::new(),
+            worktree: String::new(),
+            pane: String::new(),
+            agent: String::new(),
+            model: String::new(),
+            execution_mode: ExecutionMode::SingleSession,
+            coordinator_session_id: String::new(),
+            coordinator_agent: String::new(),
+            coordinator_model: String::new(),
+            auto_permissions: false,
+            phases: Vec::new(),
+            session_id: String::new(),
+            prompt_id: String::new(),
+            state: "running".into(),
+            aven_update_pending: false,
+            log_cursor: String::new(),
+            log_task_ref: String::new(),
+            generation: 0,
+            babysitter: false,
+            babysitter_pane: String::new(),
+            babysitter_session_id: String::new(),
+            babysitter_prompt_id: String::new(),
+            aven: Invocation {
+                aven_exe: String::new(),
+                db_path: None,
+                workspace: None,
+                origin_cwd: String::new(),
+            },
+            created_at: 0,
+        };
+        assert_eq!(task_generation(&json!({"metadata": {}})).unwrap(), 0);
+        assert!(
+            ensure_attempt_current(
+                &json!({"metadata": {"dispatch.reset-generation": "1"}}),
+                &attempt
+            )
+            .is_err()
+        );
+        attempt.generation = 1;
+        assert!(
+            ensure_attempt_current(
+                &json!({"metadata": {"dispatch.reset-generation": "1"}}),
+                &attempt
+            )
+            .is_ok()
+        );
+        assert!(ensure_attempt_current(&json!({"metadata": {"dispatch.reset-state": "incomplete", "dispatch.reset-generation": "1"}}), &attempt).is_err());
+    }
+    #[test]
+    fn reset_active_session_detection_matches_nested_active_payloads() {
+        assert!(json_contains_string(
+            &json!({"data": {"ses_1": {"status": "running"}}}),
+            "ses_1"
+        ));
+        assert!(!json_contains_string(
+            &json!({"data": {"ses_2": {}}}),
+            "ses_1"
+        ));
     }
 }

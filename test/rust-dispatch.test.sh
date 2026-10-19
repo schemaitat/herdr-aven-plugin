@@ -158,6 +158,16 @@ assert_file_contains "$work/log-event" 'logged manual-debug for APP-1 in DL-LOG'
 assert_file_contains "$log" 'aven related add DL-LOG APP-1' 'dispatcher log task references the source task'
 assert_file_contains "$log" 'aven note DL-LOG --stdin' 'operator event is written to the linked log task'
 
+# Reset removes the shared-store attempt and dispatch/plan metadata without
+# touching the worktree. The fake active-session endpoint reports no sessions,
+# so this also proves reset uses the V2 activity probe before mutation.
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- reset APP-1 --yes > "$work/reset"
+assert_file_contains "$work/reset" 'reset complete for APP-1' 'confirmed reset completes'
+assert_file_contains "$state" '"attempts": {}' 'reset removes the local attempt'
+assert_file_contains "$log" 'opencode api GET /api/session/active' 'reset checks active sessions before cleanup'
+assert_file_contains "$log" 'aven edit APP-1 --status todo --epic off' 'reset returns root to an ordinary todo task'
+assert_file_contains "$log" 'sdd.plan-worked-out' 'reset clears plan marker metadata'
+
 # Cumulative worktrees are provisioned by the dispatcher, not left to the
 # coordinator model. The root gets one coordinator worktree and every ordered
 # phase gets its own worker worktree; only the first phase is admitted.
