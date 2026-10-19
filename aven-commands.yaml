@@ -45,6 +45,7 @@
     - --skills-dir
     - "${PLUGIN_ROOT}/skills"
   keys: [z s]
+  detail_keys: [z s]
   target: focused
   execution: terminal
   on_success: quit

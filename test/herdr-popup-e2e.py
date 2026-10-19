@@ -205,11 +205,15 @@ else:
         wait_text(title, start)
         pump(0.2)
 
-    def invoke_picker():
+    def invoke_picker(keys=b"zd", implementation_mode=False):
         start = len(output)
-        os.write(master, b"zd")
+        os.write(master, keys)
         wait_text(b"q to cancel:", start)
         assert snapshot()["focused_pane_id"] == origin_pane, "Focus moved before selection"
+        if implementation_mode:
+            wait_text(b"Select implementation mode", start)
+            wait_text(b"Choice [1-3], Enter for single session, or q to cancel:", start)
+            os.write(master, b"1\n")
         return start
 
     try:
@@ -218,7 +222,7 @@ else:
         origin_pane, origin_workspace = origin["focused_pane_id"], origin["focused_workspace_id"]
         initial_worktrees = run(["git", "worktree", "list", "--porcelain"]).count("worktree ")
         open_aven()
-        start = invoke_picker()
+        start = invoke_picker(b"zs", implementation_mode=True)
         wait_text(b"Choice [1-1]", start)
         assert not posts() and not store.exists(), "Single agent was auto-selected"
         invalid_start = len(output)

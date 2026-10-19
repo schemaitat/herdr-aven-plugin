@@ -1664,9 +1664,19 @@ fn dispatch(
     let admission = opencode(
         "POST",
         &format!("/api/session/{}/prompt", attempt.session_id),
-        Some(
-            json!({"id": attempt.prompt_id, "text": format!("{}{}", prompt(&task, &attempt.task_ref, skill, skills_dir)?, coordinator_topology(&attempt)), "resume": true}),
-        ),
+        Some(json!({
+            "id": attempt.prompt_id,
+            "text": format!(
+                "{}{}",
+                prompt(&task, &attempt.task_ref, skill, skills_dir)?,
+                if attempt.execution_mode == ExecutionMode::Worktrees {
+                    coordinator_topology(&attempt)
+                } else {
+                    String::new()
+                }
+            ),
+            "resume": true
+        })),
     )?;
     let admitted = field(&admission, "/data/id")?;
     if admitted != attempt.prompt_id {

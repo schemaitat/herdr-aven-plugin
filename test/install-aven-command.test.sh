@@ -50,6 +50,7 @@ assert_file_contains "$config" "on_success: quit"
 # The aven-native workflow example is installed next to dispatch by default.
 assert_file_contains "$config" "name: sdd-plan-implement"
 assert_file_contains "$config" "keys: [z s]"
+assert_file_contains "$config" "detail_keys: [z s]" "SDD task-detail key"
 assert_file_contains "$config" "--skill" "workflow skill option"
 assert_file_contains "$config" "aven/sdd-plan-implement" "workflow skill name"
 assert_file_contains "$config" "--skills-dir" "workflow skills directory"

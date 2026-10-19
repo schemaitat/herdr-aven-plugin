@@ -55,10 +55,10 @@ aven project create "My app" --path "$PWD"
 | `z S` in Aven | Plan then implement with an adjacent babysitter |
 | `z b` in Aven | Implement an existing plan with an adjacent babysitter |
 
-The default prefix is `ctrl+b`. Task-detail dispatch bindings use uppercase
-`D`, `S`, `P`, `I`, and `B`. `z S` runs the SDD babysitter command from task
-detail; ordinary SDD is available from the task list as `z s`. Press `q` to
-close Aven and return to your pane.
+The default prefix is `ctrl+b`. `z s` runs the normal SDD workflow from either
+the task list or task detail. In task detail, `z S` instead runs the SDD
+babysitter command; the other dispatch bindings use uppercase `D`, `P`, `I`,
+and `B`. Press `q` to close Aven and return to your pane.
 
 ### Dispatch flow
 

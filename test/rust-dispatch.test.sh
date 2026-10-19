@@ -109,6 +109,7 @@ assert_file_contains "$log" 'Plan then implement an Aven task' 'explicit skills 
 assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
 assert_file_contains "$state" '"agent": "build"' 'primary agent persisted'
 assert_not_contains "$(cat "$log")" 'herdr pane split' 'ordinary dispatch does not create a babysitter pane'
+assert_not_contains "$(cat "$log")" 'Pre-provisioned cumulative worktrees' 'single-session prompt does not receive worktree coordinator instructions'
 
 # Babysitting is opt-in: both sessions are created and prompted through the
 # OpenCode API, then the second API session is attached in the sibling pane.
@@ -173,4 +174,5 @@ assert_file_contains "$cumulative_state" '"task_ref": "APP-P1"' 'first phase is 
 assert_file_contains "$cumulative_state" '"task_ref": "APP-P2"' 'second phase is persisted'
 assert_file_contains "$cumulative_state" '"state": "provisioned"' 'blocked successor remains provisioned without a prompt'
 assert_file_contains "$cumulative_state" '"state": "running"' 'first phase is admitted to its worker session'
+assert_file_contains "$log" 'Pre-provisioned cumulative worktrees' 'worktree coordinator receives its topology instructions'
 printf 'rust dispatch ok\n'
