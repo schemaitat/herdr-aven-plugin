@@ -468,6 +468,17 @@ fn opencode(method: &str, path: &str, data: Option<Value>) -> Result<Value> {
 fn opencode_text(method: &str, path: &str, data: Option<Value>) -> Result<String> {
     opencode_text_in(method, path, data, None)
 }
+fn header_value(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                vec![byte as char]
+            }
+            byte => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
 fn opencode_text_in(
     method: &str,
     path: &str,
@@ -475,6 +486,18 @@ fn opencode_text_in(
     directory: Option<&Path>,
 ) -> Result<String> {
     let mut args = vec!["api".into(), method.into(), path.into()];
+    if let Some(directory) = directory {
+        // The OpenCode CLI's working directory is not used as the API request
+        // location. Scope this request explicitly so worktree-local agents
+        // (including the bundled babysitter) are discovered.
+        args.extend([
+            "--header".into(),
+            format!(
+                "x-opencode-directory:{}",
+                header_value(&directory.to_string_lossy())
+            ),
+        ]);
+    }
     if let Some(data) = data {
         args.extend(["--data".into(), serde_json::to_string(&data)?]);
     }
@@ -2971,6 +2994,13 @@ mod tests {
             json!({"providerID": "provider", "id": "model", "variant": "fast"})
         );
         assert!(model_ref(Some("missing-provider")).is_err());
+    }
+    #[test]
+    fn worktree_location_header_value_is_url_encoded() {
+        assert_eq!(
+            header_value("/tmp/task worktree/agent.md"),
+            "%2Ftmp%2Ftask%20worktree%2Fagent.md"
+        );
     }
     #[test]
     fn babysitter_agent_is_injected_without_a_config_file() {

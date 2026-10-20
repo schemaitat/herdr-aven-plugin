@@ -64,7 +64,8 @@ case " $* " in
   *" POST /api/session "*) printf '%s\n' '{"data":{"id":"ses_one"}}' ;;
   *" POST /api/session/ses_one/prompt "*) printf '%s\n' "$*" | grep -q 'msg_' || exit 1; printf '%s\n' '{"data":{"id":"msg_expected"}}' ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
+   *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -87,7 +88,8 @@ case " $* " in
    *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
    *" GET /api/session/ses_one "*) if [ -n "${RUST_DISPATCH_SESSION_OUTCOME:-}" ]; then printf '{"data":{"outcome":"%s"}}\n' "$RUST_DISPATCH_SESSION_OUTCOME"; else printf '%s\n' '{"data":{}}'; fi ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
+   *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
    *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -117,6 +119,7 @@ assert_not_contains "$(cat "$log")" 'Pre-provisioned cumulative worktrees' 'sing
 babysitter_state=$work/babysitter-state.json
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter >/dev/null
 assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'babysitter splits next to build pane'
+assert_file_contains "$log" 'opencode api GET /api/agent --header x-opencode-directory:%2F' 'babysitter discovery targets its worktree location'
 assert_file_contains "$log" '"agent":"babysitter"' 'babysitter session created through OpenCode API'
 assert_file_contains "$log" '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' 'babysitter API session uses Luna'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_babysitter/prompt' 'babysitter prompt admitted through OpenCode API'
