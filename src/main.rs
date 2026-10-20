@@ -2531,6 +2531,20 @@ mod tests {
         assert!(!worktree.join(".opencode/opencode.jsonc").exists());
     }
     #[test]
+    fn orchestrator_definition_monitors_every_phase_and_defers_final_integration() {
+        assert!(ORCHESTRATOR_AGENT.contains("do not stop after the first worker"));
+        assert!(
+            ORCHESTRATOR_AGENT.contains("Run this coordination loop at least every 60 seconds")
+        );
+        assert!(ORCHESTRATOR_AGENT.contains("aven-dispatch reconcile\n<root-ref>"));
+        assert!(
+            ORCHESTRATOR_AGENT.contains("every phase is\nintegrated and the root epic is `done`")
+        );
+        assert!(ORCHESTRATOR_AGENT.contains("creating a pull\nrequest as the preferred option"));
+        assert!(ORCHESTRATOR_AGENT.contains("Wait for explicit approval"));
+        assert!(ORCHESTRATOR_AGENT.contains("Never create a pull request, push, merge"));
+    }
+    #[test]
     fn agent_list_keeps_visible_primary_agents_only() {
         let response = json!({"data": [
             {"id": "build", "name": "Build", "mode": "primary", "hidden": false},
