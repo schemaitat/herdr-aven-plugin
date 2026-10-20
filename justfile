@@ -47,3 +47,7 @@ ui-start:
 # Requires a built UI and Chromium (or UI_CHROME=/path/to/chrome).
 ui-test-browser:
     npm --prefix web run test:browser
+
+# Deterministic graph gestures/accessibility; no live source reads or agents.
+ui-test-e2e:
+    npm --prefix web run test:browser -- graph.spec.ts

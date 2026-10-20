@@ -4,6 +4,7 @@ body { margin: 0; background: radial-gradient(ellipse at 75% 0%, #20204355, tran
 button, input, select { font: inherit; }
 button, input, select { border: 1px solid #35415c; border-radius: 8px; background: #10192b; color: inherit; }
 button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .45; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #92c9ff; outline-offset: 3px; }
 .masthead { display: flex; align-items: center; gap: 22px; padding: 32px 5%; border-bottom: 1px solid #26314b; }
 .orb { width: 48px; height: 48px; flex-shrink: 0; border: 1px solid #9bb5ff; border-radius: 50%; background: radial-gradient(circle at 30% 30%, #a4b9ff, #465c9c 25%, #111a39 70%); box-shadow: 0 0 30px #617dff33; }
@@ -57,6 +58,20 @@ dd { margin: 4px 0 0; font-size: 12px; overflow-wrap: anywhere; line-height: 1.6
 .provenance time { color: #a2b0c9; }
 .empty { padding: 22px; color: #b2c1d9; font-size: 13px; }
 .warning { padding: 12px; background: #382e20; border: 1px solid #b99a62; border-radius: 8px; }
+.graph-panel { border: 1px solid #35415c; border-radius: 12px; margin: 16px 0 24px; background: radial-gradient(ellipse at 40% 40%, #24204966, #080d1b 75%); overflow: hidden; }
+.graph-canvas { height: 580px; width: 100%; }
+.graph-help, .graph-status { padding: 10px 18px; margin: 0; font-size: 12px; color: #b8c8e0; }
+.graph-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.graph-controls button, .collapse { padding: 8px 14px; font-size: 12px; }
+.collapse { margin: 0 12px 8px 48px; }
+.legend { margin: 16px 0; font-size: 12px; line-height: 1.7; color: #c1cce0; }
+.legend summary { cursor: pointer; }
+.legend summary:focus-visible { outline: 3px solid #92c9ff; }
+.entity-mark.agent { border-radius: 0; transform: rotate(45deg); }
+.entity-mark.attempt { clip-path: polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
+.entity-mark.pane, .entity-mark.session, .entity-mark.workspace { border-radius: 3px; }
+.entity-mark.worktree { clip-path: polygon(50% 0,100% 100%,0 100%); }
+.relations code { font-size: 10px; overflow-wrap: anywhere; display: block; }
 footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 @media (max-width: 1000px) { .overview { grid-template-columns: 1fr; } }
 @media (max-width: 650px) { .explorer { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar label:first-child { flex-basis: 100%; } .source-health { flex-direction: column; } .masthead { padding: 24px 5%; gap: 12px; } .readonly { display: none; } }
