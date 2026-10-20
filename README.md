@@ -38,6 +38,96 @@ unmanaged settings are preserved; conflicting settings are reported.
 
 ## Getting started
 
+### Optional read-only local dashboard
+
+The separate `web/` package requires **Node 24 LTS and npm**; terminal plugin
+users do not need Node. From this repository's primary or phase checkout:
+
+```sh
+just ui-install
+just ui-dev
+# Open http://127.0.0.1:4318 explicitly; Ctrl+C stops the server.
+```
+
+For a production build (same-origin Fastify server, no Vite listener):
+
+```sh
+just ui-check
+just ui-test
+just ui-build
+just ui-start
+```
+
+The explorer lists project tasks/epics and their typed relationships, dispatcher
+attempts/roles, API session identities, Herdr panes/workspaces, and Git worktrees.
+Search, type/state filters, keyboard-selectable entries, related-entity buttons,
+and a provenance/detail panel provide the non-canvas inspection path. Task
+acceptance, persisted attempt state, and terminal-observed state are separate.
+**Live OpenCode API activity is not yet connected:** session activity is explicitly
+unknown, even when a Herdr terminal reports working. No task completion is
+inferred from terminal or dispatcher state.
+
+Startup settings are trusted environment variables, never browser parameters:
+
+| Setting | Default / behavior |
+| --- | --- |
+| `UI_PROJECT` | Primary checkout directory name (`herdr-aven-plugin` here); set explicitly if your Aven project key differs |
+| `UI_WORKSPACE` | `default`; set explicitly for another Aven workspace |
+| `UI_PORT` | `4318` (unprivileged ports only) |
+| `UI_HOST` | Only `127.0.0.1` is accepted |
+| `AVEN_DISPATCH_STORE` | Existing configured store; relative paths resolve from the repository checkout. Otherwise reads the primary checkout's `.aven-dispatch/state.json` |
+
+Run inside Herdr to inherit its existing session/socket context. Outside Herdr,
+the Aven explorer still works and topology is labelled unavailable. The server
+does not start or control any upstream service. Missing/malformed optional data
+is visible in source-health cards. Aven outages retain the previous snapshot
+with an explicit stale label; connection failures retain selection and label
+displayed data stale.
+
+Reads use explicit project/workspace scope, a 500-item cap for each of Aven's
+available and upcoming lists, and at most 80 context hydrations per snapshot
+(four concurrent, four-second hydration admission budget). Contexts cache for 15 seconds, with actual read timestamps in
+provenance and rotating hydration when coverage exceeds the batch. Snapshots
+coalesce/cache for four seconds and the client polls after each response.
+Reaching a list cap or missing context is labelled **incomplete**, never silently
+treated as full coverage. Cross-project/unhydrated/missing references remain
+boundary stubs, without reading their details. CLI reads time out after four
+seconds and allow at most 4 MiB combined stdout/stderr; store reads are bounded
+to 4 MiB. These are snapshot bounds, not a claim of live activity freshness.
+
+Security: the server rejects hostile Host/Origin and cross-site browser requests,
+disables CORS, and authenticates API reads with an in-memory per-run token obtained
+by same-origin bootstrap (never a URL token or service credential). It has no
+command/path/URL proxy and accepts no API query parameters or write methods.
+Sources use fixed read command shapes without a shell; neither `reconcile` nor
+`list --running` is used. The store is read directly without its mutating lock
+path; scoped Aven recovery metadata is merged by task/workflow/reset generation.
+Obsolete generations and incomplete resets are rejected. Raw store snapshots,
+invocations, auth headers, pending prompts, and Aven note bodies never reach the
+browser. Labels and values are rendered as untrusted text. This is a local,
+single-user inspection tool, not a remote or multi-user hosting configuration.
+
+Unit/integration tests include source fixtures, identity/merge contracts, a
+stub-executable read-command audit, source non-mutation, and security/timeout/
+output-bound checks. An additional real-source Chromium smoke test checks both
+list/details and the API boundary (requires Aven project entities):
+
+```sh
+# Once, if Chromium is not already installed:
+cd web
+npx playwright install chromium
+cd ..
+just ui-test-browser
+# Or use an existing browser, without downloading one:
+UI_CHROME=/usr/bin/google-chrome just ui-test-browser
+# Verify the development server too:
+UI_CHROME=/usr/bin/google-chrome UI_TEST_DEV=1 just ui-test-browser
+```
+
+Existing Rust/shell entrypoints remain unchanged (`just check`, `just test`).
+
+### Terminal popup
+
 Open Herdr in your repository. If needed, map it to an Aven project:
 
 ```sh
