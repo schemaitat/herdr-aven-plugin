@@ -40,5 +40,5 @@ export function canonicalSelection(edges: GraphEdge[], id: string) {
 }
 
 export function stateDescription(entity: Entity) {
-  return `${entity.kind === 'task' || entity.kind === 'epic' ? 'Task status' : entity.kind === 'agent' || entity.kind === 'attempt' ? 'Persisted execution state' : 'Source state'}: ${entity.state}`;
+  return `${entity.kind === 'task' || entity.kind === 'epic' ? 'Task status' : entity.kind === 'agent' || entity.kind === 'attempt' ? 'Persisted execution state' : 'Source state'}: ${entity.state}${entity.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? ' · Working (linked execution, not acceptance)' : ''}`;
 }

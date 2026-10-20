@@ -11,7 +11,7 @@ export const attemptSchema = z.object({
   execution_mode: z.enum(['single-session', 'subsessions', 'worktrees']).default('single-session'),
   session_id: value, coordinator_session_id: value, babysitter_session_id: value,
   pane: value, babysitter_pane: value, agent: value, coordinator_agent: value,
-  state: value, worktree: value, branch: value,
+  state: value, worktree: value, branch: value, log_task_ref: value,
   created_at: z.number().nonnegative().default(0), phases: z.array(phaseSchema).max(500).default([]),
 });
 export type Attempt = z.infer<typeof attemptSchema>;

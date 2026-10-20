@@ -63,9 +63,12 @@ attempts/roles, API session identities, Herdr panes/workspaces, and Git worktree
 Search, type/state filters, keyboard-selectable entries, related-entity buttons,
 and a provenance/detail panel provide the non-canvas inspection path. Task
 acceptance, persisted attempt state, and terminal-observed state are separate.
-**Live OpenCode API activity is not yet connected:** session activity is explicitly
-unknown, even when a Herdr terminal reports working. No task completion is
-inferred from terminal or dispatcher state.
+Live OpenCode V2 activity drives **Working** indicators on linked sessions,
+agents and tasks, including pane-less sessions. A task badge means linked
+execution, not acceptance: Aven status never changes. Approval/input are separate
+facets and may coexist with Working. Herdr observations remain inspectable even
+when they contradict the API. Missing/unsupported API data is unknown, not idle
+or done; observations expire after 4.5 seconds, including in disconnected browsers.
 
 Startup settings are trusted environment variables, never browser parameters:
 
@@ -76,6 +79,9 @@ Startup settings are trusted environment variables, never browser parameters:
 | `UI_PORT` | `4318` (unprivileged ports only) |
 | `UI_HOST` | Only `127.0.0.1` is accepted |
 | `AVEN_DISPATCH_STORE` | Existing configured store; relative paths resolve from the repository checkout. Otherwise reads the primary checkout's `.aven-dispatch/state.json` |
+| `UI_OPENCODE_URL` | Explicit existing OpenCode server origin; takes precedence over `OPENCODE_SERVER_URL` and local discovery. No fallback to a different service when this server fails |
+| `UI_OPENCODE_AUTHORIZATION` | Server-only Authorization header for that explicit server; otherwise `OPENCODE_TOKEN` (Bearer) or `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` (Basic, username defaults to `opencode`) |
+| `UI_OPENCODE_SERVICE_FILE` | Optional trusted registration file for local discovery; otherwise `$XDG_STATE_HOME/opencode/service.json` or `~/.local/state/opencode/service.json`. Its origin is checked for loopback before the client's authenticated health probe |
 
 Run inside Herdr to inherit its existing session/socket context. Outside Herdr,
 the Aven explorer still works and topology is labelled unavailable. The server
@@ -84,16 +90,53 @@ is visible in source-health cards. Aven outages retain the previous snapshot
 with an explicit stale label; connection failures retain selection and label
 displayed data stale.
 
+Without an explicit server URL, the pinned V2 client uses `Service.discover()`
+and `Service.headers()` for the existing authenticated local service, **never**
+`ensure()` or `stop()`. A CLI's `--server` flag is not inherited by a separately
+started dashboard: configure the same origin/authentication using the startup
+settings above. Credentials stay in the server process, not browser storage,
+requests, logs or query strings. The installed server's OpenAPI document gates
+optional events, waiting facets, parent-filtered child reads and durable logs.
+Only dispatcher-linked sessions and explicitly related API children are read;
+Herdr terminal detection alone does not authorize session reads.
+
 Reads use explicit project/workspace scope, a 500-item cap for each of Aven's
 available and upcoming lists, and at most 80 context hydrations per snapshot
-(four concurrent, four-second hydration admission budget). Contexts cache for 15 seconds, with actual read timestamps in
-provenance and rotating hydration when coverage exceeds the batch. Snapshots
-coalesce/cache for four seconds and the client polls after each response.
+(four concurrent, four-second hydration admission budget). Contexts cache for five seconds, with actual read timestamps in
+provenance and rotating hydration when coverage exceeds the batch. One collector
+serves every browser: API and Herdr lanes poll independently at approximately
+two seconds; Aven/dispatcher use a five-second lane. No lane overlaps itself.
+Authenticated same-origin fetch/SSE delivers versioned complete snapshots and
+health heartbeats; clients reconnect with backoff, resnapshot on gaps/restarts,
+and fall back to polling. Updates preserve graph camera, positions and selection.
 Reaching a list cap or missing context is labelled **incomplete**, never silently
 treated as full coverage. Cross-project/unhydrated/missing references remain
 boundary stubs, without reading their details. CLI reads time out after four
 seconds and allow at most 4 MiB combined stdout/stderr; store reads are bounded
-to 4 MiB. These are snapshot bounds, not a claim of live activity freshness.
+to 4 MiB. API activity reads have four workers, a 1.9-second collection budget
+and a 64-session cap, with incomplete coverage explicitly labelled. Child lists
+are parent-filtered and capped at 32, with propagation through at most four explicit
+ancestry levels. These bounds may require a narrower scope;
+missing observations are never presented as confirmed inactivity.
+
+Select an entity to inspect live event summaries; select a linked session or
+dispatcher attempt and explicitly load **Event history** for durable summaries.
+Live-only subscriptions have neither replay nor automatic upstream reconnection;
+the bridge re-subscribes and reports reconnect gaps.
+An upstream event read idle for 30 seconds is renewed and labelled continuity
+unverified (not an API activity outage); received SSE heartbeat/comment bytes reset
+that watchdog. Polling remains the authority/freshness fallback throughout.
+History is 100 entries/page, with source/session/attempt cursors, deduplication,
+and at most 1,000 retained live
+events (and 1,000 displayed history entries per selection). Experimental durable
+logs may be unavailable. Linked dispatcher notes are a fallback: the installed
+Aven CLI supplies a bounded context window, not upstream note pagination, so
+older history is explicitly reported as potentially unavailable. History reads
+share a two-request limit and 32-page/five-second cache across browsers. Prompt,
+reasoning, tool payloads and raw note bodies are omitted; summaries strip terminal
+controls, redact known credentials, cap text at 2,048 characters and render as
+untrusted text. Slow SSE readers are disconnected instead of queued without bound;
+there are at most 16 local streaming connections.
 
 Security: the server rejects hostile Host/Origin and cross-site browser requests,
 disables CORS, and authenticates API reads with an in-memory per-run token obtained
@@ -120,6 +163,8 @@ cd ..
 just ui-test-browser
 # Or use an existing browser, without downloading one:
 UI_CHROME=/usr/bin/google-chrome just ui-test-browser
+# Deterministic graph interaction and live-status cases only:
+UI_CHROME=/usr/bin/google-chrome just ui-test-e2e
 # Verify the development server too:
 UI_CHROME=/usr/bin/google-chrome UI_TEST_DEV=1 just ui-test-browser
 ```

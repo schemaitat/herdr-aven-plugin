@@ -15,6 +15,7 @@ const styles: StylesheetJson = [
   { selector: 'node[kind = "pane"]', style: { shape: 'rectangle' } },
   { selector: 'node[kind = "worktree"]', style: { shape: 'triangle' } },
   { selector: 'node[kind = "boundary"]', style: { shape: 'octagon', 'border-style': 'dashed' } },
+  { selector: 'node[working = "yes"]', style: { 'border-color': '#73f4cf', 'border-width': 5 } },
   { selector: 'edge', style: { width: 1.5, 'curve-style': 'bezier', 'line-color': '#7787ab', 'target-arrow-color': '#7787ab', 'target-arrow-shape': 'triangle', label: 'data(label)', color: '#bcc9e3', 'font-size': 9, 'text-rotation': 'autorotate', 'text-background-color': '#080d1b', 'text-background-opacity': 0.9, 'text-background-padding': '2px' } },
   { selector: 'edge[kind = "contains"]', style: { 'line-color': '#a48bd4', 'target-arrow-shape': 'circle' } },
   { selector: 'edge[kind = "blocks"]', style: { width: 2.5, 'line-color': '#f0b676', 'target-arrow-color': '#f0b676' } },

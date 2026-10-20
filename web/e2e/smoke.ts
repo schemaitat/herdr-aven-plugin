@@ -36,6 +36,7 @@ test('real scoped sources render with keyboard list/details and protected API', 
 });
 
 test('untrusted labels are text and unavailable sources remain visible', async ({ page }) => {
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   const hostile = '<img src=x onerror="window.__injected=true">';
   await page.route('**/api/snapshot', route => route.fulfill({ json: {
     schema: 'local-explorer/v1', scope: { project: 'fixture', workspace: 'default' }, observedAt: '2026-10-20T00:00:00Z',

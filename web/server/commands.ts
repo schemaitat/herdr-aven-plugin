@@ -30,7 +30,7 @@ export function commandVector(scope: Scope, command: ReadCommand): [string, stri
 }
 
 // No shell, stdin, API-controlled arguments, or executable overrides. Bound both streams together.
-export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 1024 * 1024, concurrency: 4 }): Runner {
+export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 1024 * 1024, concurrency: 4 }, signal?: AbortSignal): Runner {
   let active = 0;
   const queue: (() => void)[] = [];
   return async command => {
@@ -38,6 +38,7 @@ export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 
     if (active >= bounds.concurrency) await new Promise<void>(resolve => queue.push(resolve));
     else active++;
     try {
+      if (signal?.aborted) throw new Error('Source cancelled');
       return await new Promise<unknown>((resolve, reject) => {
         const child = spawn(program, args, { cwd: scope.cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
         const chunks: Buffer[] = [];
@@ -46,15 +47,18 @@ export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 
         // Keep the concurrency slot until the killed process has actually exited.
         const fail = (reason: string) => { if (!failure) { failure = reason; child.kill('SIGKILL'); } };
         const timer = setTimeout(() => fail('Source timeout'), bounds.timeout);
+        const abort = () => fail('Source cancelled');
+        signal?.addEventListener('abort', abort, { once: true });
         child.stdout.on('data', (chunk: Buffer) => {
           size += chunk.length;
           if (size > bounds.bytes) fail('Source output limit');
           else if (!failure) chunks.push(chunk);
         });
         child.stderr.on('data', (chunk: Buffer) => { size += chunk.length; if (size > bounds.bytes) fail('Source output limit'); });
-        child.on('error', () => { clearTimeout(timer); reject(new Error('Source executable unavailable')); });
+        child.on('error', () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(new Error('Source executable unavailable')); });
         child.on('close', code => {
           clearTimeout(timer);
+          signal?.removeEventListener('abort', abort);
           if (failure) return reject(new Error(failure));
           if (code !== 0) return reject(new Error('Source command failed'));
           try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }

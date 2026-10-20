@@ -6,15 +6,26 @@ import { randomBytes } from 'node:crypto';
 import { devAssetPath, localAddress, secure } from './security.js';
 import { startupConfig } from './config.js';
 import { createRunner } from './commands.js';
-import { createSnapshotSource } from './graph.js';
+import { createGraphReader } from './graph.js';
+import { createCollector } from './refresh.js';
+import { createOpenCodeSource } from './sources/opencode.js';
+import { createLogs } from './logs.js';
+import { streamRoute } from './stream.js';
 import { routes } from './routes.js';
 
 const address = localAddress(process.env.UI_HOST ?? '127.0.0.1', Number(process.env.UI_PORT ?? 4318));
 const config = await startupConfig();
-const app = Fastify({ logger: false, bodyLimit: 1024, requestTimeout: 10000 });
+const app = Fastify({ logger: false, bodyLimit: 1024, requestTimeout: 10000, routerOptions: { maxParamLength: 2048 } });
 const nonce = randomBytes(24).toString('base64');
 secure(app, address.origin, undefined, process.argv.includes('--dev') ? nonce : undefined);
-routes(app, createSnapshotSource(config, createRunner(config.scope)));
+const lifetime = new AbortController();
+const run = createRunner(config.scope, undefined, lifetime.signal);
+const api = createOpenCodeSource();
+const collector = createCollector(createGraphReader(config, run), api);
+const logs = createLogs(api, run, config.scope.workspace);
+routes(app, () => collector.snapshot(), logs);
+streamRoute(app, collector);
+app.addHook('preClose', async () => { lifetime.abort(); logs.close(); await collector.close(); });
 
 if (process.argv.includes('--dev')) {
   const { createServer } = await import('vite');

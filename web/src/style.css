@@ -76,3 +76,9 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 @media (max-width: 1000px) { .overview { grid-template-columns: 1fr; } }
 @media (max-width: 650px) { .explorer { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } .toolbar label:first-child { flex-basis: 100%; } .source-health { flex-direction: column; } .masthead { padding: 24px 5%; gap: 12px; } .readonly { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+/* Live telemetry remains text-first and does not animate or disturb the graph camera. */
+.activity-panel, .log-panel { margin-top: 1rem; padding: 1.4rem; border: 1px solid #354365; border-radius: 16px; background: #10192b; overflow-wrap: anywhere; }
+.activity-reading { padding: .8rem; margin: .6rem 0; border-left: 3px solid #73d5cd; background: #172238; }
+.activity-reading code { display: block; }
+.event-log { max-height: 24rem; overflow: auto; padding-left: 1.5rem; font-size: .85rem; }
+.event-log li { padding: .5rem; border-bottom: 1px solid #354365; white-space: pre-wrap; }

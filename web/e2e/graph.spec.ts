@@ -26,6 +26,7 @@ async function point(page: Page, id?: string) {
 test.beforeEach(async ({ page }) => {
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
   await expect(page.locator('.graph-status')).toContainText('14 entities');

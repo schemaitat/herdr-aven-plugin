@@ -48,6 +48,6 @@ ui-start:
 ui-test-browser:
     npm --prefix web run test:browser
 
-# Deterministic graph gestures/accessibility; no live source reads or agents.
+# Deterministic graph/accessibility and live-status fixtures; no live agents.
 ui-test-e2e:
-    npm --prefix web run test:browser -- graph.spec.ts
+    npm --prefix web run test:browser -- graph.spec.ts live-status.spec.ts

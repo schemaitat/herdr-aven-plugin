@@ -27,7 +27,7 @@ export function relationships(snapshot: GraphSnapshot): GraphEdge[] {
 }
 
 export function elements(nodes: Entity[], edges: GraphEdge[]): ElementDefinition[] {
-  return [...nodes.map(node => ({ data: { id: node.id, kind: node.kind, label: `${node.label}\n${node.kind} · ${node.state}`, state: node.state } })),
+  return [...nodes.map(node => ({ data: { id: node.id, kind: node.kind, label: `${node.label}\n${node.kind} · ${node.state}${node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? '\n● Working · linked execution' : ''}`, state: node.state, working: node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? 'yes' : 'no' } })),
     ...edges.map(edge => ({ data: { id: edge.id, source: edge.source, target: edge.target, kind: edge.kind,
       label: `${edge.summary ? 'collapsed · ' : ''}${edge.kind === 'agent-dependency' ? 'derived dependency' : edge.kind}`, summary: Boolean(edge.summary) } }))];
 }

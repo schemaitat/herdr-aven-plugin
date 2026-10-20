@@ -15,7 +15,7 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
   // API sessions are independent of terminal placement and survive Herdr session changes.
   const sessionId = (id: string, service = 'opencode') => entityId('session', service, id);
   const worktreeId = (path: string) => entityId('worktree', resolve(config.scope.cwd, path));
-  const provenance = (source: Provenance['source'], record: string): Provenance => ({ source, record, observedAt: ({ aven: aven.health, dispatcher: dispatch.health, herdr: herdr.health })[source].observedAt });
+  const provenance = (source: 'aven' | 'dispatcher' | 'herdr', record: string): Provenance => ({ source, record, observedAt: ({ aven: aven.health, dispatcher: dispatch.health, herdr: herdr.health })[source].observedAt });
   const node = (entity: Entity) => {
     const previous = nodes.get(entity.id);
     if (!previous || previous.boundary) nodes.set(entity.id, entity);
@@ -66,7 +66,7 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
     edge('contains', stub(topologyId('workspace', pane.workspace_id), pane.workspace_id, p), paneId, p);
     if (pane.cwd && herdr.worktrees.some(tree => tree.path === pane.cwd)) edge('worktree', paneId, worktreeId(pane.cwd), p);
     if (pane.agent_session?.kind === 'id') {
-      const session = node({ id: sessionId(pane.agent_session.value, pane.agent ?? 'unknown'), kind: 'session', label: pane.agent_session.value, state: 'unknown', details: { sessionId: pane.agent_session.value, service: pane.agent ?? 'unknown', apiActivity: 'not connected in this phase', terminalObservedState: pane.agent_status }, provenance: [p] });
+      const session = node({ id: sessionId(pane.agent_session.value, pane.agent ?? 'unknown'), kind: 'session', label: pane.agent_session.value, state: 'unknown', details: { sessionId: pane.agent_session.value, service: pane.agent ?? 'unknown', apiActivity: 'unknown (requires project-linked API observation)', terminalObservedState: pane.agent_status }, provenance: [p] });
       edge('placed-in', session, paneId, p);
     }
   }
@@ -74,15 +74,15 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
   for (const { attempt: a, origin, observedAt } of dispatch.attempts) {
     const p = { ...provenance(origin === 'aven-recovery' ? 'aven' : 'dispatcher', `${origin}/${a.task_id}/${a.workflow}/${a.generation}/${a.attempt_id}`), observedAt: observedAt ?? dispatch.health.observedAt };
     const attemptId = node({ id: entityId('attempt', a.task_id, a.workflow, a.generation, a.attempt_id), kind: 'attempt', label: `${a.workflow} · ${a.attempt_id}`, state: a.state || 'unknown',
-      details: { taskId: a.task_id, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id, executionMode: a.execution_mode, persistedState: a.state, origin }, provenance: [p] });
+      details: { taskId: a.task_id, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id, executionMode: a.execution_mode, persistedState: a.state, origin, logRef: a.log_task_ref }, provenance: [p] });
     edge('assigned', stub(taskId(a.task_id), a.task_ref, p), attemptId, p);
     const role = (key: string, task: string, session: string, pane: string, path: string, state: string, name: string) => {
       if (!session && !pane && !path && !name) return;
-      const agent = node({ id: entityId('agent', a.task_id, a.workflow, a.generation, a.attempt_id, key), kind: 'agent', label: `${key}${name ? ` · ${name}` : ''}`, state: state || 'unknown', details: { role: key.split('/')[0], persistedState: state, taskId: task, workflow: a.workflow }, provenance: [p] });
+      const agent = node({ id: entityId('agent', a.task_id, a.workflow, a.generation, a.attempt_id, key), kind: 'agent', label: `${key}${name ? ` · ${name}` : ''}`, state: state || 'unknown', details: { role: key.split('/')[0], persistedState: state, taskId: task, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id }, provenance: [p] });
       edge('contains', attemptId, agent, p);
       edge('assigned', stub(taskId(task), task, p), agent, p);
       if (session) {
-        const id = node({ id: sessionId(session), kind: 'session', label: session, state: 'unknown', details: { sessionId: session, service: 'opencode', apiActivity: 'not connected in this phase' }, provenance: [p] });
+        const id = node({ id: sessionId(session), kind: 'session', label: session, state: 'unknown', details: { sessionId: session, service: 'opencode', apiActivity: 'unknown (awaiting API observation)' }, provenance: [p] });
         edge('session', agent, id, p);
         if (pane) edge('placed-in', id, stub(topologyId('pane', pane), pane, p), p);
       }
@@ -118,5 +118,24 @@ export function createSnapshotSource(config: Config, run: Runner) {
     })();
     try { cache = await pending; time = Date.now(); return cache; }
     finally { pending = undefined; }
+  };
+}
+
+// Independent source cadences; each lane is serialized by the shared collector.
+export function createGraphReader(config: Config, run: Runner) {
+  const readAven = avenSource(config.scope, run);
+  let aven: AvenRead = { tasks: [], contexts: new Map(), health: { source: 'aven', status: 'unavailable', observedAt: '', message: 'Loading' } };
+  let dispatch: DispatchRead = { attempts: [], health: { source: 'dispatcher', status: 'unavailable', observedAt: '', message: 'Loading' } };
+  let herdr: HerdrRead = { panes: [], workspaces: [], worktrees: [], health: { source: 'herdr', status: 'unavailable', observedAt: '', message: 'Loading' } };
+  return async (lane: 'fast' | 'slow') => {
+    if (lane === 'slow') {
+      const next = await readAven();
+      aven = next.health.status === 'unavailable' && aven.tasks.length ? { ...aven, health: { ...aven.health, status: 'stale', message: next.health.message } } : next;
+      dispatch = await readDispatcher(config.storePath, aven);
+    } else {
+      const next = await readHerdr(config.scope, config.primary, run);
+      herdr = next.health.status === 'unavailable' && herdr.panes.length ? { ...herdr, health: { ...herdr.health, status: 'stale', message: next.health.message } } : next;
+    }
+    return normalize(config, aven, dispatch, herdr);
   };
 }

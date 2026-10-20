@@ -38,7 +38,7 @@ export function avenSource(scope: Scope, run: Runner, hydrationLimit = 80) {
       for (const key of cache.keys()) if (!live.has(key)) cache.delete(key);
       const pending = tasks.filter(task => {
         const hit = cache.get(task.id);
-        return !hit || hit.updated !== task.updated_at || Date.now() - hit.time > 15000;
+        return !hit || hit.updated !== task.updated_at || Date.now() - hit.time >= 5000;
       });
       // Rotate bounded hydration so larger projects eventually obtain coverage, never per-frame fan-out.
       const selected = Array.from({ length: Math.min(pending.length, hydrationLimit) }, (_, i) => pending[(offset + i) % pending.length]);
