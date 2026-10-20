@@ -1,0 +1,30 @@
+/* Cosmos is a restrained surface treatment, not an animated background. */
+:root { --surface: #101729; --line: #354365; --accent: #bdaaff; }
+body { background: radial-gradient(ellipse at 80% 0%, #30275455, transparent 55%), #080d1b; }
+.masthead { background: #0b1121b3; }
+.masthead .orb { box-shadow: 0 0 24px #8296ff38, inset 0 0 10px #bdaaff22; }
+.graph-panel { border-color: #56618d; box-shadow: 0 0 24px #8265cf0d; }
+.graph-help { border-bottom: 1px solid #354365; background: #101729a6; line-height: 1.6; }
+.graph-status { border-top: 1px solid #354365; font-variant-numeric: tabular-nums; }
+.health { min-width: 0; overflow-wrap: anywhere; }
+.health.ok strong::before { content: '✓ '; }
+.health.unavailable strong::before, .health.stale strong::before { content: '⚠ '; }
+.health.incomplete strong::before { content: '◐ '; }
+.entity, .relations button { transition: border-color 120ms ease, background-color 120ms ease; }
+.entities, .details { background: linear-gradient(145deg, #141d32, #0d1425); }
+.details { max-height: 80vh; overflow: auto; scroll-margin-top: 16px; }
+.entities:focus-visible, .details:focus-visible, a:focus-visible { outline: 3px solid #92c9ff; outline-offset: 3px; }
+.skip-link { position: absolute; left: 16px; top: -80px; z-index: 10; padding: 12px; color: #fff; background: #24365c; }
+.skip-link:focus { top: 12px; }
+.live-connection { font-size: 12px; border-left: 2px solid #879ccc; padding-left: 12px; color: #c5d3ec; }
+.activity-panel h2, .log-panel h2 { letter-spacing: -.02em; }
+.waiting { display: inline-block; border: 1px solid #bba16d; background: #332b21; color: #ffe1a9; padding: 4px 8px; border-radius: 6px; }
+.activity-reading.working.current strong { color: #b8f3e5; }
+.activity-reading.stale { border-left-color: #cdb58a; }
+.activity-reading small { display: block; line-height: 1.7; }
+.list-pages { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 10px; font-size: 11px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.list-pages button { padding: 8px; }
+.telemetry { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 900px) { .telemetry { grid-template-columns: 1fr; gap: 0; } .toolbar { flex-wrap: wrap; } }
+@media (max-width: 650px) { main { padding: 20px 4%; } .graph-canvas { height: 420px; } .toolbar label { min-width: 0; flex: 1; } .graph-controls { width: 100%; } .details { max-height: none; } .entity { gap: 10px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

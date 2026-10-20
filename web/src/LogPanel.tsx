@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Entity, LogPage, TimelineEvent } from '../shared/graph.js';
+import { WindowedList } from './WindowedList.js';
 
 export function LogPanel({ entity, read }: { entity?: Entity; read: (path: string, signal: AbortSignal) => Promise<Response> }) {
   const [entries, setEntries] = useState<TimelineEvent[]>([]);
@@ -28,6 +29,6 @@ export function LogPanel({ entity, read }: { entity?: Entity; read: (path: strin
   return <section className="log-panel" aria-label="Event history"><h2>Event history</h2><p role="status">{message}</p>
     <button disabled={!entity || busy} onClick={() => { void load(); }}>{busy ? 'Reading history…' : cursor ? 'Load next page' : 'Load / refresh history'}</button>
     <p className="muted">Plain-text summaries · 100 per page · at most 1,000 retained for this selection. Select an attempt for linked dispatcher-note fallback.</p>
-    <ol className="event-log">{entries.map(item => <li key={item.id}><time>{item.observedAt}</time> · {item.source} · <code>{item.sessionId ?? item.attemptId}</code> · cursor {item.cursor ?? 'unavailable'} · {item.text}</li>)}</ol>
+    <WindowedList key={entity?.id} items={entries} label="history summaries" ordered className="event-log" identity={item => item.id} render={item => <><time>{item.observedAt}</time> · {item.source} · <code>{item.sessionId ?? item.attemptId}</code> · cursor {item.cursor ?? 'unavailable'} · {item.text}</>} />
   </section>;
 }

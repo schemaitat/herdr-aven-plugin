@@ -65,6 +65,8 @@ test('disconnected browser hard-expires Working and recovers authoritative state
   available = false;
   await expect(task).not.toContainText('Working', { timeout: 6000 });
   await expect(page.getByRole('region', { name: 'Live activity' }).getByText('unknown · stale', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Live activity' }).locator('.waiting')).toHaveCount(0);
+  await expect(task).not.toContainText('Awaiting');
   expect((await visualState(page)).working).toBe('no');
   available = true;
   await expect(task).toContainText('Working', { timeout: 5000 });

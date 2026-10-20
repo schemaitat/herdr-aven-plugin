@@ -16,7 +16,11 @@ export function syncElements(cy: Core, next: ElementDefinition[], positions: Map
     // Nodes precede edges; retained nodes never receive a new position or layout.
     for (const element of next) {
       const existing = cy.getElementById(element.data.id!);
-      if (existing.length) existing.data(element.data);
+      if (existing.length) {
+        const current = existing.data();
+        // Do not invalidate styles/geometry for unchanged snapshot elements.
+        if (Object.keys(element.data).some(key => current[key] !== element.data[key])) existing.data(element.data);
+      }
       else cy.add({ ...element, position: positions.get(element.data.id!) ?? initial.get(element.data.id!) });
     }
   });

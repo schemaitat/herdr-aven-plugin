@@ -7,8 +7,8 @@ test('real scoped sources render with keyboard list/details and protected API', 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Project explorer' })).toBeVisible();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
-  await expect(entities.locator('button').first()).toBeVisible({ timeout: 20000 });
-  const first = entities.locator('button').first();
+  await expect(entities.locator('button.entity').first()).toBeVisible({ timeout: 20000 });
+  const first = entities.locator('button.entity').first();
   await first.focus();
   await page.keyboard.press('Enter');
   await expect(first).toHaveAttribute('aria-pressed', 'true');

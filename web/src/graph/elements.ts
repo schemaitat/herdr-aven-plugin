@@ -13,9 +13,11 @@ export function relationships(snapshot: GraphSnapshot): GraphEdge[] {
   const assignments = snapshot.edges.filter(edge => edge.kind === 'assigned' &&
     ['task', 'epic'].includes(byId.get(edge.source)?.kind ?? '') && byId.get(edge.target)?.kind === 'agent');
   const derived: GraphEdge[] = [];
+  const assignedByTask = new Map<string, typeof assignments>();
+  for (const edge of assignments) assignedByTask.set(edge.source, [...(assignedByTask.get(edge.source) ?? []), edge]);
   for (const blocker of snapshot.edges.filter(edge => edge.kind === 'blocks')) {
-    for (const from of assignments.filter(edge => edge.source === blocker.source)) {
-      for (const to of assignments.filter(edge => edge.source === blocker.target)) {
+    for (const from of assignedByTask.get(blocker.source) ?? []) {
+      for (const to of assignedByTask.get(blocker.target) ?? []) {
         if (from.target === to.target) continue;
         const evidence = [blocker.id, from.id, to.id];
         derived.push({ id: JSON.stringify(['derived', ...evidence]), kind: 'agent-dependency', source: from.target, target: to.target,
@@ -26,8 +28,14 @@ export function relationships(snapshot: GraphSnapshot): GraphEdge[] {
   return [...snapshot.edges, ...derived];
 }
 
+export function waitingCue(node: Entity): string {
+  const approval = node.activity?.some(item => item.freshness === 'current' && item.approval === true);
+  const input = node.activity?.some(item => item.freshness === 'current' && item.input === true);
+  return approval || input ? `Awaiting ${approval ? 'approval' : ''}${approval && input ? ' / ' : ''}${input ? 'input' : ''}` : '';
+}
+
 export function elements(nodes: Entity[], edges: GraphEdge[]): ElementDefinition[] {
-  return [...nodes.map(node => ({ data: { id: node.id, kind: node.kind, label: `${node.label}\n${node.kind} · ${node.state}${node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? '\n● Working · linked execution' : ''}`, state: node.state, working: node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? 'yes' : 'no' } })),
+  return [...nodes.map(node => ({ data: { id: node.id, kind: node.kind, label: `${node.label}\n${node.kind} · ${node.state}${node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? '\n● Working · linked execution' : ''}${waitingCue(node) ? `\n${waitingCue(node)}` : ''}`, state: node.state, working: node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? 'yes' : 'no' } })),
     ...edges.map(edge => ({ data: { id: edge.id, source: edge.source, target: edge.target, kind: edge.kind,
       label: `${edge.summary ? 'collapsed · ' : ''}${edge.kind === 'agent-dependency' ? 'derived dependency' : edge.kind}`, summary: Boolean(edge.summary) } }))];
 }

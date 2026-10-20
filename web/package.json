@@ -10,7 +10,8 @@
     "test": "vitest run",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/index.js",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:e2e": "playwright test graph.spec.ts live-status.spec.ts accessibility.spec.ts dashboard.spec.ts performance.spec.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.6",

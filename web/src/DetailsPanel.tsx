@@ -1,6 +1,7 @@
 import type { Entity, GraphSnapshot } from '../shared/graph.js';
 import type { GraphEdge } from './graph/elements.js';
 import { stateDescription } from './graph/state.js';
+import { WindowedList } from './WindowedList.js';
 
 export function DetailsPanel({ entity, edge, relationships, snapshot, onSelect, missing }: {
   entity?: Entity; edge?: GraphEdge; relationships: GraphEdge[]; snapshot?: GraphSnapshot; onSelect: (id: string) => void; missing: boolean;
@@ -13,16 +14,16 @@ export function DetailsPanel({ entity, edge, relationships, snapshot, onSelect, 
     {relation.evidence?.map(id => <code key={id}>{id}</code>)}
     <ul className="provenance">{relation.provenance.map((p, index) => <li key={index}>{p.source} · {p.record} · {p.observedAt}</li>)}</ul>
   </>;
-  return <aside className="details" aria-label="Entity details"><p className="eyebrow">INSPECT / DETAILS</p>{entity ? <>
+  return <aside id="entity-details" tabIndex={-1} className="details" aria-label="Entity details"><p className="eyebrow">INSPECT / DETAILS</p>{entity ? <>
     <h2>{entity.label}</h2><p className="badge">{entity.kind} · {stateDescription(entity)}</p>
     <dl><dt>Stable identity</dt><dd>{entity.id}</dd>{Object.entries(entity.details).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value) || '—'}</dd></div>)}</dl>
     <h3>Relationships <span className="muted">({relations.length})</span></h3>
     <p className="muted">Source relationships include filtered or collapsed neighbors.</p>
-    <ul className="relations">{relations.map(relation => {
+    <WindowedList key={entity.id} items={relations} label="relationships" className="relations" identity={relation => relation.id} render={relation => {
       const outgoing = relation.source === entity.id;
       const otherId = outgoing ? relation.target : relation.source;
-      return <li key={relation.id}><span>{relation.kind === 'related' ? '↔ undirected' : outgoing ? '→ outgoing' : '← incoming'} {relation.kind}{relation.kind === 'blocks' ? (outgoing ? ' (blocks this target)' : ' (blocked by this source)') : ''}</span><button onClick={() => onSelect(otherId)}>{name(otherId)}</button>{evidence(relation)}</li>;
-    })}</ul>
+      return <><span>{relation.kind === 'related' ? '↔ undirected' : outgoing ? '→ outgoing' : '← incoming'} {relation.kind}{relation.kind === 'blocks' ? (outgoing ? ' (blocks this target)' : ' (blocked by this source)') : ''}</span><button onClick={() => onSelect(otherId)}>{name(otherId)}</button>{evidence(relation)}</>;
+    }} />
   </> : edge ? <>
     <h2>{edge.kind === 'agent-dependency' ? 'Derived agent dependency' : edge.kind}</h2>
     <p>{edge.summary ? 'Collapsed boundary connection' : 'Relationship'} · {edge.kind === 'related' ? 'undirected' : 'source → target'}</p>

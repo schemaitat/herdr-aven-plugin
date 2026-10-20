@@ -1,8 +1,9 @@
 import type { Entity, GraphSnapshot } from '../../shared/graph.js';
-import { relationships, type GraphEdge } from './elements.js';
+import { relationships, waitingCue, type GraphEdge } from './elements.js';
 
 export interface Filters { query: string; kind: string; state: string }
 const order = ['epic', 'task', 'attempt', 'agent', 'session', 'workspace', 'pane', 'worktree', 'boundary'];
+export const VISIBLE_NODE_CAP = 500;
 export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapsed: Set<string>) {
   const allEdges = relationships(snapshot);
   const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
@@ -13,7 +14,9 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
   const nodes = snapshot.nodes.filter(node => !parent.has(node.id) &&
     (filters.kind === 'all' || node.kind === filters.kind) && (filters.state === 'all' || node.state === filters.state) &&
     `${node.label} ${node.id}`.toLowerCase().includes(filters.query.toLowerCase())).sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.label.localeCompare(b.label));
-  const ids = new Set(nodes.map(node => node.id));
+  const visibleNodes = nodes.slice(0, VISIBLE_NODE_CAP);
+  const cappedIds = new Set(nodes.slice(VISIBLE_NODE_CAP).map(node => node.id));
+  const ids = new Set(visibleNodes.map(node => node.id));
   let hiddenRelationships = 0;
   const edges: GraphEdge[] = [];
   for (const edge of allEdges) {
@@ -25,7 +28,7 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
       ...edge, id: JSON.stringify(['collapsed', edge.id, source, target]), source, target, summary: true, evidence: [edge.id, ...(edge.evidence ?? [])],
     });
   }
-  return { nodes, edges, allEdges, hiddenRelationships, hiddenTasks: parent.size };
+  return { nodes: visibleNodes, discoveryNodes: nodes, edges, allEdges, cappedNodes: nodes.length - visibleNodes.length, omittedRelationships: allEdges.filter(edge => cappedIds.has(edge.source) || cappedIds.has(edge.target)).length, hiddenRelationships, hiddenTasks: parent.size };
 }
 
 export function toggleEpic(previous: Set<string>, id: string): Set<string> {
@@ -40,5 +43,5 @@ export function canonicalSelection(edges: GraphEdge[], id: string) {
 }
 
 export function stateDescription(entity: Entity) {
-  return `${entity.kind === 'task' || entity.kind === 'epic' ? 'Task status' : entity.kind === 'agent' || entity.kind === 'attempt' ? 'Persisted execution state' : 'Source state'}: ${entity.state}${entity.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? ' · Working (linked execution, not acceptance)' : ''}`;
+  return `${entity.kind === 'task' || entity.kind === 'epic' ? 'Task status' : entity.kind === 'agent' || entity.kind === 'attempt' ? 'Persisted execution state' : 'Source state'}: ${entity.state}${entity.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? ' · Working (linked execution, not acceptance)' : ''}${waitingCue(entity) ? ` · ${waitingCue(entity)}` : ''}`;
 }

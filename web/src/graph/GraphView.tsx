@@ -1,36 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import cytoscape, { type Core, type StylesheetJson } from 'cytoscape';
+import cytoscape, { type Core } from 'cytoscape';
 import type { Entity } from '../../shared/graph.js';
 import { elements, type GraphEdge } from './elements.js';
 import { orbitalLayout } from './layout.js';
 import { highlight, syncElements, type GraphMemory } from './interactions.js';
 
-const styles: StylesheetJson = [
-  { selector: 'node', style: { 'background-color': '#243d64', 'border-color': '#9abfff', 'border-width': 2, width: 46, height: 46, label: 'data(label)', color: '#e5eaf7', 'font-size': 12, 'text-wrap': 'wrap', 'text-max-width': '150px', 'text-valign': 'bottom', 'text-margin-y': 9, 'text-outline-width': 2, 'text-outline-color': '#080d1b' } },
-  { selector: 'node[kind = "epic"]', style: { width: 100, height: 100, 'background-color': '#493b7b', 'border-color': '#bea6ff', 'border-width': 4 } },
-  { selector: 'node[kind = "agent"]', style: { shape: 'diamond', 'background-color': '#225c60' } },
-  { selector: 'node[kind = "attempt"]', style: { shape: 'hexagon' } },
-  { selector: 'node[kind = "session"]', style: { shape: 'round-rectangle' } },
-  { selector: 'node[kind = "workspace"]', style: { shape: 'barrel' } },
-  { selector: 'node[kind = "pane"]', style: { shape: 'rectangle' } },
-  { selector: 'node[kind = "worktree"]', style: { shape: 'triangle' } },
-  { selector: 'node[kind = "boundary"]', style: { shape: 'octagon', 'border-style': 'dashed' } },
-  { selector: 'node[working = "yes"]', style: { 'border-color': '#73f4cf', 'border-width': 5 } },
-  { selector: 'edge', style: { width: 1.5, 'curve-style': 'bezier', 'line-color': '#7787ab', 'target-arrow-color': '#7787ab', 'target-arrow-shape': 'triangle', label: 'data(label)', color: '#bcc9e3', 'font-size': 9, 'text-rotation': 'autorotate', 'text-background-color': '#080d1b', 'text-background-opacity': 0.9, 'text-background-padding': '2px' } },
-  { selector: 'edge[kind = "contains"]', style: { 'line-color': '#a48bd4', 'target-arrow-shape': 'circle' } },
-  { selector: 'edge[kind = "blocks"]', style: { width: 2.5, 'line-color': '#f0b676', 'target-arrow-color': '#f0b676' } },
-  { selector: 'edge[kind = "agent-dependency"]', style: { 'line-style': 'dashed', 'line-color': '#f0b676', 'target-arrow-color': '#f0b676' } },
-  { selector: 'edge[kind = "assigned"]', style: { 'line-style': 'dashed', 'line-color': '#73d5cd' } },
-  { selector: 'edge[kind = "placed-in"]', style: { 'line-style': 'dotted', 'target-arrow-shape': 'square' } },
-  { selector: 'edge[kind = "worktree"]', style: { 'target-arrow-shape': 'diamond' } },
-  { selector: 'edge[kind = "related"]', style: { 'target-arrow-shape': 'none', 'line-style': 'dotted' } },
-  { selector: '.muted', style: { opacity: 0.4 } },
-  { selector: 'node.selected', style: { 'border-width': 5, 'border-color': '#fff0a8' } },
-  { selector: 'edge.selected', style: { width: 5, 'line-color': '#fff0a8' } },
-];
+import { styles } from './styles.js';
 
 // Keep text readable at fit scale, without scaling the circular geometry itself.
 function readableLabels(cy: Core) {
+  // At dense overview scale, labels appear when zoomed in. The equivalent list
+  // remains readable at every scale; inflating 1,500 labels on every wheel tick
+  // obscures the graph and invalidates the entire renderer's style cache.
+  if (cy.nodes().length > 100) {
+    cy.nodes().removeStyle('font-size text-max-width');
+    cy.edges().removeStyle('font-size');
+    return;
+  }
   const size = Math.max(12, 10 / cy.zoom());
   cy.batch(() => {
     cy.nodes().style({ 'font-size': size, 'text-max-width': `${Math.max(150, 130 / cy.zoom())}px` });
@@ -45,17 +31,22 @@ export function GraphView({ nodes, edges, selected, onSelect, onToggle, command,
 }) {
   const container = useRef<HTMLDivElement>(null);
   const core = useRef<Core>(undefined);
+  const pending = useRef<{ frame: number; apply: () => void }>(undefined);
   const callbacks = useRef({ onSelect, onToggle });
   callbacks.current = { onSelect, onToggle };
+  const selection = useRef(selected);
+  selection.current = selected;
   const [zoom, setZoom] = useState(1);
   const fitted = useRef(false);
   useEffect(() => {
-    const cy = cytoscape({ container: container.current!, elements: [], style: styles, layout: { name: 'preset' }, minZoom: 0.08, maxZoom: 3, zoom: memory.camera?.zoom ?? 1, pan: memory.camera?.pan ?? { x: 0, y: 0 } });
+    const cy = cytoscape({ container: container.current!, elements: [], style: styles, layout: { name: 'preset' }, minZoom: 0.04, maxZoom: 3, pixelRatio: 1, textureOnViewport: true, zoom: memory.camera?.zoom ?? 1, pan: memory.camera?.pan ?? { x: 0, y: 0 } });
     fitted.current = Boolean(memory.camera);
+    performance.clearMeasures('graph.initial-layout'); performance.clearMeasures('graph.initial-sync');
     core.current = cy;
     const select = (event: cytoscape.EventObject) => callbacks.current.onSelect(event.target.id());
     const toggle = (event: cytoscape.EventObject) => { if (event.target.data('kind') === 'epic') callbacks.current.onToggle(event.target.id()); };
-    const viewport = () => { readableLabels(cy); setZoom(cy.zoom()); };
+    let zoomTimer: ReturnType<typeof setTimeout>;
+    const viewport = () => { clearTimeout(zoomTimer); zoomTimer = setTimeout(() => { readableLabels(cy); setZoom(cy.zoom()); }, 100); };
     cy.on('tap', 'node, edge', select);
     cy.on('dbltap', 'node', toggle);
     cy.on('zoom', viewport);
@@ -65,23 +56,52 @@ export function GraphView({ nodes, edges, selected, onSelect, onToggle, command,
       cy.nodes().forEach(node => { memory.positions.set(node.id(), { ...node.position() }); });
       if (fitted.current) memory.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } };
       resize.disconnect();
+      clearTimeout(zoomTimer);
       cy.off('tap', 'node, edge', select); cy.off('dbltap', 'node', toggle); cy.off('zoom', viewport);
       cy.destroy(); core.current = undefined; fitted.current = false;
     };
   }, []);
   useEffect(() => {
     const cy = core.current!;
-    const needsLayout = nodes.some(node => !cy.getElementById(node.id).length && !memory.positions.has(node.id));
-    syncElements(cy, elements(nodes, edges), memory.positions, needsLayout ? orbitalLayout(nodes, edges) : new Map());
-    highlight(cy, selected);
-    if (!fitted.current && nodes.length) { cy.fit(undefined, 50); fitted.current = true; }
-    readableLabels(cy);
-    setZoom(cy.zoom());
-  }, [nodes, edges, selected]);
+    // Coalesce same-frame deltas. Layout runs only when new identities need
+    // positions; status/selection changes cannot trigger a full relayout.
+    const update = () => {
+      const initial = !fitted.current && nodes.length > 0;
+      const needsLayout = nodes.some(node => !cy.getElementById(node.id).length && !memory.positions.has(node.id));
+      const layoutStart = performance.now();
+      const positions = needsLayout ? orbitalLayout(nodes, edges) : new Map();
+      const syncStart = performance.now();
+      syncElements(cy, elements(nodes, edges), memory.positions, positions);
+      highlight(cy, selection.current);
+      if (!fitted.current && nodes.length) { cy.fit(undefined, 50); fitted.current = true; }
+      readableLabels(cy);
+      setZoom(cy.zoom());
+      // One latest sample per operation, not an unbounded telemetry history.
+      performance.clearMeasures('graph.layout'); performance.clearMeasures('graph.sync');
+      performance.measure('graph.layout', { start: layoutStart, end: syncStart, detail: { computed: needsLayout } });
+      performance.measure('graph.sync', { start: syncStart, end: performance.now() });
+      if (initial) {
+        performance.measure('graph.initial-layout', { start: layoutStart, end: syncStart });
+        performance.measure('graph.initial-sync', { start: syncStart, end: performance.now() });
+      }
+    };
+    // Small projections are cheap and remain synchronous for direct manipulation.
+    if (nodes.length <= 100) { update(); return; }
+    const frame = requestAnimationFrame(() => { pending.current = undefined; update(); });
+    pending.current = { frame, apply: update };
+    return () => { cancelAnimationFrame(frame); if (pending.current?.frame === frame) pending.current = undefined; };
+  }, [nodes, edges]);
+  useEffect(() => { highlight(core.current!, selected); }, [selected]);
   useEffect(() => {
     const cy = core.current!;
     if (!command.serial || command.serial === memory.commandSerial) return;
     memory.commandSerial = command.serial;
+    // Explicit controls must operate on the latest projection, even when a
+    // dense update was coalesced into a not-yet-painted animation frame.
+    if (pending.current) {
+      const latest = pending.current; pending.current = undefined;
+      cancelAnimationFrame(latest.frame); latest.apply();
+    }
     if (command.kind === 'reset') {
       const layout = orbitalLayout(nodes, edges);
       memory.positions.clear();

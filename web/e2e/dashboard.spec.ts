@@ -1,0 +1,75 @@
+import { test, expect } from '@playwright/test';
+import { graphFixture } from '../test/fixtures/graph-snapshot.js';
+import { largeGraph } from '../test/fixtures/large-graph.js';
+import type { Core } from 'cytoscape';
+import { orbitalLayout } from '../src/graph/layout.js';
+import { projectGraph } from '../src/graph/state.js';
+
+test('loading, empty, offline/retry, stale and optional-source outage states recover without breaking inspection', async ({ page }) => {
+  let mode: 'empty' | 'offline' | 'optional' | 'stale' = 'empty';
+  let release!: () => void;
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/bootstrap', async route => { await loading; return route.fulfill({ json: { token: 'fixture-token' } }); });
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => mode === 'offline' ? route.fulfill({ status: 503 }) : route.fulfill({ json: mode === 'empty' ? { ...graphFixture, nodes: [], edges: [] } : { ...graphFixture, health: [{ source: 'aven', status: mode === 'stale' ? 'stale' : 'ok', observedAt: graphFixture.observedAt, message: mode === 'stale' ? 'Retained previous Aven snapshot' : 'Tasks available' }, ...['herdr', 'opencode', 'dispatcher'].map(source => ({ source, status: 'unavailable', observedAt: graphFixture.observedAt, message: 'Optional capability unavailable' }))] } }));
+  await page.goto('/');
+  await expect(page.getByText('Reading local sources…')).toBeVisible();
+  release();
+  await expect(page.getByText('No entities match. Broaden the filters or check source health.')).toBeVisible();
+  mode = 'offline';
+  await expect(page.getByRole('alert')).toContainText('Snapshot unavailable');
+  mode = 'optional';
+  await expect(page.locator('.health.unavailable')).toHaveCount(3);
+  const entry = page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ });
+  await entry.click();
+  await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+  mode = 'stale';
+  await expect(page.locator('.health.stale')).toContainText('Retained previous Aven snapshot');
+  await expect(entry).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('cap is disclosed without losing search/list/detail discovery; entity and log DOM is windowed', async ({ page }) => {
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: largeGraph(560) }));
+  await page.route('**/api/logs/**', route => route.fulfill({ json: { entries: Array.from({ length: 100 }, (_, index) => ({ id: `log:${index}`, source: 'dispatcher', observedAt: '2026-10-20T12:00:00Z', text: `Summary ${index}`, durable: true })), message: 'Fixture window', gap: false } }));
+  await page.goto('/');
+  await expect(page.getByText(/Graph limited to 500 visible nodes · 60 additional matches/)).toBeVisible();
+  const entities = page.getByRole('region', { name: 'Entities', exact: true });
+  await expect(entities.locator('li')).toHaveCount(40);
+  for (let index = 0; index < 13; index++) await entities.getByRole('button', { name: 'Next entities', exact: true }).click();
+  const last = entities.getByRole('button', { name: /Task 559/ });
+  await last.focus(); await page.keyboard.press('Enter');
+  await expect(page.getByRole('complementary').getByRole('heading', { name: 'Task 559', exact: true })).toBeVisible();
+  await page.getByLabel('Search entities').fill('Task 559');
+  await expect(page.locator('.graph-status')).toContainText('1 entities');
+  await expect(last).toHaveAttribute('aria-pressed', 'true');
+  const history = page.getByRole('region', { name: 'Event history' });
+  await history.getByRole('button', { name: 'Load / refresh history' }).click();
+  await expect(history.locator('li')).toHaveCount(40);
+  await history.getByRole('button', { name: 'Next history summaries' }).click();
+  await expect(history.getByText(/Summary 79/, { exact: false })).toBeVisible();
+  await expect(history.locator('li')).toHaveCount(40);
+});
+
+test('same-turn dense projection and reset controls use the latest identities/positions', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const fixture = largeGraph();
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: fixture }));
+  await page.goto('/');
+  await expect(page.locator('.graph-status')).toContainText('500 entities');
+  // Both React updates land before the next canvas frame; reset must first
+  // flush the pending projection rather than positioning removed epic nodes.
+  await page.getByLabel('Entity type').evaluate(element => {
+    const select = element as HTMLSelectElement;
+    select.value = 'task'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Reset positions')!.click();
+  });
+  await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().length)).toBe(480);
+  const projected = projectGraph(fixture, { query: '', kind: 'task', state: 'all' }, new Set());
+  const expected = Object.fromEntries(orbitalLayout(projected.nodes, projected.edges));
+  expect(await page.locator('.graph-canvas').evaluate(element => Object.fromEntries((element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().map(node => [node.id(), node.position()])))).toEqual(expected);
+  expect(errors).toEqual([]);
+});
