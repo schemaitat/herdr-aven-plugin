@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -279,7 +280,11 @@ fn store_attempt(store: &mut LockedStore, attempt: Attempt) {
 }
 struct LockedStore {
     path: PathBuf,
-    lock: PathBuf,
+    // Keep the advisory lock alive for the lifetime of the store. Unlike the
+    // previous create_new lock-file sentinel, the operating system releases
+    // this lock when a dispatcher is killed, so a crashed terminal command
+    // cannot permanently block future Aven dispatches.
+    lock_file: fs::File,
     store: Store,
 }
 impl LockedStore {
@@ -287,14 +292,28 @@ impl LockedStore {
         let parent = path.parent().context("store path has no parent")?;
         fs::create_dir_all(parent).context("create dispatcher state directory")?;
         let lock = path.with_extension("lock");
-        fs::OpenOptions::new().write(true).create_new(true).open(&lock)
-            .with_context(|| format!("dispatcher store is locked: {}; use status/reconcile instead of concurrent dispatch", lock.display()))?;
+        let lock_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock)
+            .with_context(|| format!("open dispatcher store lock {}", lock.display()))?;
+        lock_file.try_lock_exclusive().with_context(|| {
+            format!(
+                "dispatcher store is locked by another running dispatcher: {}; use status/reconcile instead of concurrent dispatch",
+                lock.display()
+            )
+        })?;
         let store = if path.exists() {
             serde_json::from_slice(&fs::read(&path)?)?
         } else {
             Store::default()
         };
-        Ok(Self { path, lock, store })
+        Ok(Self {
+            path,
+            lock_file,
+            store,
+        })
     }
     fn save(&self) -> Result<()> {
         let temporary = self.path.with_extension("new");
@@ -305,7 +324,7 @@ impl LockedStore {
 }
 impl Drop for LockedStore {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.lock);
+        let _ = self.lock_file.unlock();
     }
 }
 
@@ -2405,10 +2424,36 @@ fn doctor() -> Result<()> {
     Ok(())
 }
 
+fn is_interactive_cancellation(error: &anyhow::Error) -> bool {
+    matches!(
+        error.to_string().as_str(),
+        "implementation mode selection was canceled"
+            | "OpenCode agent selection was canceled"
+            | "OpenCode model selection was canceled"
+    )
+}
+
+fn show_terminal_error(error: &anyhow::Error) {
+    // Aven owns the only Herdr session-modal popup while a terminal command is
+    // running, so a nested error popup would fail with ui_busy. Keep the
+    // borrowed terminal visible instead, including the complete anyhow chain.
+    if env::var_os("AVEN_COMMAND_CONTEXT").is_none()
+        || !io::stdin().is_terminal()
+        || !io::stderr().is_terminal()
+        || is_interactive_cancellation(error)
+    {
+        return;
+    }
+    eprintln!("\nAven dispatch failed:\n\n{error:#}\n\nPress Enter to return to Aven.");
+    let _ = io::stderr().flush();
+    let mut acknowledgement = String::new();
+    let _ = io::stdin().read_line(&mut acknowledgement);
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let path = absolute_path(store_path(cli.store))?;
-    match cli.command {
+    let result = match cli.command {
         Commands::Dispatch {
             dry_run,
             agent,
@@ -2443,7 +2488,11 @@ fn main() -> Result<()> {
         Commands::Interrupt { task } => interrupt(path, &task),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
         Commands::Doctor => doctor(),
+    };
+    if let Err(error) = &result {
+        show_terminal_error(error);
     }
+    result
 }
 
 #[cfg(test)]
@@ -2654,6 +2703,34 @@ mod tests {
     #[test]
     fn branch_uses_immutable_id() {
         assert_eq!(branch("APP", "ABC123"), "APP/dispatch-abc123");
+    }
+    #[test]
+    fn stale_legacy_lock_file_does_not_block_dispatch_store_access() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state.json");
+        let legacy_lock = state.with_extension("lock");
+        fs::write(&legacy_lock, "").unwrap();
+
+        let first = LockedStore::open(state.clone()).unwrap();
+        assert!(LockedStore::open(state.clone()).is_err());
+        drop(first);
+
+        // The file remains as a stable advisory-lock target, but no longer
+        // represents an active dispatcher once its owner exits.
+        LockedStore::open(state).unwrap();
+    }
+    #[test]
+    fn interactive_cancellation_does_not_show_an_error_screen() {
+        for cancellation in [
+            "implementation mode selection was canceled",
+            "OpenCode agent selection was canceled",
+            "OpenCode model selection was canceled",
+        ] {
+            assert!(is_interactive_cancellation(&anyhow::anyhow!(cancellation)));
+        }
+        assert!(!is_interactive_cancellation(&anyhow::anyhow!(
+            "store is locked"
+        )));
     }
     #[test]
     fn running_list_excludes_non_running_attempts() {

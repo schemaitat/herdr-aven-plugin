@@ -215,8 +215,10 @@ panes), `herdr-plugin.toml` (manifest), and `scripts/install-aven-command.sh`
 
 **Troubleshooting:** Reopen Aven after changing commands. Check executable and
 project resolution with `aven.tasks.doctor`; inspect plugin failures with
-`herdr plugin log list --plugin aven.tasks`. If the picker is missing, confirm
-the installed command uses `--agent select` and `execution: terminal`.
+`herdr plugin log list --plugin aven.tasks`. Terminal dispatch failures display
+their complete error chain and wait for Enter before returning to Aven. If the
+picker is missing, confirm the installed command uses `--agent select` and
+`execution: terminal`.
 
 ## License
 
