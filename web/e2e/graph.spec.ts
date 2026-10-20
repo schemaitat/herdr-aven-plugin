@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { Core } from 'cytoscape';
-import { graphFixture } from '../test/fixtures/graph-snapshot.js';
+import { graphFixture, scopeFixture, scopeClock } from '../test/fixtures/graph-snapshot.js';
+import { allTypes, onlyTypes } from './filter-controls.js';
 
 // Read-only test instrumentation: Cytoscape registers its core on its container.
 // No production debug endpoint or browser-global mutation capability is shipped.
@@ -29,6 +30,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
+  await allTypes(page);
   await expect(page.locator('.graph-status')).toContainText('14 entities');
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
 });
@@ -114,10 +116,12 @@ test('collapse/expand, cross-epic boundaries, search/type/status filters and key
   await page.mouse.dblclick(p.x, p.y);
   await expect(page.getByRole('button', { name: 'Expand Aurora epic', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Expand Aurora epic', exact: true }).click();
-  await page.getByLabel('Entity type').selectOption('task');
+  await page.getByText('Filters', { exact: true }).click();
+  await onlyTypes(page, ['task']);
   await page.getByLabel('Source state').selectOption('active');
   expect((await graph(page)).nodes).toEqual(['task:b']);
-  await page.getByLabel('Entity type').selectOption('all'); await page.getByLabel('Source state').selectOption('all');
+  await page.getByRole('button', { name: 'All types', exact: true }).click(); await page.getByLabel('Source state').selectOption('all');
+  await page.keyboard.press('Escape');
   await page.getByLabel('Search entities').fill('Standalone');
   const button = page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ });
   // From search, use only keyboard to traverse selects and graph controls into the list.
@@ -236,4 +240,73 @@ test('search ignores editable, modified and IME slash; query baseline survives a
   await expect(search).toHaveValue('');
   expect((await graph(page)).selected).toEqual([]);
   expect((await graph(page)).nodes).not.toContain('task:solo');
+});
+
+test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic scope and off-canvas details agree', async ({ page }) => {
+  await page.clock.setFixedTime(scopeClock);
+  await page.route('**/api/snapshot', route => route.fulfill({ json: scopeFixture }));
+  await page.reload();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  expect((await graph(page)).nodes).not.toContain('pane:a');
+  await page.getByText('Filters', { exact: true }).click();
+  for (const kind of ['epic', 'task', 'attempt', 'agent', 'session']) await expect(page.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
+  for (const kind of ['workspace', 'pane', 'worktree', 'boundary']) await expect(page.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
+  await expect(page.getByLabel('Recent source changes')).toHaveValue('all');
+  await onlyTypes(page, []);
+  await expect(page.getByText('No matching entities in this scope.', { exact: false })).toBeVisible();
+  expect((await graph(page)).nodes).toEqual([]);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Reset empty scope', exact: true }).click();
+  await expect(page.locator('.scope-chips')).toContainText('5 of 9 types');
+  const details = page.getByRole('complementary', { name: 'Entity details' });
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
+  await page.getByText('Filters', { exact: true }).click();
+  await onlyTypes(page, ['task', 'agent']);
+  await page.getByLabel('Source state').selectOption('active');
+  await page.getByLabel('Recent source changes').selectOption('24h');
+  await page.getByLabel('Epic scope').selectOption('epic:a');
+  // Epic choices come from the unfiltered snapshot even when epic types/state exclude them.
+  await expect(page.getByLabel('Epic scope').locator('option')).toHaveCount(3);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Search /', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Preview query' }).fill('bd gh');
+  await expect.poll(async () => (await graph(page)).nodes).toEqual(['task:b']);
+  await expect(page.locator('#entities .entity')).toHaveCount(1);
+  await page.keyboard.press('Escape'); // restores prior selected standalone entity, not a forced visible match
+  await expect(details.getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+  await expect(page.getByText('Selected entity is off-canvas', { exact: false })).toBeVisible();
+  expect((await graph(page)).nodes).toEqual(['task:b']);
+  await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
+  await expect(page.getByLabel('Search entities')).toHaveValue('');
+  expect((await graph(page)).nodes).not.toContain('pane:a');
+});
+
+test('recent source windows disclose unknowns, shared resources do not leak other epic owners, and disappearing epic stays explicit', async ({ page }) => {
+  await page.clock.setFixedTime(scopeClock);
+  let snapshot = scopeFixture;
+  await page.route('**/api/snapshot', route => route.fulfill({ json: snapshot }));
+  await page.reload();
+  await allTypes(page);
+  await page.getByText('Filters', { exact: true }).click();
+  await page.getByLabel('Recent source changes').selectOption('24h');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.scope-chips')).toContainText('5 unknown/invalid/future-time exclusions');
+  expect((await graph(page)).nodes).not.toContain('task:c');
+  expect((await graph(page)).nodes).toContain('session:a');
+  await page.getByText('Filters', { exact: true }).click();
+  await page.getByLabel('Recent source changes').selectOption('all');
+  await page.getByLabel('Epic scope').selectOption('epic:a');
+  await page.keyboard.press('Escape');
+  const scoped = (await graph(page)).nodes;
+  expect(scoped).toContain('session:a');
+  expect(scoped).not.toContain('agent:c');
+  expect(scoped).not.toContain('task:c');
+  snapshot = { ...snapshot, nodes: snapshot.nodes.filter(node => node.id !== 'epic:a'), edges: snapshot.edges.filter(edge => edge.source !== 'epic:a') };
+  await expect(page.getByText('The selected epic is no longer', { exact: false })).toBeVisible({ timeout: 10000 });
+  expect((await graph(page)).nodes).toEqual([]);
+  await page.getByText('Filters', { exact: true }).click();
+  await expect(page.getByLabel('Epic scope', { exact: true })).toHaveValue('epic:a');
+  await page.getByRole('button', { name: 'Clear epic', exact: true }).click();
+  await page.keyboard.press('Escape');
+  expect((await graph(page)).nodes).toContain('task:c');
 });

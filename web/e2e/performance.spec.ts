@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { largeGraph } from '../test/fixtures/large-graph.js';
+import { allTypes } from './filter-controls.js';
 
 test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-update stability', async ({ page }, info) => {
   let snapshot = largeGraph();
@@ -9,6 +10,7 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   const started = performance.now();
   await page.goto('/');
+  await allTypes(page);
   await expect(page.locator('.graph-status')).toContainText('500 entities · 1000 connections');
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /epic Orbit 000/ }).click();

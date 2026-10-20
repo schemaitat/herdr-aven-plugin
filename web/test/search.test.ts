@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { Entity } from '../shared/graph.js';
 import { searchEntities, searchScore } from '../src/graph/search.js';
-import { projectGraph } from '../src/graph/state.js';
+import { ALL_TYPES, defaultFilters, projectGraph } from '../src/graph/state.js';
 import { graphFixture } from './fixtures/graph-snapshot.js';
 import { largeGraph } from './fixtures/large-graph.js';
 
@@ -21,7 +21,7 @@ describe('bounded deterministic fuzzy search', () => {
   });
   test('canvas is capped while the matching list is complete and ordered identically', () => {
     const snapshot = largeGraph(560);
-    const graph = projectGraph(snapshot, { query: 't', kind: 'all', state: 'all' }, new Set());
+    const graph = projectGraph(snapshot, { ...defaultFilters(), query: 't', kinds: new Set(ALL_TYPES) }, new Set(), Date.parse(snapshot.observedAt));
     expect(graph.discoveryNodes).toEqual(searchEntities(snapshot.nodes, 't'));
     expect(graph.nodes).toEqual(graph.discoveryNodes.slice(0, 500));
     expect(graph.cappedNodes).toBe(graph.discoveryNodes.length - 500);

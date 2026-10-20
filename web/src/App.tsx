@@ -4,7 +4,7 @@ import { ActivityPanel } from './ActivityPanel.js';
 import { LogPanel } from './LogPanel.js';
 import { EntityList } from './EntityList.js';
 import { DetailsPanel } from './DetailsPanel.js';
-import { canonicalSelection, projectGraph, toggleEpic, type Filters } from './graph/state.js';
+import { canonicalSelection, defaultFilters, projectGraph, toggleEpic, type Filters } from './graph/state.js';
 import type { GraphMemory } from './graph/interactions.js';
 import { Toolbar } from './Toolbar.js';
 import { Legend } from './Legend.js';
@@ -26,7 +26,14 @@ type Panel = 'entities' | 'activity' | 'history' | 'help';
 export function App() {
   const { snapshot, error, connection, read } = useLiveGraph();
   const [selected, setSelected] = useState<string>();
-  const [filters, setFilters] = useState<Filters>({ query: '', kind: 'all', state: 'all' });
+  const [filters, setFilters] = useState<Filters>(defaultFilters);
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    if (filters.time === 'all') return;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, [filters.time]);
   const [collapsed, setCollapsed] = useState(new Set<string>());
   const [mounted, setMounted] = useState(true);
   const [canvasFailed, setCanvasFailed] = useState(false);
@@ -38,7 +45,7 @@ export function App() {
   const [command, setCommand] = useState<{ kind: 'fit' | 'reset' | 'in' | 'out' | 'restore'; serial: number; camera?: GraphMemory['camera'] }>({ kind: 'fit', serial: 0 });
   const toggle = (id: string) => setCollapsed(previous => toggleEpic(previous, id));
   const entity = snapshot?.nodes.find(node => node.id === selected);
-  const graph = useMemo(() => snapshot ? projectGraph(snapshot, filters, collapsed) : { nodes: [], discoveryNodes: [], edges: [], allEdges: [], cappedNodes: 0, omittedRelationships: 0, hiddenTasks: 0, hiddenRelationships: 0 }, [snapshot, filters, collapsed]);
+  const graph = useMemo(() => snapshot ? projectGraph(snapshot, filters, collapsed, Date.now()) : { nodes: [], discoveryNodes: [], edges: [], allEdges: [], cappedNodes: 0, omittedRelationships: 0, hiddenTasks: 0, hiddenRelationships: 0, unknownTimeExclusions: 0 }, [snapshot, filters, collapsed, clock]);
   const selectedEdge = graph.edges.find(edge => edge.id === selected || (edge.summary && edge.evidence?.[0] === selected)) ?? graph.allEdges.find(edge => edge.id === selected);
   const openPanel = (next: Panel, focus = false) => {
     panelTrigger.current = document.activeElement as HTMLElement;
@@ -83,10 +90,11 @@ export function App() {
       {error && <p role="alert" className="warning">{error} {snapshot && 'Displayed data is stale.'}</p>}
       {canvasFailed && <p role="alert" className="warning">Canvas unavailable. Entities and details remain available.</p>}
       <p role="status" className="live-connection">{connection}</p>
-      <Toolbar nodes={snapshot?.nodes ?? []} filters={filters} onChange={setFilters} onSearch={openSearch} onCommand={kind => setCommand(previous => ({ kind, serial: previous.serial + 1 }))} mounted={mounted} onMount={() => { setMounted(value => !value); if (mounted) openPanel('entities'); }} />
+      <Toolbar nodes={snapshot?.nodes ?? []} filters={filters} onChange={setFilters} onSearch={openSearch} matches={graph.discoveryNodes.length} visible={mounted ? graph.nodes.length : 0} unknownTimeExclusions={graph.unknownTimeExclusions} onCommand={kind => setCommand(previous => ({ kind, serial: previous.serial + 1 }))} mounted={mounted} onMount={() => { setMounted(value => !value); if (mounted) openPanel('entities'); }} />
       <nav className="panel-controls" aria-label="Inspection panels">{(['entities', 'activity', 'history', 'help'] as const).map(value => <button key={value} aria-expanded={panel === value} aria-controls="inspector" onClick={() => panel === value ? closePanel() : openPanel(value, true)}>{value === 'entities' ? 'Entities & details' : value === 'history' ? 'Event history' : value === 'help' ? 'Help & legend' : 'Live activity'}</button>)}</nav>
       {graph.cappedNodes > 0 && <p className="warning" role="status">Graph limited to 500 visible nodes · {graph.cappedNodes} additional matches · {graph.omittedRelationships} source relationships touch cap-hidden matches. Narrow search/type/status filters to reveal them. All {graph.discoveryNodes.length} matches remain in Entities and details; totals above are unchanged.</p>}
       {graph.hiddenTasks > 0 && <p className="warning" role="status">{graph.hiddenTasks} collapsed tasks · {graph.hiddenRelationships} relationships touch hidden tasks. External connections are summarized at visible epic hubs; internal blockers remain recorded. Expand epics to inspect all tasks.</p>}
+      {snapshot && graph.discoveryNodes.length === 0 && <p className="warning" role="status">No matching entities in this scope. <button onClick={() => setFilters(defaultFilters())}>Reset empty scope</button>{filters.epic && !snapshot.nodes.some(node => node.id === filters.epic && node.kind === 'epic') && ' The selected epic is no longer in the loaded snapshot; clear epic or reset filters.'}</p>}
       <div className={`workspace ${panel ? 'inspecting' : ''} ${!mounted ? 'list-only' : ''}`}>
         {mounted && <CanvasBoundary onFailure={() => { setCanvasFailed(true); setMounted(false); setPanel('entities'); }}><Suspense fallback={<p className="empty" role="status">Loading relationship canvas… Open Entities for inspection.</p>}><GraphView nodes={graph.nodes} edges={graph.edges} selected={selectedEdge?.id ?? selected} onSelect={select} onToggle={toggle} command={command} memory={searchBaseline.current?.memory ?? graphMemory.current} /></Suspense></CanvasBoundary>}
         {panel && <section id="inspector" tabIndex={-1} className="inspector" aria-label="Inspector" onPointerDown={event => event.stopPropagation()}>

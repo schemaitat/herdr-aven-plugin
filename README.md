@@ -66,7 +66,7 @@ just ui-start
 
 The explorer lists project tasks/epics and their typed relationships, dispatcher
 attempts/roles, API session identities, Herdr panes/workspaces, and Git worktrees.
-Search, type/state filters, keyboard-selectable entries, related-entity buttons,
+Search, type/state/time/epic filters, keyboard-selectable entries, related-entity buttons,
 and a provenance/detail panel provide the non-canvas inspection path. Task
 acceptance, persisted attempt state, and terminal-observed state are separate.
 Live OpenCode V2 activity drives **Working** indicators on linked sessions,
@@ -96,7 +96,34 @@ camera and returns keyboard focus. Live refreshes remain authoritative: vanished
 IDs are not resurrected. Preview never saves temporary positions. The dialog
 windows 40 results around the active result; arrows can traverse every match.
 The inline Search entities field also filters directly, without a transaction.
-Type/state defaults remain All types/All states.
+
+**Filters** opens a compact keyboard-accessible scope popover (Tab to controls;
+Escape closes it and returns focus). Entity types are independent checkboxes:
+**epic, task, attempt, agent and session** are initially selected. **All types**
+also includes workspace, pane, worktree and boundary entities. Unchecking every
+type means no matches, not All. Source state initially includes all states.
+Epic choices always come from the loaded snapshot, independent of other filters.
+Epic scope follows nested containment and explicit execution ownership only;
+blockers/related links and shared sessions, panes or workspaces never pull in
+unrelated owners. **Clear epic** removes only that scope. A vanished epic remains
+explicitly unavailable with an empty result until cleared; refresh never silently
+broadens the scope. Chips show the current scope, matching count and canvas count.
+**Reset filters** restores the default types, all states/time and no epic/query;
+it does not erase selection or saved node positions. Selected off-canvas entities
+retain their details and all source relationships without overriding filters.
+
+Recent source changes initially includes **All time**. Rolling presets are
+**24 hours, 72 hours, 7 days, 14 days and 30 days** (not a calendar month), with an
+inclusive cutoff. Time is valid Aven `updated_at`, falling back to `created_at`,
+or persisted attempt `created_at` (explicitly normalized from seconds-based records
+or the current dispatcher's milliseconds). Explicitly owned agents/sessions/panes/
+worktrees inherit the maximum valid source time of their task/attempt owners;
+standalone resources with no known source date stay undated. Polling, provenance
+observations, API activity and heartbeats **never** establish recency. Finite
+ranges exclude unknown, invalid and future dates and report their exclusion count
+within the other filters/search. These are current known source records, not a
+historical graph or a guarantee of exhaustive task coverage. Filtering never
+expands source collection.
 
 **Graph guide.** Large violet circular epic hubs and smaller blue task bubbles
 form deterministic orbital groups (concentric rings for larger epics). Shapes
@@ -121,7 +148,7 @@ same selection. Focus is outlined and reduced-motion preferences disable
 transitions; there are no particle/starfield or activity animations.
 
 The canvas has an explicit **500-visible-node budget**, applied after scoped
-search/type/status filters and collapse. A warning gives additional matches and
+search/type/state/time/epic filters and collapse. A warning gives additional matches and
 off-canvas relationship counts; scope totals and source relationships are never
 silently reduced. **Entities** retains every matching entity supplied by the
 bounded source snapshot, including those beyond the canvas budget; select one

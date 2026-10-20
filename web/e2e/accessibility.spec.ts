@@ -8,7 +8,7 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
-  await expect(page.locator('.graph-status')).toContainText('14 entities');
+  await expect(page.locator('.graph-status')).toContainText('10 entities');
   await page.keyboard.press('Tab');
   const skip = page.getByRole('link', { name: 'Skip graph to entities' });
   await expect(skip).toBeFocused(); await expect(skip).toBeVisible();
@@ -44,7 +44,7 @@ test('viewport shell has no overflow; drawers return focus, leave background con
   await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
   await page.goto('/');
   const entities = page.getByRole('button', { name: 'Entities & details', exact: true });
-  await expect(page.locator('.graph-status')).toContainText('14 entities');
+  await expect(page.locator('.graph-status')).toContainText('10 entities');
   const camera = () => page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
     return { zoom: cy.zoom(), pan: cy.pan() };
@@ -54,12 +54,19 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     await page.setViewportSize(size);
     await expect.poll(camera).toEqual(beforeResize);
     await expect(page.getByRole('region', { name: 'Entities', exact: true })).toHaveCount(0);
-    for (const name of ['Entity type', 'Source state']) {
+    await page.getByText('Filters', { exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('checkbox', { name: 'epic', exact: true })).toBeFocused();
+    for (const name of ['Recent source changes', 'Source state', 'Epic scope']) {
       const control = await page.getByLabel(name).boundingBox();
       expect(control!.width).toBeGreaterThanOrEqual(100);
       expect(control!.x).toBeGreaterThanOrEqual(0);
       expect(control!.x + control!.width).toBeLessThanOrEqual(size.width);
     }
+    await page.screenshot({ path: info.outputPath(`filters-${size.width}.png`) });
+    await page.keyboard.press('Escape');
+    await expect(page.getByText('Filters', { exact: true })).toBeFocused();
     await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
     await expect.poll(() => page.locator('.graph-canvas').evaluate(element => {
       const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;

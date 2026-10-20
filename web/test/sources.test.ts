@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { avenSource } from '../server/sources/aven.js';
+import { avenSource, taskSchema } from '../server/sources/aven.js';
 import { readDispatcher, boundedJsonFile } from '../server/sources/dispatcher.js';
 import { readHerdr } from '../server/sources/herdr.js';
 import { primaryCheckout, startupConfig } from '../server/config.js';
@@ -9,6 +9,12 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 describe('Aven scoped bounded source', () => {
+  it('retains optional created/updated source dates without requiring them in older records', () => {
+    const task = fixture('aven').tasks[0];
+    expect(taskSchema.parse({ ...task, created_at: '2026-01-01T00:00:00Z' }).created_at).toBe('2026-01-01T00:00:00Z');
+    const { created_at, updated_at, ...old } = task;
+    expect(taskSchema.parse(old)).toMatchObject({ created_at: '', updated_at: '' });
+  });
   const data = fixture('aven');
   const runner = (commands: ReadCommand[]): Runner => async command => {
     commands.push(command);

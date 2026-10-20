@@ -9,7 +9,7 @@ export const taskSchema = z.object({
   id, ref: z.string().regex(/^[A-Za-z0-9]+-[A-Za-z0-9]+$/), title: text, project: text,
   status: text, is_epic: z.boolean(), deleted: z.boolean().default(false),
   priority: text.default('none'), available_at: text.default(''), due_on: text.default(''),
-  updated_at: text.default(''), epic_parent: referenceSchema.nullish(),
+  updated_at: text.default(''), created_at: text.default(''), epic_parent: referenceSchema.nullish(),
   epic_children: z.array(referenceSchema).max(1000).default([]),
 });
 export const contextSchema = z.object({

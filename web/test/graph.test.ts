@@ -16,6 +16,33 @@ async function snapshot(mode = 'worktrees') {
 }
 
 describe('normalized identity and directed edges', () => {
+  it('uses source dates, explicitly converts attempt seconds and ignores observation-only refreshes', async () => {
+    const now = Date.parse('2026-10-20T12:00:00Z');
+    const aven = avenFixture();
+    aven.tasks[0].updated_at = 'invalid';
+    aven.tasks[0].created_at = '2026-10-01T00:00:00Z';
+    aven.tasks[1].updated_at = '2026-10-20T10:00:00Z';
+    aven.tasks[2].updated_at = '2099-01-01T00:00:00Z';
+    aven.tasks[2].created_at = '';
+    const dispatch = await readDispatcher('/store', aven, async () => fixture('dispatcher'));
+    dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = Date.parse('2026-10-19T12:00:00Z') / 1000; });
+    const data = fixture('herdr');
+    const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
+    const first = normalize(config, aven, dispatch, herdr, now);
+    expect(first.nodes.find(node => node.details.taskId === 'ROOT01' && node.kind === 'epic')?.changedAt).toBe('2026-10-01T00:00:00.000Z');
+    expect(first.nodes.filter(node => node.kind === 'attempt').map(node => node.changedAt)).toEqual(['2026-10-19T12:00:00.000Z', '2026-10-19T12:00:00.000Z']);
+    expect(first.nodes.find(node => node.details.taskId === 'TASK02' && node.kind === 'task')?.changedAt).toBeUndefined();
+    expect(first.nodes.filter(node => node.kind === 'workspace').every(node => node.changedAt === undefined)).toBe(true);
+    expect(first.nodes.find(node => node.details.sessionId === 'ses_worker')?.changedAt).toBe('2026-10-20T10:00:00.000Z');
+    aven.health.observedAt = dispatch.health.observedAt = herdr.health.observedAt = '2026-10-20T12:00:01Z';
+    expect(normalize(config, aven, dispatch, herdr, now + 1000).nodes.map(node => [node.id, node.changedAt])).toEqual(first.nodes.map(node => [node.id, node.changedAt]));
+    dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = now; }); // current writer persists milliseconds
+    expect(normalize(config, aven, dispatch, herdr, now).nodes.filter(node => node.kind === 'attempt').every(node => node.changedAt === new Date(now).toISOString())).toBe(true);
+    for (const invalid of [0, NaN, Infinity, now + 1, (now + 1000) / 1000]) {
+      dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = invalid; });
+      expect(normalize(config, aven, dispatch, herdr, now).nodes.filter(node => node.kind === 'attempt').every(node => node.changedAt === undefined)).toBe(true);
+    }
+  });
   it('retains stable IDs, deduplicates mirrored blockers/containment and keeps standalone tasks', async () => {
     const graph = await snapshot();
     expect(graph.nodes.map(node => node.id)).toEqual((await snapshot()).nodes.map(node => node.id));

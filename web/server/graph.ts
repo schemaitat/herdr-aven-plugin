@@ -5,9 +5,10 @@ import type { startupConfig } from './config.js';
 import { avenSource, type AvenRead } from './sources/aven.js';
 import { readDispatcher, type DispatchRead } from './sources/dispatcher.js';
 import { readHerdr, type HerdrRead } from './sources/herdr.js';
+import { attemptTime, effectiveTimes, sourceTime } from '../shared/scope.js';
 
 type Config = Awaited<ReturnType<typeof startupConfig>>;
-export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead, herdr: HerdrRead): GraphSnapshot {
+export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead, herdr: HerdrRead, now = Date.now()): GraphSnapshot {
   const nodes = new Map<string, Entity>();
   const edges = new Map<string, Relationship>();
   const taskId = (id: string) => entityId('task', config.scope.workspace, id);
@@ -35,7 +36,9 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
   };
 
   for (const task of aven.tasks) {
+    const time = sourceTime(task.updated_at, now) ?? sourceTime(task.created_at, now);
     node({ id: taskId(task.id), kind: task.is_epic ? 'epic' : 'task', label: `${task.ref} · ${task.title}`, state: task.deleted ? 'deleted' : task.status,
+      ...(time === undefined ? {} : { changedAt: new Date(time).toISOString() }),
       details: { ref: task.ref, taskId: task.id, project: task.project, avenStatus: task.status, priority: task.priority, availableAt: task.available_at, dueOn: task.due_on, relationCoverage: aven.contexts.has(task.id) ? 'hydrated' : 'incomplete' },
       provenance: [provenance('aven', task.ref)] });
   }
@@ -74,6 +77,7 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
   for (const { attempt: a, origin, observedAt } of dispatch.attempts) {
     const p = { ...provenance(origin === 'aven-recovery' ? 'aven' : 'dispatcher', `${origin}/${a.task_id}/${a.workflow}/${a.generation}/${a.attempt_id}`), observedAt: observedAt ?? dispatch.health.observedAt };
     const attemptId = node({ id: entityId('attempt', a.task_id, a.workflow, a.generation, a.attempt_id), kind: 'attempt', label: `${a.workflow} · ${a.attempt_id}`, state: a.state || 'unknown',
+      changedAt: attemptTime(a.created_at, now),
       details: { taskId: a.task_id, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id, executionMode: a.execution_mode, persistedState: a.state, origin, logRef: a.log_task_ref }, provenance: [p] });
     edge('assigned', stub(taskId(a.task_id), a.task_ref, p), attemptId, p);
     const role = (key: string, task: string, session: string, pane: string, path: string, state: string, name: string) => {
@@ -95,7 +99,12 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
     role('babysitter', a.task_id, a.babysitter_session_id, a.babysitter_pane, '', 'unknown', '');
     for (const phase of a.phases) role(`worker/${phase.task_id}`, phase.task_id, phase.session_id, phase.pane, phase.worktree, phase.state, '');
   }
-  return { schema: 'local-explorer/v1', observedAt: new Date().toISOString(), scope: { project: config.scope.project, workspace: config.scope.workspace }, nodes: [...nodes.values()].sort((a, b) => a.id.localeCompare(b.id)), edges: [...edges.values()].sort((a, b) => a.id.localeCompare(b.id)), health: [aven.health, dispatch.health, herdr.health] };
+  const times = effectiveTimes([...nodes.values()], [...edges.values()], now);
+  for (const entity of nodes.values()) {
+    const time = times.get(entity.id);
+    if (time !== undefined) entity.changedAt = new Date(time).toISOString();
+  }
+  return { schema: 'local-explorer/v1', observedAt: new Date(now).toISOString(), scope: { project: config.scope.project, workspace: config.scope.workspace }, nodes: [...nodes.values()].sort((a, b) => a.id.localeCompare(b.id)), edges: [...edges.values()].sort((a, b) => a.id.localeCompare(b.id)), health: [aven.health, dispatch.health, herdr.health] };
 }
 
 export function createSnapshotSource(config: Config, run: Runner) {

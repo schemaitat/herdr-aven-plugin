@@ -19,3 +19,17 @@ export const graphFixture: GraphSnapshot = {
     edge('session', 'agent:a', 'session:a'), edge('placed-in', 'agent:a', 'pane:a'), edge('worktree', 'agent:a', 'worktree:a')],
   health: [{ source: 'aven', status: 'ok', observedAt, message: 'Deterministic fixture; no live agents' }],
 };
+
+/** Fixed-clock source times and shared resources; observations are deliberately newer. */
+export const scopeClock = Date.parse('2026-10-20T12:00:00Z');
+export const scopeFixture: GraphSnapshot = {
+  ...graphFixture,
+  nodes: [...graphFixture.nodes.map(entity => ({ ...entity, changedAt: ({
+    'epic:a': '2026-10-20T09:00:00Z', 'epic:b': '2026-09-01T00:00:00Z',
+    'task:a': '2026-09-19T12:00:00Z', 'task:b': '2026-10-20T11:00:00Z', 'task:c': '2026-10-17T12:00:00Z',
+  } as Record<string, string>)[entity.id] })),
+  { ...node('attempt:b', 'attempt', 'Build graph attempt', 'running'), changedAt: '2026-10-20T10:00:00Z' },
+  { ...node('task:future', 'task', 'Future task'), changedAt: '2099-01-01T00:00:00Z' },
+  { ...node('task:invalid', 'task', 'Invalid-date task'), changedAt: 'not-a-date' }],
+  edges: [...graphFixture.edges, edge('assigned', 'task:b', 'attempt:b'), edge('contains', 'attempt:b', 'agent:b'), edge('session', 'agent:b', 'session:a'), edge('session', 'agent:c', 'session:a'), edge('placed-in', 'session:a', 'pane:a'), edge('contains', 'epic:b', 'task:future')],
+};

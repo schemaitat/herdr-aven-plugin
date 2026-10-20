@@ -120,6 +120,20 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 .search-dialog li[aria-selected="true"] { background: #283352; border-color: #bdaaff; }
 .search-dialog li small { display: block; color: #b2c1d9; }
 .search-dialog ul { max-height: 38dvh; overflow: auto; margin-bottom: 12px; }
+.graph-shell .toolbar { position: relative; }
+.filter-popover summary { cursor: pointer; border: 1px solid #35415c; border-radius: 8px; background: #10192b; padding: 7px 10px; font-size: 12px; }
+.filter-options { position: absolute; right: 0; top: calc(100% + 6px); z-index: 10; width: min(420px, calc(100vw - 32px)); max-height: 60dvh; overflow: auto; padding: 14px; background: #10192b; border: 1px solid #8899c7; border-radius: 10px; box-shadow: 0 8px 24px #0008; display: grid; gap: 12px; }
+.filter-options fieldset { min-width: 0; margin: 0; padding: 10px; border: 1px solid #35415c; border-radius: 6px; }
+.filter-options legend { font-size: 12px; }
+.filter-options .type-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.graph-shell .filter-options label { min-width: 0; flex: none; }
+.graph-shell .type-options label { display: flex; align-items: center; gap: 5px; }
+.graph-shell .type-options input { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
+.filter-options select { width: 100%; min-width: 0; }
+.filter-options button { padding: 6px 10px; font-size: 12px; }
+.filter-options p { margin: 0; font-size: 12px; }
+.scope-chips { display: flex; flex-wrap: wrap; gap: 4px 8px; max-height: 48px; overflow: auto; margin-bottom: 6px; font-size: 11px; color: #b2c1d9; }
+.scope-chips > span { padding: 2px 6px; border-radius: 6px; background: #172238; overflow-wrap: anywhere; }
 @media (max-width: 650px) {
   .graph-shell { padding: 8px; gap: 6px; }
   .scope-strip .source-health { max-height: 58px; overflow: auto; }

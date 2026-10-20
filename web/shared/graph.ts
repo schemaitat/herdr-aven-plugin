@@ -17,6 +17,8 @@ export interface Entity {
   kind: NodeKind;
   label: string;
   state: string;
+  /** Source change time (ISO 8601), never collection/heartbeat observation time. */
+  changedAt?: string;
   boundary?: boolean;
   details: Record<string, string | number | boolean>;
   provenance: Provenance[];

@@ -3,7 +3,8 @@ import { graphFixture } from '../test/fixtures/graph-snapshot.js';
 import { largeGraph } from '../test/fixtures/large-graph.js';
 import type { Core } from 'cytoscape';
 import { orbitalLayout } from '../src/graph/layout.js';
-import { projectGraph } from '../src/graph/state.js';
+import { defaultFilters, projectGraph } from '../src/graph/state.js';
+import { allTypes } from './filter-controls.js';
 
 test('loading, empty, offline/retry, stale and optional-source outage states recover without breaking inspection', async ({ page }) => {
   let mode: 'empty' | 'offline' | 'optional' | 'stale' = 'empty';
@@ -35,6 +36,7 @@ test('cap is disclosed without losing search/list/detail discovery; entity and l
   await page.route('**/api/snapshot', route => route.fulfill({ json: largeGraph(560) }));
   await page.route('**/api/logs/**', route => route.fulfill({ json: { entries: Array.from({ length: 100 }, (_, index) => ({ id: `log:${index}`, source: 'dispatcher', observedAt: '2026-10-20T12:00:00Z', text: `Summary ${index}`, durable: true })), message: 'Fixture window', gap: false } }));
   await page.goto('/');
+  await allTypes(page);
   await expect(page.getByText(/Graph limited to 500 visible nodes · 60 additional matches/)).toBeVisible();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
@@ -62,16 +64,17 @@ test('same-turn dense projection and reset controls use the latest identities/po
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: fixture }));
   await page.goto('/');
+  await allTypes(page);
   await expect(page.locator('.graph-status')).toContainText('500 entities');
   // Both React updates land before the next canvas frame; reset must first
   // flush the pending projection rather than positioning removed epic nodes.
-  await page.getByLabel('Entity type').evaluate(element => {
-    const select = element as HTMLSelectElement;
-    select.value = 'task'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  await page.getByText('Filters', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'epic', exact: true }).evaluate(element => {
+    (element as HTMLInputElement).click();
     [...document.querySelectorAll('button')].find(button => button.textContent === 'Reset positions')!.click();
   });
   await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().length)).toBe(480);
-  const projected = projectGraph(fixture, { query: '', kind: 'task', state: 'all' }, new Set());
+  const projected = projectGraph(fixture, { ...defaultFilters(), kinds: new Set(['task']) }, new Set(), Date.parse(fixture.observedAt));
   const expected = Object.fromEntries(orbitalLayout(projected.nodes, projected.edges));
   expect(await page.locator('.graph-canvas').evaluate(element => Object.fromEntries((element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().map(node => [node.id(), node.position()])))).toEqual(expected);
   expect(errors).toEqual([]);

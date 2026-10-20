@@ -6,6 +6,9 @@ body { background: radial-gradient(ellipse at 80% 0%, #30275455, transparent 55%
 .graph-panel { border-color: #56618d; box-shadow: 0 0 24px #8265cf0d; }
 .graph-help { border-bottom: 1px solid #354365; background: #101729a6; line-height: 1.6; }
 .graph-status { border-top: 1px solid #354365; font-variant-numeric: tabular-nums; }
+.filter-popover[open] > summary { border-color: var(--accent); background: #283352; }
+.filter-options { background: var(--surface); border-color: var(--line); }
+.type-options input { accent-color: var(--accent); }
 .health { min-width: 0; overflow-wrap: anywhere; }
 .health.ok strong::before { content: '✓ '; }
 .health.unavailable strong::before, .health.stale strong::before { content: '⚠ '; }
