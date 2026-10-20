@@ -26,5 +26,5 @@ body { background: radial-gradient(ellipse at 80% 0%, #30275455, transparent 55%
 .list-pages button { padding: 8px; }
 .telemetry { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
 @media (max-width: 900px) { .telemetry { grid-template-columns: 1fr; gap: 0; } .toolbar { flex-wrap: wrap; } }
-@media (max-width: 650px) { main { padding: 20px 4%; } .graph-canvas { height: 420px; } .toolbar label { min-width: 0; flex: 1; } .graph-controls { width: 100%; } .details { max-height: none; } .entity { gap: 10px; } }
+@media (max-width: 650px) { .toolbar label { min-width: 0; flex: 1; } .graph-controls { width: 100%; } .details { max-height: none; } .entity { gap: 10px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

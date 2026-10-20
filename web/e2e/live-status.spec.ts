@@ -32,6 +32,7 @@ test('API activity transitions within five seconds without task-status/camera/se
     return route.fulfill({ json: live(state) });
   });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   const task = entities.getByRole('button', { name: /task task:one/ });
   await expect(task).toContainText('Task status: todo · Working');
@@ -39,7 +40,9 @@ test('API activity transitions within five seconds without task-status/camera/se
   await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   const before = await visualState(page);
   const activity = page.getByRole('region', { name: 'Live activity' });
+  await page.getByRole('button', { name: 'Live activity', exact: true }).click();
   await expect(activity.getByText('Approval: true · Input: true', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   state = 'idle';
   await expect(task).not.toContainText('Working', { timeout: 5000 });
   await expect(task).toContainText('Task status: todo');
@@ -48,6 +51,7 @@ test('API activity transitions within five seconds without task-status/camera/se
   await expect(task).toContainText('Working', { timeout: 5000 });
   expect(await visualState(page)).toEqual(before);
   await entities.getByRole('button', { name: /session session:opencode:ses_one/ }).click();
+  await page.getByRole('button', { name: 'Live activity', exact: true }).click();
   await expect(activity.getByText(/Herdr terminal observation: idle/)).toBeVisible();
   await expect(activity.getByText('Working · current', { exact: true })).toBeVisible();
   expect(await activity.textContent()).not.toContain('private prompt');
@@ -60,12 +64,15 @@ test('disconnected browser hard-expires Working and recovers authoritative state
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => available ? route.fulfill({ json: live('working') }) : route.fulfill({ status: 503 }));
   await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const task = page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task task:one/ });
   await expect(task).toContainText('Working'); await task.click();
   available = false;
   await expect(task).not.toContainText('Working', { timeout: 6000 });
+  await page.getByRole('button', { name: 'Live activity', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Live activity' }).getByText('unknown · stale', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('region', { name: 'Live activity' }).locator('.waiting')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await expect(task).not.toContainText('Awaiting');
   expect((await visualState(page)).working).toBe('no');
   available = true;
@@ -88,6 +95,7 @@ test('authenticated stream reconnects/resnapshots version gaps, ignores duplicat
     return route.fulfill({ json: { entries: [{ id: `log-${logReads}`, source: 'opencode', sessionId: 'ses_one', cursor: String(logReads), observedAt: new Date().toISOString(), text: hostile, durable: true }], next: logReads === 1 ? 'fixture-cursor' : undefined, message: 'Durable summaries; payloads omitted', gap: true } });
   });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   await expect(entities.getByRole('button', { name: /task task:one/ })).toContainText('Working');
   await expect.poll(() => snapshots).toBeGreaterThanOrEqual(2);
@@ -95,6 +103,7 @@ test('authenticated stream reconnects/resnapshots version gaps, ignores duplicat
   expect(logReads).toBe(0);
   await entities.getByRole('button', { name: /session session:opencode:ses_one/ }).click();
   const history = page.getByRole('region', { name: 'Event history' });
+  await page.getByRole('button', { name: 'Event history', exact: true }).click();
   await history.getByRole('button', { name: 'Load / refresh history' }).click();
   await expect(history.getByText(hostile, { exact: false })).toBeVisible();
   await history.getByRole('button', { name: 'Load next page' }).click();

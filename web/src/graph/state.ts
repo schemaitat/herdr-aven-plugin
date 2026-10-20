@@ -1,5 +1,6 @@
 import type { Entity, GraphSnapshot } from '../../shared/graph.js';
 import { relationships, waitingCue, type GraphEdge } from './elements.js';
+import { searchEntities } from './search.js';
 
 export interface Filters { query: string; kind: string; state: string }
 const order = ['epic', 'task', 'attempt', 'agent', 'session', 'workspace', 'pane', 'worktree', 'boundary'];
@@ -11,9 +12,9 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
   for (const edge of snapshot.edges) {
     if (edge.kind === 'contains' && collapsed.has(edge.source) && byId.get(edge.source)?.kind === 'epic' && byId.get(edge.target)?.kind === 'task') parent.set(edge.target, edge.source);
   }
-  const nodes = snapshot.nodes.filter(node => !parent.has(node.id) &&
-    (filters.kind === 'all' || node.kind === filters.kind) && (filters.state === 'all' || node.state === filters.state) &&
-    `${node.label} ${node.id}`.toLowerCase().includes(filters.query.toLowerCase())).sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.label.localeCompare(b.label));
+  const eligible = snapshot.nodes.filter(node => !parent.has(node.id) &&
+    (filters.kind === 'all' || node.kind === filters.kind) && (filters.state === 'all' || node.state === filters.state));
+  const nodes = filters.query.trim() ? searchEntities(eligible, filters.query) : eligible.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.label.localeCompare(b.label));
   const visibleNodes = nodes.slice(0, VISIBLE_NODE_CAP);
   const cappedIds = new Set(nodes.slice(VISIBLE_NODE_CAP).map(node => node.id));
   const ids = new Set(visibleNodes.map(node => node.id));

@@ -8,10 +8,10 @@ export interface GraphMemory {
   commandSerial?: number;
 }
 
-export function syncElements(cy: Core, next: ElementDefinition[], positions: Map<string, Position>, initial: Map<string, Position>) {
+export function syncElements(cy: Core, next: ElementDefinition[], positions: Map<string, Position>, initial: Map<string, Position>, remember = true) {
   const ids = new Set(next.map(element => element.data.id));
   cy.batch(() => {
-    cy.nodes().forEach(node => { positions.set(node.id(), { ...node.position() }); });
+    if (remember) cy.nodes().forEach(node => { positions.set(node.id(), { ...node.position() }); });
     cy.elements().filter(element => !ids.has(element.id())).remove();
     // Nodes precede edges; retained nodes never receive a new position or layout.
     for (const element of next) {

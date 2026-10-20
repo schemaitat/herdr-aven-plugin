@@ -10,6 +10,7 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   const started = performance.now();
   await page.goto('/');
   await expect(page.locator('.graph-status')).toContainText('500 entities · 1000 connections');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /epic Orbit 000/ }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Orbit 000', exact: true })).toBeVisible();
   await page.locator('.graph-canvas').evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));

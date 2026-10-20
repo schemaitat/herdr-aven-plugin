@@ -26,10 +26,13 @@ function readableLabels(cy: Core) {
 
 export function GraphView({ nodes, edges, selected, onSelect, onToggle, command, memory }: {
   nodes: Entity[]; edges: GraphEdge[]; selected?: string; onSelect: (id: string) => void; onToggle: (id: string) => void;
-  command: { kind: 'fit' | 'reset' | 'in' | 'out'; serial: number };
+  command: { kind: 'fit' | 'reset' | 'in' | 'out' | 'restore'; serial: number; camera?: GraphMemory['camera'] };
   memory: GraphMemory;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const memoryRef = useRef(memory);
+  memoryRef.current = memory;
+  const syncedMemory = useRef(memory);
   const core = useRef<Core>(undefined);
   const pending = useRef<{ frame: number; apply: () => void }>(undefined);
   const callbacks = useRef({ onSelect, onToggle });
@@ -46,18 +49,26 @@ export function GraphView({ nodes, edges, selected, onSelect, onToggle, command,
     const select = (event: cytoscape.EventObject) => callbacks.current.onSelect(event.target.id());
     const toggle = (event: cytoscape.EventObject) => { if (event.target.data('kind') === 'epic') callbacks.current.onToggle(event.target.id()); };
     let zoomTimer: ReturnType<typeof setTimeout>;
-    const viewport = () => { clearTimeout(zoomTimer); zoomTimer = setTimeout(() => { readableLabels(cy); setZoom(cy.zoom()); }, 100); };
+    const rememberCamera = () => { if (fitted.current) memoryRef.current.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } }; };
+    const viewport = () => { rememberCamera(); clearTimeout(zoomTimer); zoomTimer = setTimeout(() => { readableLabels(cy); setZoom(cy.zoom()); }, 100); };
     cy.on('tap', 'node, edge', select);
     cy.on('dbltap', 'node', toggle);
     cy.on('zoom', viewport);
+    const remember = () => {
+      const current = memoryRef.current;
+      cy.nodes().forEach(node => { current.positions.set(node.id(), { ...node.position() }); });
+      if (fitted.current) current.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } };
+    };
+    cy.on('pan', rememberCamera);
+    cy.on('dragfree', remember);
     const resize = new ResizeObserver(() => cy.resize());
     resize.observe(container.current!);
     return () => {
-      cy.nodes().forEach(node => { memory.positions.set(node.id(), { ...node.position() }); });
-      if (fitted.current) memory.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } };
+      remember();
       resize.disconnect();
       clearTimeout(zoomTimer);
       cy.off('tap', 'node, edge', select); cy.off('dbltap', 'node', toggle); cy.off('zoom', viewport);
+      cy.off('pan', rememberCamera); cy.off('dragfree', remember);
       cy.destroy(); core.current = undefined; fitted.current = false;
     };
   }, []);
@@ -71,9 +82,14 @@ export function GraphView({ nodes, edges, selected, onSelect, onToggle, command,
       const layoutStart = performance.now();
       const positions = needsLayout ? orbitalLayout(nodes, edges) : new Map();
       const syncStart = performance.now();
-      syncElements(cy, elements(nodes, edges), memory.positions, positions);
+      // Crossing a search transaction must not save preview-only geometry into
+      // the durable overview memory (including nodes introduced by a refresh).
+      syncElements(cy, elements(nodes, edges), memory.positions, positions, syncedMemory.current === memory);
+      syncedMemory.current = memory;
       highlight(cy, selection.current);
       if (!fitted.current && nodes.length) { cy.fit(undefined, 50); fitted.current = true; }
+      cy.nodes().forEach(node => { memory.positions.set(node.id(), { ...node.position() }); });
+      if (fitted.current) memory.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } };
       readableLabels(cy);
       setZoom(cy.zoom());
       // One latest sample per operation, not an unbounded telemetry history.
@@ -107,12 +123,12 @@ export function GraphView({ nodes, edges, selected, onSelect, onToggle, command,
       memory.positions.clear();
       cy.nodes().positions(node => layout.get(node.id())!);
       cy.fit(undefined, 50);
-    } else if (command.kind === 'fit') cy.fit(undefined, 50);
+    } else if (command.kind === 'restore') { if (command.camera) cy.viewport(command.camera); }
+    else if (command.kind === 'fit') cy.fit(undefined, 50);
     else cy.zoom({ level: cy.zoom() * (command.kind === 'in' ? 1.25 : 0.8), renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
     // Commands, not data refreshes, change camera/layout.
   }, [command]);
   return <section className="graph-panel" aria-label="Relationship graph">
-    <p className="graph-help">Drag bubbles to arrange · Drag space to pan · Scroll to zoom · Double-click an epic to collapse · Select an edge for its evidence. Keyboard alternative: Entities below.</p>
     <div ref={container} className="graph-canvas" aria-hidden="true" />
     <p className="graph-status" role="status">{nodes.length} entities · {edges.length} connections · Zoom {Math.round(zoom * 100)}%</p>
   </section>;

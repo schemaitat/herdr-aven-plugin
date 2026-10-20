@@ -8,7 +8,7 @@ type GraphContainer = HTMLElement & { _cyreg: { cy: Core } };
 async function graph(page: Page) {
   return page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as GraphContainer)._cyreg.cy;
-    return { nodes: cy.nodes().map(node => node.id()), zoom: cy.zoom(), pan: cy.pan(), positions: Object.fromEntries(cy.nodes().map(node => [node.id(), node.position()])), selected: cy.elements('.selected').map(node => node.id()) };
+    return { nodes: cy.nodes().map(node => node.id()).sort(), zoom: cy.zoom(), pan: cy.pan(), positions: Object.fromEntries(cy.nodes().map(node => [node.id(), node.position()])), selected: cy.elements('.selected').map(node => node.id()) };
   });
 }
 async function point(page: Page, id?: string) {
@@ -30,6 +30,7 @@ test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
   await expect(page.locator('.graph-status')).toContainText('14 entities');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
 });
 
 test('bubble shapes, typed directed relationships, derived provenance and graph/list selection', async ({ page }, info) => {
@@ -176,4 +177,63 @@ test('ordinary renders retain one instance; disposal/remount destroys old core a
     expect(listeners.filter(event => event === 'zoom')).toHaveLength(1);
   }
   expect(errors).toEqual([]);
+});
+
+test('slash and visible search preview matching scope, arrows select, Escape restores camera/selection and Enter commits', async ({ page }) => {
+  const trigger = page.getByRole('button', { name: 'Search /', exact: true });
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
+  await page.getByLabel('Search entities', { exact: true }).fill('standalone');
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const baseline = await graph(page);
+  await trigger.focus(); await page.keyboard.press('/');
+  const dialog = page.getByRole('dialog', { name: 'Search entities' });
+  const query = dialog.getByRole('combobox', { name: 'Preview query' });
+  await expect(query).toBeFocused();
+  await query.fill('bd gh');
+  await expect.poll(async () => (await graph(page)).nodes).toEqual(['task:b']);
+  await expect(page.locator('#entities .entity')).toHaveCount(1);
+  await page.keyboard.press('ArrowDown');
+  await expect(dialog.getByRole('option', { name: /Build graph/ })).toHaveAttribute('aria-selected', 'true');
+  expect((await graph(page)).selected).toEqual(['task:b']);
+  await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.viewport({ zoom: .9, pan: { x: 42, y: 67 } }));
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible(); await expect(trigger).toBeFocused();
+  expect(await graph(page)).toEqual(baseline);
+  await trigger.click();
+  await query.fill('rv gh'); await page.keyboard.press('ArrowUp'); await page.keyboard.press('Enter');
+  await expect(dialog).not.toBeVisible(); await expect(trigger).toBeFocused();
+  await expect(page.getByLabel('Search entities', { exact: true })).toHaveValue('rv gh');
+  expect((await graph(page)).nodes).toEqual(['task:c']);
+  expect((await graph(page)).selected).toEqual(['task:c']);
+});
+
+test('search ignores editable, modified and IME slash; query baseline survives authoritative live refresh and vanished IDs', async ({ page }) => {
+  const search = page.getByLabel('Search entities', { exact: true });
+  await search.focus(); await page.keyboard.press('/');
+  await expect(search).toHaveValue('/'); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await search.fill('');
+  for (const selector of ['input', 'select']) {
+    await page.locator(selector).first().evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true })));
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  }
+  await page.evaluate(() => {
+    for (const tag of ['textarea', 'div']) {
+      const element = document.createElement(tag); element.contentEditable = 'true'; document.body.append(element);
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true })); element.remove();
+    }
+    for (const options of [{ isComposing: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true }]) document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, ...options }));
+  });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
+  await page.getByRole('button', { name: 'Search /', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Preview query' }).fill('build graph');
+  await page.keyboard.press('ArrowDown');
+  let refreshed = 0;
+  await page.route('**/api/snapshot', route => { refreshed++; return route.fulfill({ json: { ...graphFixture, nodes: graphFixture.nodes.filter(node => node.id !== 'task:solo' && node.id !== 'task:b') } }); });
+  await expect.poll(() => refreshed, { timeout: 10000 }).toBeGreaterThan(0);
+  await expect(page.getByRole('dialog').getByText('No matches.', { exact: false })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(search).toHaveValue('');
+  expect((await graph(page)).selected).toEqual([]);
+  expect((await graph(page)).nodes).not.toContain('task:solo');
 });

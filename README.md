@@ -76,6 +76,28 @@ facets and may coexist with Working. Herdr observations remain inspectable even
 when they contradict the API. Missing/unsupported API data is unknown, not idle
 or done; observations expire after 4.5 seconds, including in disconnected browsers.
 
+The graph fills the viewport rather than stacking dashboard panels. The compact
+scope strip keeps connection, source health, stale/error and canvas-cap summaries
+visible. **Entities & details** opens a non-modal inspector with both the paged
+list and canonical relationship evidence. **Live activity**, **Event history**
+and **Help & legend** open the other inspection surfaces on demand. Escape or
+**Close panel** closes the inspector and returns focus to its opener; background
+graph controls remain reachable. The skip link opens and focuses Entities.
+**Hide graph** and a failed optional canvas load both expose the list/detail path.
+
+Press **/** outside editable controls, or choose **Search /**, for transactional
+search. Matching is case-insensitive over label, ref and ID: exact matches rank
+before prefixes, then subsequence matches, with stable ID ties. Queries are bounded
+to 256 characters and each field to 4,096 characters; no search service is used.
+Drafts preview the same graph/list scope. Up/Down previews a result; Enter or
+**Apply search** commits the query and active result (the first match if none is
+active). Escape or **Cancel search** restores the previous query, selection and
+camera and returns keyboard focus. Live refreshes remain authoritative: vanished
+IDs are not resurrected. Preview never saves temporary positions. The dialog
+windows 40 results around the active result; arrows can traverse every match.
+The inline Search entities field also filters directly, without a transaction.
+Type/state defaults remain All types/All states.
+
 **Graph guide.** Large violet circular epic hubs and smaller blue task bubbles
 form deterministic orbital groups (concentric rings for larger epics). Shapes
 distinguish agents, attempts, sessions, panes and worktrees; labels include the

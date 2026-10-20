@@ -37,3 +37,58 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await expect(page.getByLabel('Search entities')).toBeVisible();
   await page.screenshot({ path: info.outputPath('cosmos-narrow.png'), fullPage: true });
 });
+
+test('viewport shell has no overflow; drawers return focus, leave background controls reachable and support list-only use', async ({ page }, info) => {
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
+  await page.goto('/');
+  const entities = page.getByRole('button', { name: 'Entities & details', exact: true });
+  await expect(page.locator('.graph-status')).toContainText('14 entities');
+  const camera = () => page.locator('.graph-canvas').evaluate(element => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    return { zoom: cy.zoom(), pan: cy.pan() };
+  });
+  for (const size of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const beforeResize = await camera();
+    await page.setViewportSize(size);
+    await expect.poll(camera).toEqual(beforeResize);
+    await expect(page.getByRole('region', { name: 'Entities', exact: true })).toHaveCount(0);
+    for (const name of ['Entity type', 'Source state']) {
+      const control = await page.getByLabel(name).boundingBox();
+      expect(control!.width).toBeGreaterThanOrEqual(100);
+      expect(control!.x).toBeGreaterThanOrEqual(0);
+      expect(control!.x + control!.width).toBeLessThanOrEqual(size.width);
+    }
+    await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
+    await expect.poll(() => page.locator('.graph-canvas').evaluate(element => {
+      const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+      return Number.parseFloat(cy.getElementById('task:b').style('font-size')) * cy.zoom();
+    })).toBeGreaterThanOrEqual(9.5);
+    await page.screenshot({ path: info.outputPath(`shell-${size.width}.png`) });
+    const canvas = await page.locator('.graph-canvas').boundingBox();
+    expect(canvas!.height).toBeGreaterThan(size.height * .45);
+    await entities.click();
+    await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
+    await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Fit graph', exact: true }).focus();
+    await expect(page.getByRole('button', { name: 'Fit graph', exact: true })).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
+    await page.keyboard.press('Escape'); await expect(entities).toBeFocused();
+  }
+  await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+  await expect(page.locator('.graph-canvas')).toHaveCount(0);
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
+  await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+});
+
+test('failed lazy canvas exposes the list/details fallback', async ({ page }) => {
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
+  await page.route('**/assets/GraphView-*.js', route => route.abort());
+  await page.goto('/');
+  await expect(page.getByRole('region', { name: 'Entities', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /Standalone investigation/ }).click();
+  await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+});

@@ -13,6 +13,7 @@ test('loading, empty, offline/retry, stale and optional-source outage states rec
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => mode === 'offline' ? route.fulfill({ status: 503 }) : route.fulfill({ json: mode === 'empty' ? { ...graphFixture, nodes: [], edges: [] } : { ...graphFixture, health: [{ source: 'aven', status: mode === 'stale' ? 'stale' : 'ok', observedAt: graphFixture.observedAt, message: mode === 'stale' ? 'Retained previous Aven snapshot' : 'Tasks available' }, ...['herdr', 'opencode', 'dispatcher'].map(source => ({ source, status: 'unavailable', observedAt: graphFixture.observedAt, message: 'Optional capability unavailable' }))] } }));
   await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await expect(page.getByText('Reading local sources…')).toBeVisible();
   release();
   await expect(page.getByText('No entities match. Broaden the filters or check source health.')).toBeVisible();
@@ -35,6 +36,7 @@ test('cap is disclosed without losing search/list/detail discovery; entity and l
   await page.route('**/api/logs/**', route => route.fulfill({ json: { entries: Array.from({ length: 100 }, (_, index) => ({ id: `log:${index}`, source: 'dispatcher', observedAt: '2026-10-20T12:00:00Z', text: `Summary ${index}`, durable: true })), message: 'Fixture window', gap: false } }));
   await page.goto('/');
   await expect(page.getByText(/Graph limited to 500 visible nodes · 60 additional matches/)).toBeVisible();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   await expect(entities.locator('li')).toHaveCount(40);
   for (let index = 0; index < 13; index++) await entities.getByRole('button', { name: 'Next entities', exact: true }).click();
@@ -45,6 +47,7 @@ test('cap is disclosed without losing search/list/detail discovery; entity and l
   await expect(page.locator('.graph-status')).toContainText('1 entities');
   await expect(last).toHaveAttribute('aria-pressed', 'true');
   const history = page.getByRole('region', { name: 'Event history' });
+  await page.getByRole('button', { name: 'Event history', exact: true }).click();
   await history.getByRole('button', { name: 'Load / refresh history' }).click();
   await expect(history.locator('li')).toHaveCount(40);
   await history.getByRole('button', { name: 'Next history summaries' }).click();

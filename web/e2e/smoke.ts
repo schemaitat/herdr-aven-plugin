@@ -6,6 +6,7 @@ test('real scoped sources render with keyboard list/details and protected API', 
   page.on('response', response => { if (response.status() >= 400) console.log(`Browser asset error: ${response.status()} ${new URL(response.url()).pathname}`); });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Project explorer' })).toBeVisible();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   await expect(entities.locator('button.entity').first()).toBeVisible({ timeout: 20000 });
   const first = entities.locator('button.entity').first();
@@ -45,6 +46,7 @@ test('untrusted labels are text and unavailable sources remain visible', async (
   } }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('button', { name: new RegExp('img src=x') }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: hostile, exact: true })).toBeVisible();
   await expect(page.getByText('<script>alert(1)</script>', { exact: true })).toBeVisible();
