@@ -24,3 +24,30 @@ fmt:
 
 doctor:
     cargo run -- doctor
+
+# Optional local read-only dashboard (Node 24 LTS).
+ui-install:
+    npm --prefix web ci
+
+ui-dev:
+    npm --prefix web run dev
+
+ui-check:
+    npm --prefix web run check
+
+ui-test:
+    npm --prefix web test
+
+ui-build:
+    npm --prefix web run build
+
+ui-start:
+    npm --prefix web start
+
+# Requires a built UI and Chromium (or UI_CHROME=/path/to/chrome).
+ui-test-browser:
+    npm --prefix web run test:browser
+
+# Deterministic graph, live, accessibility, outage and measured performance fixtures.
+ui-test-e2e:
+    npm --prefix web run test:e2e

@@ -1,0 +1,15 @@
+{
+  "snapshot": { "result": { "snapshot": {
+    "workspaces": [
+      { "workspace_id": "w1", "worktree": { "repo_root": "/repo", "checkout_path": "/repo" } },
+      { "workspace_id": "w2", "worktree": { "repo_root": "/repo", "checkout_path": "/repo-phase1" } },
+      { "workspace_id": "w3", "worktree": { "repo_root": "/private", "checkout_path": "/private" } }
+    ],
+    "panes": [
+      { "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "cwd": "/repo", "agent": "opencode", "agent_status": "working", "agent_session": { "kind": "id", "value": "ses_root" } },
+      { "pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "cwd": "/repo-phase1", "agent": "opencode", "agent_status": "blocked", "agent_session": { "kind": "id", "value": "ses_worker" } },
+      { "pane_id": "w3:p1", "workspace_id": "w3", "tab_id": "w3:t1", "cwd": "/private", "agent": "opencode", "agent_status": "working", "terminal_title": "PRIVATE UNRELATED DATA" }
+    ]
+  } } },
+  "worktrees": { "result": { "source": { "repo_root": "/repo" }, "worktrees": [ { "path": "/repo", "branch": "main" }, { "path": "/repo-phase1", "branch": "phase1" } ] } }
+}

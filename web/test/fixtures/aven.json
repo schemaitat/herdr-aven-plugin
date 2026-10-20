@@ -1,0 +1,12 @@
+{
+  "tasks": [
+    { "id": "ROOT01", "ref": "DEMO-ROOT", "title": "A project epic", "project": "demo", "status": "active", "is_epic": true, "epic_children": [{ "id": "TASK01", "ref": "DEMO-ONE" }] },
+    { "id": "TASK01", "ref": "DEMO-ONE", "title": "Child task", "project": "demo", "status": "todo", "is_epic": false, "epic_parent": { "id": "ROOT01", "ref": "DEMO-ROOT" } },
+    { "id": "TASK02", "ref": "DEMO-TWO", "title": "Standalone deferred", "project": "demo", "status": "todo", "is_epic": false, "available_at": "2030-01-01T00:00:00Z" }
+  ],
+  "contexts": [
+    { "task": { "id": "ROOT01", "display_ref": "DEMO-ROOT", "status": "active" }, "project": { "key": "demo" }, "workspace": { "key": "default" }, "metadata": {}, "dependencies": { "depends_on": [], "blocks": [] }, "epic_children": [{ "id": "TASK01", "ref": "DEMO-ONE" }] },
+    { "task": { "id": "TASK01", "display_ref": "DEMO-ONE", "status": "todo" }, "project": { "key": "demo" }, "workspace": { "key": "default" }, "metadata": {}, "dependencies": { "depends_on": [{ "id": "TASK02", "display_ref": "DEMO-TWO" }, { "id": "OUTSIDE", "display_ref": "OTHER-ONE", "title": "PRIVATE OTHER PROJECT TITLE" }], "blocks": [] }, "epic_parent": { "id": "ROOT01", "ref": "DEMO-ROOT" }, "related": [{ "task_id": "TASK02", "display_ref": "DEMO-TWO" }] },
+    { "task": { "id": "TASK02", "display_ref": "DEMO-TWO", "status": "todo" }, "project": { "key": "demo" }, "workspace": { "key": "default" }, "metadata": {}, "dependencies": { "depends_on": [], "blocks": [{ "id": "TASK01", "display_ref": "DEMO-ONE" }] } }
+  ]
+}

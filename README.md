@@ -38,6 +38,251 @@ unmanaged settings are preserved; conflicting settings are reported.
 
 ## Getting started
 
+### Optional read-only local dashboard
+
+The separate `web/` package requires **Node 24 LTS and npm**; terminal plugin
+users do not need Node. From this repository's primary or phase checkout:
+
+Install Node 24 using your existing Node version manager or the official
+[Node.js downloads](https://nodejs.org/en/download); npm is included. Verify
+`node --version` is `v24.x` and `npm --version` works. The locked package supports
+`>=24 <25`; the recorded baseline uses Node 24.22.0 / npm 11.19.1. `ui-install`
+uses `npm ci` (a reproducible clean dependency install), not a global app install.
+
+```sh
+just ui-install
+just ui-dev
+# Open http://127.0.0.1:4318 explicitly; Ctrl+C stops the server.
+```
+
+For a production build (same-origin Fastify server, no Vite listener):
+
+```sh
+just ui-check
+just ui-test
+just ui-build
+just ui-start
+```
+
+The explorer lists project tasks/epics and their typed relationships, dispatcher
+attempts/roles, API session identities, Herdr panes/workspaces, and Git worktrees.
+Search, type/state filters, keyboard-selectable entries, related-entity buttons,
+and a provenance/detail panel provide the non-canvas inspection path. Task
+acceptance, persisted attempt state, and terminal-observed state are separate.
+Live OpenCode V2 activity drives **Working** indicators on linked sessions,
+agents and tasks, including pane-less sessions. A task badge means linked
+execution, not acceptance: Aven status never changes. Approval/input are separate
+facets and may coexist with Working. Herdr observations remain inspectable even
+when they contradict the API. Missing/unsupported API data is unknown, not idle
+or done; observations expire after 4.5 seconds, including in disconnected browsers.
+
+**Graph guide.** Large violet circular epic hubs and smaller blue task bubbles
+form deterministic orbital groups (concentric rings for larger epics). Shapes
+distinguish agents, attempts, sessions, panes and worktrees; labels include the
+entity kind and source state, so color is never the only cue. The expandable
+legend explains each relationship: containment ends in a circle; **blocks**
+points **from blocker to blocked task**, not the reverse. Dashed derived-agent
+dependencies come only from recorded task blockers plus assignments; dashed
+assignment, dotted placement and diamond worktree endpoints stay distinct.
+Click an edge for its direction, source identities and evidence. No connection
+or dependency is inferred from visual proximity.
+
+Drag bubbles or the background, wheel to zoom, or use Zoom/Fit/Reset controls.
+Double-click an epic or use its list button to collapse/expand. Collapsed
+external relationships are explicitly summarized at the hub, not invented;
+internal blockers remain in details. Selection highlights its neighborhood.
+Updates do not reset the camera, selection or manually positioned nodes. Window
+resizing also preserves the camera: use **Fit graph** after narrowing a window.
+**Hide graph** leaves the list/detail route usable without a canvas. A keyboard
+skip link bypasses the graph; list buttons and related-entity buttons share the
+same selection. Focus is outlined and reduced-motion preferences disable
+transitions; there are no particle/starfield or activity animations.
+
+The canvas has an explicit **500-visible-node budget**, applied after scoped
+search/type/status filters and collapse. A warning gives additional matches and
+off-canvas relationship counts; scope totals and source relationships are never
+silently reduced. **Entities** retains every matching entity supplied by the
+bounded source snapshot, including those beyond the canvas budget; select one
+there for full details, or narrow search to its label/identity to reveal it on
+the graph. This is not a claim of unlimited upstream task coverage (see source
+caps below). Large entity, relationship and event/history lists use explicit
+40-row page windows with Previous/Next buttons and position/total announcements:
+bounded DOM, variable-height text and complete keyboard traversal without a
+scroll-only virtual list. Live/history retention remains separately capped.
+At dense overview scale, graph labels are suppressed until zoomed to a legible
+size; the list/details remain readable at every zoom. Viewport texture caching
+and pixel ratio 1 bound canvas cost; labels settle after zooming stops. Fresh
+Working (●) and awaiting approval/input (Ⅱ) cues are shown separately, and may
+coexist; neither changes the task's source status.
+
+Startup settings are trusted environment variables, never browser parameters:
+
+| Setting | Default / behavior |
+| --- | --- |
+| `UI_PROJECT` | Primary checkout directory name (`herdr-aven-plugin` here); set explicitly if your Aven project key differs |
+| `UI_WORKSPACE` | `default`; set explicitly for another Aven workspace |
+| `UI_PORT` | `4318` (unprivileged ports only) |
+| `UI_HOST` | Only `127.0.0.1` is accepted |
+| `AVEN_DISPATCH_STORE` | Existing configured store; relative paths resolve from the repository checkout. Otherwise reads the primary checkout's `.aven-dispatch/state.json` |
+| `UI_OPENCODE_URL` | Explicit existing OpenCode server origin; takes precedence over `OPENCODE_SERVER_URL` and local discovery. No fallback to a different service when this server fails |
+| `UI_OPENCODE_AUTHORIZATION` | Server-only Authorization header for that explicit server; otherwise `OPENCODE_TOKEN` (Bearer) or `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` (Basic, username defaults to `opencode`) |
+| `UI_OPENCODE_SERVICE_FILE` | Optional trusted registration file for local discovery; otherwise `$XDG_STATE_HOME/opencode/service.json` or `~/.local/state/opencode/service.json`. Its origin is checked for loopback before the client's authenticated health probe |
+
+Run inside Herdr to inherit its existing session/socket context. Outside Herdr,
+the Aven explorer still works and topology is labelled unavailable. The server
+does not start or control any upstream service. Missing/malformed optional data
+is visible in source-health cards. Aven outages retain the previous snapshot
+with an explicit stale label; connection failures retain selection and label
+displayed data stale.
+
+Without an explicit server URL, the pinned V2 client uses `Service.discover()`
+and `Service.headers()` for the existing authenticated local service, **never**
+`ensure()` or `stop()`. A CLI's `--server` flag is not inherited by a separately
+started dashboard: configure the same origin/authentication using the startup
+settings above. Credentials stay in the server process, not browser storage,
+requests, logs or query strings. The installed server's OpenAPI document gates
+optional events, waiting facets, parent-filtered child reads and durable logs.
+Only dispatcher-linked sessions and explicitly related API children are read;
+Herdr terminal detection alone does not authorize session reads.
+
+Open the printed **127.0.0.1 URL** directly (not `localhost` or a remote tunnel).
+The page automatically requests `/bootstrap` from that same origin, keeps its
+per-run API bearer token in memory, then authenticates snapshot/stream/history
+reads. There is no login URL, token copy/paste or browser-stored upstream secret.
+Restarting the server invalidates that token; automatic retry/bootstrap obtains
+the new one. Use a trusted local browser/profile: bootstrap protects the
+same-origin boundary, not other software running as your local user. Do not
+publish the listener, reverse-proxy it publicly or paste service credentials into
+browser URLs. The dashboard does not launch a browser automatically.
+
+Reads use explicit project/workspace scope, a 500-item cap for each of Aven's
+available and upcoming lists, and at most 80 context hydrations per snapshot
+(four concurrent, four-second hydration admission budget). Contexts cache for five seconds, with actual read timestamps in
+provenance and rotating hydration when coverage exceeds the batch. One collector
+serves every browser: API and Herdr lanes poll independently at approximately
+two seconds; Aven/dispatcher use a five-second lane. No lane overlaps itself.
+Authenticated same-origin fetch/SSE delivers versioned complete snapshots and
+health heartbeats; clients reconnect with backoff, resnapshot on gaps/restarts,
+and fall back to polling. Updates preserve graph camera, positions and selection.
+Reaching a list cap or missing context is labelled **incomplete**, never silently
+treated as full coverage. Cross-project/unhydrated/missing references remain
+boundary stubs, without reading their details. CLI reads time out after four
+seconds and allow at most 4 MiB combined stdout/stderr; store reads are bounded
+to 4 MiB. API activity reads have four workers, a 1.9-second collection budget
+and a 64-session cap, with incomplete coverage explicitly labelled. Child lists
+are parent-filtered and capped at 32, with propagation through at most four explicit
+ancestry levels. These bounds may require a narrower scope;
+missing observations are never presented as confirmed inactivity.
+
+Select an entity to inspect live event summaries; select a linked session or
+dispatcher attempt and explicitly load **Event history** for durable summaries.
+Live-only subscriptions have neither replay nor automatic upstream reconnection;
+the bridge re-subscribes and reports reconnect gaps.
+An upstream event read idle for 30 seconds is renewed and labelled continuity
+unverified (not an API activity outage); received SSE heartbeat/comment bytes reset
+that watchdog. Polling remains the authority/freshness fallback throughout.
+History is 100 entries/page, with source/session/attempt cursors, deduplication,
+and at most 1,000 retained live
+events (and 1,000 displayed history entries per selection). Experimental durable
+logs may be unavailable. Linked dispatcher notes are a fallback: the installed
+Aven CLI supplies a bounded context window, not upstream note pagination, so
+older history is explicitly reported as potentially unavailable. History reads
+share a two-request limit and 32-page/five-second cache across browsers. Prompt,
+reasoning, tool payloads and raw note bodies are omitted; summaries strip terminal
+controls, redact known credentials, cap text at 2,048 characters and render as
+untrusted text. Slow SSE readers are disconnected instead of queued without bound;
+there are at most 16 local streaming connections.
+
+Security: the server rejects hostile Host/Origin and cross-site browser requests,
+disables CORS, and authenticates API reads with an in-memory per-run token obtained
+by same-origin bootstrap (never a URL token or service credential). It has no
+command/path/URL proxy and accepts no API query parameters or write methods.
+Sources use fixed read command shapes without a shell; neither `reconcile` nor
+`list --running` is used. The store is read directly without its mutating lock
+path; scoped Aven recovery metadata is merged by task/workflow/reset generation.
+Obsolete generations and incomplete resets are rejected. Raw store snapshots,
+invocations, auth headers, pending prompts, and Aven note bodies never reach the
+browser. Labels and values are rendered as untrusted text. This is a local,
+single-user inspection tool, not a remote or multi-user hosting configuration.
+
+Unit/integration tests include source fixtures, identity/merge contracts, a
+stub-executable read-command audit, source non-mutation, and security/timeout/
+output-bound checks. An additional real-source Chromium smoke test checks both
+list/details and the API boundary (requires Aven project entities):
+
+```sh
+# Once, if Chromium is not already installed:
+cd web
+npx playwright install chromium
+cd ..
+just ui-test-browser
+# Or use an existing browser, without downloading one:
+UI_CHROME=/usr/bin/google-chrome just ui-test-browser
+# Deterministic graph/live, accessibility/outage and performance cases:
+UI_CHROME=/usr/bin/google-chrome just ui-test-e2e
+# Verify the development server too:
+UI_CHROME=/usr/bin/google-chrome UI_TEST_DEV=1 just ui-test-browser
+```
+
+Existing Rust/shell entrypoints remain unchanged (`just check`, `just test`).
+
+Minimal UI entrypoints: `ui-install` (locked clean install), `ui-dev` (watching
+local server with Vite middleware), `ui-check` (all TypeScript), `ui-test`
+(unit/integration fixtures), `ui-build` (production client and server),
+`ui-start` (serve that build), and `ui-test-e2e` (deterministic Chromium suite).
+Build before browser tests; Playwright starts/stops its own server on port 4320
+and refuses to reuse an existing listener. `ui-test-browser` additionally runs
+real-source/API-security smoke; this extra smoke needs a nonempty mapped Aven
+project. `ui-start` defaults to 4318. Keep generated dependencies, builds and
+Playwright output out of commits (`web/node_modules`, `web/dist`,
+`web/test-results`, `web/playwright-report`). Aven stores planning and handoffs;
+there is no second dashboard task store.
+
+#### Performance baseline and limits
+
+`web/test/fixtures/large-graph.ts` deterministically supplies 500 nodes (20 epic
+hubs / 480 tasks) and 1,000 edges (480 containment / 520 directed blockers).
+`web/e2e/performance.spec.ts` asserts initial interactivity **≤3 seconds** and
+rendered pan/zoom **≥45 FPS**. Run the built production app through
+`UI_CHROME=/usr/bin/google-chrome just ui-test-e2e`; the performance case prints
+`PERFORMANCE_BASELINE` JSON and attaches it to Playwright results. There is no
+network throttle or simulated CPU speed; source reads are deterministic HTTP
+fixtures, not real Aven hydration latency.
+
+Method: time navigation through canvas creation, a real entity selection and
+visible details plus two paint frames; then drive simultaneous pan/zoom over
+three seconds around zoom 0.35 with every element unmuted. Count Cytoscape
+**render events**, not merely requestAnimationFrame callbacks; record rAF cadence,
+95th-percentile render gap, initial layout/sync and status-update sync costs.
+The viewport uses the same production texture cache. A status-only snapshot
+must leave positions/camera unchanged and must not compute a new layout.
+Dense labels become readable on zoom-in rather than flooding the overview.
+This is a local canvas/interaction baseline, not a guarantee of 60 FPS for every
+GPU, huge label payload, graph topology, browser or upstream service.
+
+Recorded local baseline (2026-10-20): Ubuntu/Linux x86_64, Intel Core Ultra 5
+238V (8 CPUs), Node 24.22.0, npm 11.19.1, Google Chrome 155.0.8059.84 headless,
+Playwright 1.64.1, 1440×1000 viewport, device/canvas pixel ratio 1, one worker.
+A final deterministic production run measured **600 ms** initial interactivity
+and **59.4 rendered FPS** (179 rendered frames / 3.013 seconds; p95 render gap
+19.7 ms). Initial layout cost was 0.6 ms, initial mutation/style/fit sync 154 ms,
+and status-only sync 44.7 ms with no relayout. The subsequent full production
+suite measured 536 ms / 58.9 FPS; development measured 943 ms / 58.6 FPS. Both
+targets passed throughout these runs. Actual per-run JSON and review/verification evidence are retained in
+Aven handoff notes. The canvas is lazy-loaded separately from the list/detail
+shell (approximately 443 kB / 141 kB gzip graph chunk and 244 kB / 77 kB gzip
+shell at this baseline), with no >500 kB chunk warning hidden or suppressed.
+
+Privacy/non-goals: this is read-only local project inspection, not task editing,
+dispatch/reset/reconcile, prompting/interrupting/approving sessions, terminal
+control, focus changes, worktree creation, a remote/multi-user host, Neo4j or
+durable full-history analytics. Optional capabilities can be unavailable and
+history/source windows can be incomplete. The existing terminal dispatcher and
+popup actions stay independent; no new dispatch behavior or automatic browser
+launch action is installed.
+
+### Terminal popup
+
 Open Herdr in your repository. If needed, map it to an Aven project:
 
 ```sh
