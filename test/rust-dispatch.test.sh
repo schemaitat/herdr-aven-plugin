@@ -24,9 +24,9 @@ cat > "$fake/aven" <<'EOF'
 #!/bin/sh
 case " $* " in
   *" context APP-1 --json "*) printf '%s\n' '{"task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}' ;;
-  *" context APP-2 --json "*) printf '%s\n' '{"task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"phase-one","ref":"APP-P1","title":"first phase"},{"id":"phase-two","ref":"APP-P2","title":"second phase"}]}' ;;
-  *" context APP-P1 --json "*) printf '%s\n' '{"task":{"id":"phase-one","title":"first phase"},"project":{"key":"app"}}' ;;
-  *" context APP-P2 --json "*) printf '%s\n' '{"task":{"id":"phase-two","title":"second phase"},"project":{"key":"app"}}' ;;
+  *" context APP-2 --json "*) printf '%s\n' '{"task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"phase-two","ref":"APP-P2","title":"second phase"},{"id":"phase-one","ref":"APP-P1","title":"first phase"}]}' ;;
+  *" context APP-P1 --json "*) printf '%s\n' '{"task":{"id":"phase-one","title":"first phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"1"},"dependencies":{"depends_on":[],"depends_on_open":0}}' ;;
+  *" context APP-P2 --json "*) printf '%s\n' '{"task":{"id":"phase-two","title":"second phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"2"},"dependencies":{"depends_on":[{"task_id":"phase-one"}],"depends_on_open":1}}' ;;
   *" add Dispatch log: "*) printf '%s\n' 'created DL-LOG ref=LOG' ;;
   *) printf 'aven %s\n' "$*" >> "$RUST_DISPATCH_LOG" ;;
 esac
@@ -64,7 +64,7 @@ case " $* " in
   *" POST /api/session "*) printf '%s\n' '{"data":{"id":"ses_one"}}' ;;
   *" POST /api/session/ses_one/prompt "*) printf '%s\n' "$*" | grep -q 'msg_' || exit 1; printf '%s\n' '{"data":{"id":"msg_expected"}}' ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -85,8 +85,9 @@ printf 'opencode %s\n' "$*" >> "$RUST_DISPATCH_LOG"
 case " $* " in
    *" POST /api/session/"*"/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
    *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
+   *" GET /api/session/ses_one "*) if [ -n "${RUST_DISPATCH_SESSION_OUTCOME:-}" ]; then printf '{"data":{"outcome":"%s"}}\n' "$RUST_DISPATCH_SESSION_OUTCOME"; else printf '%s\n' '{"data":{}}'; fi ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
+   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
    *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -143,6 +144,10 @@ PATH="$fake:$PATH" python3 "$PLUGIN_ROOT/test/terminal-picker.py" "$work" "$cont
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/running"
 assert_file_contains "$work/running" '"task_ref": "APP-1"' 'list reports running dispatch'
 assert_file_contains "$work/running" '"state": "running"' 'list filters to running dispatches'
+# `list --running` must not trust a stale persisted string after OpenCode
+# reports a terminal outcome.
+RUST_DISPATCH_SESSION_OUTCOME=succeeded PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/terminal-running"
+assert_not_contains "$(cat "$work/terminal-running")" '"task_ref": "APP-1"' 'list excludes authoritative terminal sessions from running output'
 before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" > "$work/retry"
 after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
@@ -179,6 +184,9 @@ epic_worktrees=$(grep -c 'branch app/dispatch-epic-task' "$log")
 assert_eq "$epic_worktrees" 3 'cumulative dispatch creates coordinator plus two phase worktrees'
 assert_file_contains "$log" 'branch app/dispatch-epic-task-phase-01 --base app/dispatch-epic-task' 'first phase starts from the coordinator branch'
 assert_file_contains "$log" 'branch app/dispatch-epic-task-phase-02 --base app/dispatch-epic-task' 'second phase gets its dedicated cumulative branch'
+phase_one_line=$(grep -n 'label APP-P1 first phase' "$log" | tail -n 1 | cut -d: -f1)
+phase_two_line=$(grep -n 'label APP-P2 second phase' "$log" | tail -n 1 | cut -d: -f1)
+[ "$phase_one_line" -lt "$phase_two_line" ] || fail 'reverse-ordered Aven children are provisioned in validated phase order'
 assert_file_contains "$log" '"agent":"orchestrator"' 'root session uses the fixed orchestrator agent'
 assert_file_contains "$cumulative_state" '"task_ref": "APP-P1"' 'first phase is persisted'
 assert_file_contains "$cumulative_state" '"task_ref": "APP-P2"' 'second phase is persisted'

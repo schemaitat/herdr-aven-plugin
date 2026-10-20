@@ -54,26 +54,45 @@ enum Commands {
         mode: Option<ExecutionMode>,
     },
     /// Resume an existing attempt without creating a second session.
-    Resume { task: String },
+    Resume {
+        task: String,
+        /// Explicit workflow selector when a task has more than one attempt.
+        #[arg(long)]
+        workflow: Option<String>,
+    },
     /// Inspect persisted state and the authoritative OpenCode snapshot.
-    Status { task: String },
+    Status {
+        task: String,
+        #[arg(long)]
+        workflow: Option<String>,
+    },
     /// List persisted dispatch attempts; --running limits results to active execution.
     List {
         #[arg(long)]
         running: bool,
     },
     /// Repair pending Aven updates and refresh session state.
-    Reconcile { task: String },
+    Reconcile {
+        task: String,
+        #[arg(long)]
+        workflow: Option<String>,
+    },
     /// Append a diagnostic event to this attempt's linked Dispatcher Logs task.
     Log {
         task: String,
+        #[arg(long)]
+        workflow: Option<String>,
         #[arg(long)]
         event: String,
         #[arg(long)]
         detail: String,
     },
     /// Interrupt OpenCode execution; this never changes the Aven task to done/canceled.
-    Interrupt { task: String },
+    Interrupt {
+        task: String,
+        #[arg(long)]
+        workflow: Option<String>,
+    },
     /// Safely discard dispatch and planning state for one task without deleting code or history.
     Reset {
         /// Task ref, or omit when invoked by an Aven focused-task command.
@@ -180,6 +199,11 @@ struct Attempt {
     attempt_id: String,
     branch: String,
     worktree: String,
+    /// A checkout opened from an existing branch is user-owned. Only a
+    /// checkout created for this exact attempt is eligible for best-effort
+    /// automatic cleanup.
+    #[serde(default)]
+    worktree_created_by_attempt: bool,
     #[serde(default)]
     pane: String,
     #[serde(default)]
@@ -201,6 +225,8 @@ struct Attempt {
     #[serde(default)]
     session_id: String,
     prompt_id: String,
+    #[serde(default)]
+    pending_prompt: String,
     state: String,
     #[serde(default)]
     aven_update_pending: bool,
@@ -246,6 +272,8 @@ struct PhaseAttempt {
     title: String,
     branch: String,
     worktree: String,
+    #[serde(default)]
+    worktree_created_by_attempt: bool,
     pane: String,
     session_id: String,
     prompt_id: String,
@@ -258,6 +286,12 @@ struct EpicPhase {
     task_id: String,
     task_ref: String,
     title: String,
+}
+#[derive(Debug, Clone)]
+struct WorktreeResource {
+    path: String,
+    pane: String,
+    created_by_attempt: bool,
 }
 fn default_workflow() -> String {
     "default".into()
@@ -530,6 +564,129 @@ fn epic_phases(task: &Value) -> Result<Vec<EpicPhase>> {
             })
         })
         .collect()
+}
+fn phase_number(task: &Value, reference: &str) -> Result<usize> {
+    let metadata = task
+        .get("metadata")
+        .and_then(Value::as_object)
+        .context(format!("phase {reference} has no metadata"))?;
+    let value = metadata
+        .get("sdd.plan-phase")
+        .or_else(|| metadata.get("sdd.phase"))
+        .and_then(Value::as_str)
+        .context(format!("phase {reference} is missing sdd.plan-phase"))?;
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|number| *number > 0)
+        .context(format!(
+            "phase {reference} has invalid phase number {value:?}"
+        ))
+}
+fn phase_dependencies(task: &Value) -> Vec<String> {
+    task.pointer("/dependencies/depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|dependency| {
+            dependency
+                .get("task_id")
+                .or_else(|| dependency.get("id"))
+                .and_then(Value::as_str)
+                .or_else(|| dependency.get("ref").and_then(Value::as_str))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+fn validate_epic_phases(
+    invocation: &Invocation,
+    root: &Value,
+    root_ref: &str,
+) -> Result<Vec<EpicPhase>> {
+    let root_id = field(root, "/task/id")?;
+    let mut phases = epic_phases(root)?
+        .into_iter()
+        .map(|phase| {
+            let task = phase_task(invocation, &phase)?;
+            let owner = task
+                .pointer("/metadata/sdd.plan-root")
+                .and_then(Value::as_str);
+            if !matches!(owner, Some(value) if value == root_id || value == root_ref) {
+                bail!("phase {} is not owned by root {}", phase.task_ref, root_ref);
+            }
+            Ok((phase_number(&task, &phase.task_ref)?, phase, task))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    phases.sort_by_key(|(number, _, _)| *number);
+    for (expected, (number, phase, task)) in phases.iter().enumerate() {
+        if *number != expected + 1 {
+            bail!(
+                "phase {} has number {}; expected consecutive phase {:02}",
+                phase.task_ref,
+                number,
+                expected + 1
+            );
+        }
+        let dependencies = phase_dependencies(task);
+        if expected == 0 {
+            if !dependencies.is_empty() {
+                bail!(
+                    "first phase {} has unresolved blocker(s): {}",
+                    phase.task_ref,
+                    dependencies.join(", ")
+                );
+            }
+        } else {
+            let predecessor = &phases[expected - 1].1;
+            if dependencies.len() != 1
+                || !dependencies.iter().any(|dependency| {
+                    dependency == &predecessor.task_id || dependency == &predecessor.task_ref
+                })
+            {
+                bail!(
+                    "phase {} must depend only on predecessor {}",
+                    phase.task_ref,
+                    predecessor.task_ref
+                );
+            }
+        }
+    }
+    Ok(phases.into_iter().map(|(_, phase, _)| phase).collect())
+}
+fn phase_is_eligible(
+    invocation: &Invocation,
+    phase: &PhaseAttempt,
+    predecessor: Option<&PhaseAttempt>,
+) -> Result<Value> {
+    let task = phase_task(
+        invocation,
+        &EpicPhase {
+            task_id: phase.task_id.clone(),
+            task_ref: phase.task_ref.clone(),
+            title: phase.title.clone(),
+        },
+    )?;
+    if task.pointer("/task/status").and_then(Value::as_str) != Some("todo") {
+        bail!("phase {} is not ready (status is not todo)", phase.task_ref);
+    }
+    if task
+        .pointer("/dependencies/depends_on_open")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        != 0
+    {
+        bail!("phase {} has unresolved dependencies", phase.task_ref);
+    }
+    if let Some(predecessor) = predecessor {
+        if predecessor.state != "integrated" || !phase_is_done_for(invocation, predecessor)? {
+            bail!(
+                "phase {} cannot be admitted before predecessor {} is verified and integrated",
+                phase.task_ref,
+                predecessor.task_ref
+            );
+        }
+    }
+    Ok(task)
 }
 fn has_worked_out_multi_phase_plan(task: &Value) -> bool {
     task.pointer("/metadata/sdd.plan-worked-out")
@@ -967,7 +1124,7 @@ fn create_worktree(
     branch: &str,
     label: &str,
     base: Option<&str>,
-) -> Result<(String, String)> {
+) -> Result<WorktreeResource> {
     let listing = run(
         "git",
         &[
@@ -996,6 +1153,7 @@ fn create_worktree(
             })
     });
     let mut args = vec!["worktree".into()];
+    let created_by_attempt = existing.is_none();
     if let Some(path) = existing {
         args.extend([
             "open".into(),
@@ -1029,11 +1187,19 @@ fn create_worktree(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    Ok((worktree, pane))
+    Ok(WorktreeResource {
+        path: worktree,
+        pane,
+        created_by_attempt,
+    })
 }
-fn remove_worktree(worktree: &str) {
-    // Picker cancellation happens before a session or attempt is created, so
-    // this workspace is solely the one just created for this dispatch.
+fn remove_owned_worktree(worktree: &str, created_by_attempt: bool) {
+    if !created_by_attempt {
+        eprintln!(
+            "preserved reused worktree {worktree}; it was not created by this dispatch attempt"
+        );
+        return;
+    }
     let Ok(listing) = run("herdr", &["workspace".into(), "list".into()], None) else {
         return;
     };
@@ -1056,17 +1222,15 @@ fn remove_worktree(worktree: &str) {
     let Some(workspace) = workspace else {
         return;
     };
-    let _ = run(
-        "herdr",
-        &[
-            "worktree".into(),
-            "remove".into(),
-            "--workspace".into(),
-            workspace.to_owned(),
-            "--force".into(),
-        ],
-        None,
-    );
+    let _ = run("herdr", &worktree_remove_args(workspace), None);
+}
+fn worktree_remove_args(workspace: &str) -> Vec<String> {
+    vec![
+        "worktree".into(),
+        "remove".into(),
+        "--workspace".into(),
+        workspace.into(),
+    ]
 }
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
@@ -1115,8 +1279,33 @@ fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Re
     )?;
     Ok(())
 }
-fn start_babysitter(attempt: &mut Attempt, store_path: &Path) -> Result<()> {
+fn babysitter_agent_is_available(worktree: &str) -> Result<()> {
+    let agents = opencode_text_in("GET", "/api/agent", None, Some(Path::new(worktree)))?;
+    let agents: Value = serde_json::from_str(&agents).context("OpenCode agent list response")?;
+    if agents
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .is_some_and(|agents| {
+            agents
+                .iter()
+                .any(|agent| agent.pointer("/id").and_then(Value::as_str) == Some("babysitter"))
+        })
+    {
+        Ok(())
+    } else {
+        bail!(
+            "bundled babysitter agent is not discoverable in {}; supervision was not started",
+            worktree
+        )
+    }
+}
+fn start_babysitter(
+    attempt: &mut Attempt,
+    store_path: &Path,
+    store: &mut LockedStore,
+) -> Result<()> {
     install_babysitter_agent(&attempt.worktree)?;
+    babysitter_agent_is_available(&attempt.worktree)?;
     let session = opencode(
         "POST",
         "/api/session",
@@ -1129,6 +1318,9 @@ fn start_babysitter(attempt: &mut Attempt, store_path: &Path) -> Result<()> {
         })),
     )?;
     attempt.babysitter_session_id = field(&session, "/data/id")?.to_owned();
+    attempt.state = "babysitter-session-pending".into();
+    store_attempt(store, attempt.clone());
+    store.save()?;
     let output = run(
         "herdr",
         &[
@@ -1145,12 +1337,17 @@ fn start_babysitter(attempt: &mut Attempt, store_path: &Path) -> Result<()> {
     )?;
     let response: Value = serde_json::from_str(&output).context("Herdr pane split response")?;
     attempt.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
+    store_attempt(store, attempt.clone());
+    store.save()?;
     start_opencode_in_pane(
         &attempt.babysitter_pane,
         &attempt.babysitter_session_id,
         store_path,
     )?;
     attempt.babysitter_prompt_id = identifier("msg");
+    attempt.state = "babysitter-prompt-pending".into();
+    store_attempt(store, attempt.clone());
+    store.save()?;
     let admission = opencode(
         "POST",
         &format!("/api/session/{}/prompt", attempt.babysitter_session_id),
@@ -1302,6 +1499,7 @@ fn provision_phase_worktrees(
     attempt: &mut Attempt,
     root_task: &Value,
     store_path: &Path,
+    store: &mut LockedStore,
     skills_dir: Option<PathBuf>,
 ) -> Result<()> {
     if !has_worked_out_multi_phase_plan(root_task) {
@@ -1309,10 +1507,10 @@ fn provision_phase_worktrees(
             "worktree mode requires sdd.plan-worked-out=true and sdd.plan-kind=multi-phase on the root epic"
         );
     }
-    let phases = epic_phases(root_task)?;
+    let phases = validate_epic_phases(&attempt.aven, root_task, &attempt.task_ref)?;
     for (index, task) in phases.iter().enumerate() {
         let branch = phase_branch(&attempt.branch, index + 1);
-        let (worktree, pane) = create_worktree(
+        let resource = create_worktree(
             &attempt.worktree,
             &branch,
             &format!("{} {}", task.task_ref, task.title),
@@ -1323,42 +1521,42 @@ fn provision_phase_worktrees(
             "/api/session",
             Some(json!({
                 "title": format!("{} {}", task.task_ref, task.title),
-                "location": {"directory": worktree},
+                "location": {"directory": resource.path},
                 "agent": attempt.agent,
                 "model": model_ref(Some(&attempt.model))?,
                 "permissions": autonomous_permissions(),
             })),
         )?;
         let session_id = field(&session, "/data/id")?.to_owned();
-        start_opencode_in_pane(&pane, &session_id, store_path)?;
+        start_opencode_in_pane(&resource.pane, &session_id, store_path)?;
         attempt.phases.push(PhaseAttempt {
             task_id: task.task_id.clone(),
             task_ref: task.task_ref.clone(),
             title: task.title.clone(),
             branch,
-            worktree,
-            pane,
+            worktree: resource.path,
+            worktree_created_by_attempt: resource.created_by_attempt,
+            pane: resource.pane,
             session_id,
             prompt_id: String::new(),
             commit: String::new(),
             integrated_commit: String::new(),
             state: "provisioned".into(),
         });
+        store_attempt(store, attempt.clone());
+        store.save()?;
     }
     let ready = attempt
         .phases
         .first()
         .context("worktree mode requires a first phase")?;
-    let task = phase_task(
-        &attempt.aven,
-        &EpicPhase {
-            task_id: ready.task_id.clone(),
-            task_ref: ready.task_ref.clone(),
-            title: ready.title.clone(),
-        },
-    )?;
+    let task = phase_is_eligible(&attempt.aven, ready, None)?;
     let mut ready = ready.clone();
     ready.prompt_id = identifier("msg");
+    ready.state = "prompt-pending".into();
+    attempt.phases[0] = ready.clone();
+    store_attempt(store, attempt.clone());
+    store.save()?;
     let admission = opencode(
         "POST",
         &format!("/api/session/{}/prompt", ready.session_id),
@@ -1396,15 +1594,22 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
             serde_json::to_string(attempt)?
         ),
     ];
+    let current_status = current
+        .pointer("/task/status")
+        .and_then(Value::as_str)
+        .unwrap_or("todo");
+    // A stale local snapshot must never reactivate work accepted or canceled by
+    // Aven. Session completion is execution evidence, not task acceptance.
+    let next_status = if matches!(current_status, "done" | "canceled") {
+        current_status
+    } else {
+        "active"
+    };
     let mut args = vec![
         "edit".to_owned(),
         attempt.task_ref.clone(),
         "--status".into(),
-        if attempt.state == "completed" {
-            "done".into()
-        } else {
-            "active".into()
-        },
+        next_status.into(),
     ];
     for item in metadata {
         args.extend(["--metadata".into(), item]);
@@ -1589,7 +1794,10 @@ fn dispatch(
             );
             return Ok(());
         }
-        let (worktree, pane) = create_worktree(
+        // Reopen confirmation uses interactive pickers; release the store
+        // lock before starting them and reacquire only to checkpoint state.
+        drop(store);
+        let resource = create_worktree(
             &context.invocation.origin_cwd,
             &existing.branch,
             &format!("{} {}", existing.task_ref, selected.task.title),
@@ -1598,7 +1806,7 @@ fn dispatch(
         if agent.as_deref().is_none_or(|agent| agent == "select") {
             let response =
                 path.with_file_name(format!(".agent-picker-{}.response", identifier("reopen")));
-            select_agent(&worktree, &response, Some(&existing.agent), None)?;
+            select_agent(&resource.path, &response, Some(&existing.agent), None)?;
         }
         if model.is_none() {
             select_model(
@@ -1610,9 +1818,12 @@ fn dispatch(
             )?;
         }
         let mut reopened = existing;
-        reopened.worktree = worktree;
-        reopened.pane = pane;
+        let prior_state = reopened.state.clone();
+        reopened.worktree = resource.path;
+        reopened.pane = resource.pane;
+        reopened.worktree_created_by_attempt = resource.created_by_attempt;
         reopened.state = "terminal-pending".into();
+        let mut store = LockedStore::open(path.clone())?;
         store_attempt(&mut store, reopened.clone());
         store.save()?;
         start_opencode_in_pane(&reopened.pane, &reopened.session_id, &path)?;
@@ -1640,7 +1851,31 @@ fn dispatch(
                 &path,
             )?;
         }
-        reopened.state = "running".into();
+        if matches!(prior_state.as_str(), "prompt-pending" | "terminal-pending") {
+            if reopened.pending_prompt.is_empty() {
+                bail!(
+                    "attempt is awaiting prompt admission but has no durable prompt body; inspect authoritative session before retrying"
+                );
+            }
+            reopened.state = "prompt-pending".into();
+            store_attempt(&mut store, reopened.clone());
+            store.save()?;
+            let admission = opencode(
+                "POST",
+                &format!("/api/session/{}/prompt", reopened.session_id),
+                Some(
+                    json!({"id": reopened.prompt_id, "text": reopened.pending_prompt, "resume": true}),
+                ),
+            )?;
+            if field(&admission, "/data/id")? != reopened.prompt_id {
+                bail!("OpenCode admitted an unexpected recovered message id");
+            }
+        }
+        reopened.state = if matches!(prior_state.as_str(), "prompt-pending" | "terminal-pending") {
+            "running".into()
+        } else {
+            prior_state
+        };
         store_attempt(&mut store, reopened.clone());
         store.save()?;
         focus_pane(&reopened.pane)?;
@@ -1650,6 +1885,10 @@ fn dispatch(
         );
         return Ok(());
     }
+    // Mode and agent/model pickers can wait for user input indefinitely. Do
+    // not retain the process-wide store lock while they are visible.
+    drop(store);
+    let execution_mode = select_mode(requested_mode, workflow)?;
     let mut attempt = Attempt {
         task_id: selected.task.id.clone(),
         task_ref: selected.reference().to_owned(),
@@ -1657,10 +1896,11 @@ fn dispatch(
         attempt_id: identifier("att"),
         branch: branch(&selected.project.key, &selected.task.id),
         worktree: String::new(),
+        worktree_created_by_attempt: false,
         pane: String::new(),
         agent: agent.unwrap_or_default(),
         model: model.unwrap_or_default(),
-        execution_mode: select_mode(requested_mode, workflow)?,
+        execution_mode,
         coordinator_session_id: String::new(),
         coordinator_agent: String::new(),
         coordinator_model: String::new(),
@@ -1668,6 +1908,7 @@ fn dispatch(
         phases: Vec::new(),
         session_id: String::new(),
         prompt_id: identifier("msg"),
+        pending_prompt: String::new(),
         state: "workspace-pending".into(),
         aven_update_pending: false,
         log_cursor: String::new(),
@@ -1694,14 +1935,18 @@ fn dispatch(
         );
         return Ok(());
     }
-    let (worktree, pane) = create_worktree(
+    if attempt.execution_mode == ExecutionMode::Worktrees {
+        validate_epic_phases(&context.invocation, &task, &attempt.task_ref)?;
+    }
+    let resource = create_worktree(
         &context.invocation.origin_cwd,
         &attempt.branch,
         &format!("{} {}", attempt.task_ref, selected.task.title),
         None,
     )?;
-    attempt.worktree = worktree;
-    attempt.pane = pane;
+    attempt.worktree = resource.path;
+    attempt.pane = resource.pane;
+    attempt.worktree_created_by_attempt = resource.created_by_attempt;
     if attempt.agent.is_empty() || attempt.agent == "select" {
         let response =
             path.with_file_name(format!(".agent-picker-{}.response", attempt.attempt_id));
@@ -1713,7 +1958,7 @@ fn dispatch(
         ) {
             Ok(agent) => agent,
             Err(error) => {
-                remove_worktree(&attempt.worktree);
+                remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
                 return Err(error);
             }
         };
@@ -1728,17 +1973,18 @@ fn dispatch(
         ) {
             Ok(model) => model,
             Err(error) => {
-                remove_worktree(&attempt.worktree);
+                remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
                 return Err(error);
             }
         };
     }
+    let mut store = LockedStore::open(path.clone())?;
     attempt.state = "session-pending".into();
     store_attempt(&mut store, attempt.clone());
     store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees {
         install_orchestrator_agent(&attempt.worktree)?;
-        provision_phase_worktrees(&mut attempt, &task, &path, skills_dir.clone())?;
+        provision_phase_worktrees(&mut attempt, &task, &path, &mut store, skills_dir.clone())?;
         store_attempt(&mut store, attempt.clone());
         store.save()?;
     }
@@ -1769,23 +2015,24 @@ fn dispatch(
     store.save()?;
     start_opencode_in_pane(&attempt.pane, &attempt.session_id, &path)?;
     attempt.state = "prompt-pending".into();
-    store_attempt(&mut store, attempt.clone());
-    store.save()?;
     let topology = (attempt.execution_mode == ExecutionMode::Worktrees)
         .then(|| coordinator_topology(&attempt));
+    attempt.pending_prompt = root_prompt(
+        &task,
+        &attempt.task_ref,
+        skill,
+        skills_dir,
+        attempt.execution_mode,
+        topology.as_deref(),
+    )?;
+    store_attempt(&mut store, attempt.clone());
+    store.save()?;
     let admission = opencode(
         "POST",
         &format!("/api/session/{}/prompt", attempt.session_id),
         Some(json!({
             "id": attempt.prompt_id,
-            "text": root_prompt(
-                &task,
-                &attempt.task_ref,
-                skill,
-                skills_dir,
-                attempt.execution_mode,
-                topology.as_deref(),
-            )?,
+            "text": attempt.pending_prompt,
             "resume": true
         })),
     )?;
@@ -1794,7 +2041,7 @@ fn dispatch(
         bail!("OpenCode admitted an unexpected message id");
     }
     if attempt.babysitter {
-        start_babysitter(&mut attempt, &path)?;
+        start_babysitter(&mut attempt, &path, &mut store)?;
     }
     attempt.state = "running".into();
     attempt.aven_update_pending = true;
@@ -1816,13 +2063,25 @@ fn dispatch(
     Ok(())
 }
 
-fn find_attempt<'a>(store: &'a LockedStore, task: &str) -> Result<&'a Attempt> {
-    store
+fn find_attempt<'a>(
+    store: &'a LockedStore,
+    task: &str,
+    workflow: Option<&str>,
+) -> Result<&'a Attempt> {
+    let matches = store
         .store
         .attempts
         .values()
-        .find(|a| a.task_id == task || a.task_ref == task)
-        .context("no dispatcher attempt for task")
+        .filter(|a| {
+            (a.task_id == task || a.task_ref == task)
+                && workflow.is_none_or(|workflow| a.workflow == workflow)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => bail!("no dispatcher attempt for task"),
+        [attempt] => Ok(*attempt),
+        _ => bail!("multiple dispatcher workflows exist for {task}; retry with --workflow <name>"),
+    }
 }
 fn reset_context(task: Option<String>) -> Result<(Invocation, String)> {
     let input = env::var_os("AVEN_COMMAND_CONTEXT")
@@ -1904,6 +2163,26 @@ fn active_sessions(sessions: &[String], active: &Value) -> Vec<String> {
         .cloned()
         .collect()
 }
+fn authoritative_execution_state(current: &str, snapshot: &Value) -> String {
+    match snapshot.pointer("/data/outcome").and_then(Value::as_str) {
+        Some("succeeded") => "needs-review".into(),
+        Some("failed") => "failed".into(),
+        Some("interrupted") | Some("canceled") => "interrupted".into(),
+        // An explicit local interrupt remains terminal even if an older
+        // snapshot has not yet exposed its outcome.
+        None if current == "interrupted" => "interrupted".into(),
+        None => "running".into(),
+        Some(_) => "waiting".into(),
+    }
+}
+fn refresh_attempt_execution_state(attempt: &mut Attempt) -> Result<()> {
+    if attempt.session_id.is_empty() {
+        return Ok(());
+    }
+    let snapshot = opencode("GET", &format!("/api/session/{}", attempt.session_id), None)?;
+    attempt.state = authoritative_execution_state(&attempt.state, &snapshot);
+    Ok(())
+}
 fn interrupt_and_drain_sessions(sessions: &[String]) -> Result<()> {
     let unique: BTreeSet<_> = sessions.iter().collect();
     for session in unique {
@@ -1947,7 +2226,10 @@ fn owned_reset_children(
             .and_then(Value::as_object)
             .context("epic child has no metadata")?;
         let owner = metadata.get("sdd.plan-root").and_then(Value::as_str);
-        let phase = metadata.get("sdd.phase").and_then(Value::as_str);
+        let phase = metadata
+            .get("sdd.plan-phase")
+            .or_else(|| metadata.get("sdd.phase"))
+            .and_then(Value::as_str);
         if matches!(owner, Some(owner) if owner == root_id || owner == root_ref)
             && phase.is_some_and(|phase| !phase.is_empty())
         {
@@ -1959,6 +2241,31 @@ fn owned_reset_children(
         }
     }
     Ok(owned)
+}
+fn reset_operation_strings(operation: &Value, key: &str) -> Result<Vec<String>> {
+    operation
+        .get(key)
+        .map(|value| {
+            value
+                .as_array()
+                .with_context(|| format!("reset operation {key} must be an array"))?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned)
+                        .with_context(|| format!("reset operation {key} contains an invalid value"))
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+fn merged_reset_inventory(mut current: Vec<String>, recovered: Vec<String>) -> Vec<String> {
+    current.extend(recovered);
+    current.sort();
+    current.dedup();
+    current
 }
 fn confirm_reset(reference: &str, attempts: usize) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -1998,6 +2305,8 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         attempts.insert(attempt.attempt_id.clone(), attempt);
     }
     let mut children = owned_reset_children(&invocation, &root, &reference)?;
+    let mut recovered_sessions = Vec::new();
+    let mut recovered_attempt_ids = Vec::new();
     if recovering {
         let operation = root
             .pointer("/metadata/dispatch.reset-operation")
@@ -2008,6 +2317,8 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         if operation.get("generation").and_then(Value::as_u64) != Some(generation) {
             bail!("incomplete reset operation generation does not match task generation");
         }
+        recovered_sessions = reset_operation_strings(&operation, "sessions")?;
+        recovered_attempt_ids = reset_operation_strings(&operation, "attempt_ids")?;
         for child in operation
             .get("detached_children")
             .and_then(Value::as_array)
@@ -2022,16 +2333,21 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
     }
     let active = opencode("GET", "/api/session/active", None)
         .context("cannot establish OpenCode session activity; reset refuses to guess")?;
-    let sessions: Vec<String> = attempts
-        .values()
-        .flat_map(attempt_session_ids)
-        .map(str::to_owned)
-        .collect();
+    let sessions = merged_reset_inventory(
+        attempts
+            .values()
+            .flat_map(attempt_session_ids)
+            .map(str::to_owned)
+            .collect(),
+        recovered_sessions,
+    );
+    let operation_attempt_ids =
+        merged_reset_inventory(attempts.keys().cloned().collect(), recovered_attempt_ids);
     let running = active_sessions(&sessions, &active);
     println!(
         "reset target={reference} generation={} attempts={} sessions={} generated_children={}",
         generation,
-        attempts.len(),
+        operation_attempt_ids.len(),
         sessions.len(),
         children.len()
     );
@@ -2054,7 +2370,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         interrupt_and_drain_sessions(&running)?;
     }
     if !recovering {
-        let operation = json!({"schema":"aven-dispatch-reset/v1", "generation": generation, "state":"incomplete", "attempt_ids": attempts.keys().collect::<Vec<_>>(), "sessions": sessions, "detached_children": children});
+        let operation = json!({"schema":"aven-dispatch-reset/v1", "generation": generation, "state":"incomplete", "attempt_ids": operation_attempt_ids, "sessions": sessions, "detached_children": children});
         let begin = vec![
             "edit".to_owned(),
             reference.clone(),
@@ -2085,7 +2401,21 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         .retain(|_, attempt| attempt.task_id != task_id);
     store.save()?;
     for child in &children {
-        let _ = aven(&invocation, &["epic", "remove", child, &reference], None);
+        aven(&invocation, &["epic", "remove", child, &reference], None)
+            .with_context(|| format!("detach generated phase {child}"))?;
+        aven(
+            &invocation,
+            &[
+                "edit",
+                child,
+                "--metadata",
+                &format!("dispatch.reset-generation={generation}"),
+                "--metadata",
+                "dispatch.reset-state=completed",
+            ],
+            None,
+        )
+        .with_context(|| format!("fence detached generated phase {child}"))?;
     }
     let mut cleanup = vec![
         "edit".to_owned(),
@@ -2118,7 +2448,22 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
             cleanup.extend(["--remove-metadata".into(), key.into()]);
         }
     }
-    cleanup.extend(["--metadata".into(), "dispatch.reset-state=completed".into(), "--metadata".into(), format!("dispatch.reset-operation={}", json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"completed", "detached_children":children}))]);
+    // Workflow names are extensible, so fixed known names are not enough to
+    // invalidate every task-scoped snapshot during a hard reset.
+    if let Some(metadata) = existing_metadata {
+        for key in metadata.keys().filter(|key| {
+            key.starts_with("dispatch.attempt.")
+                && !matches!(
+                    key.as_str(),
+                    "dispatch.attempt.default"
+                        | "dispatch.attempt.planning"
+                        | "dispatch.attempt.implementation"
+                )
+        }) {
+            cleanup.extend(["--remove-metadata".into(), key.clone()]);
+        }
+    }
+    cleanup.extend(["--metadata".into(), "dispatch.reset-state=incomplete".into(), "--metadata".into(), format!("dispatch.reset-operation={}", json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"auditing", "attempt_ids":operation_attempt_ids, "sessions":sessions, "detached_children":children}))]);
     run(
         if invocation.aven_exe.is_empty() {
             "aven"
@@ -2143,14 +2488,30 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         }
     );
     aven(&invocation, &["note", &reference, "--stdin"], Some(&note))?;
+    // The reset remains admission-fenced until the audit note is durable.
+    aven(
+        &invocation,
+        &[
+            "edit",
+            &reference,
+            "--metadata",
+            "dispatch.reset-state=completed",
+            "--metadata",
+            &format!(
+                "dispatch.reset-operation={}",
+                json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"completed", "attempt_ids":operation_attempt_ids, "sessions":sessions, "detached_children":children})
+            ),
+        ],
+        None,
+    )?;
     println!(
         "reset complete for {reference}; plan and dispatch state were cleared without deleting source artifacts"
     );
     Ok(())
 }
-fn status(path: PathBuf, task: &str) -> Result<()> {
+fn status(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     let store = LockedStore::open(path)?;
-    let attempt = find_attempt(&store, task)?;
+    let attempt = find_attempt(&store, task, workflow)?;
     let snapshot = opencode("GET", &format!("/api/session/{}", attempt.session_id), None)?;
     let permissions = opencode(
         "GET",
@@ -2171,45 +2532,54 @@ fn status(path: PathBuf, task: &str) -> Result<()> {
     Ok(())
 }
 fn list(path: PathBuf, running: bool) -> Result<()> {
-    let store = LockedStore::open(path)?;
-    let attempts: Vec<&Attempt> = store
-        .store
-        .attempts
-        .values()
-        .filter(|attempt| !running || attempt.state == "running")
-        .collect();
+    let mut store = LockedStore::open(path)?;
+    let mut attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
+    if running {
+        for attempt in &mut attempts {
+            refresh_attempt_execution_state(attempt)?;
+            store_attempt(&mut store, attempt.clone());
+        }
+        store.save()?;
+        attempts.retain(|attempt| attempt.state == "running");
+    }
     println!("{}", serde_json::to_string_pretty(&attempts)?);
     Ok(())
 }
-fn interrupt(path: PathBuf, task: &str) -> Result<()> {
+fn interrupt(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     let mut store = LockedStore::open(path.clone())?;
-    let attempt = find_attempt(&store, task)?.clone();
-    opencode(
-        "POST",
-        &format!("/api/session/{}/interrupt", attempt.session_id),
-        None,
-    )?;
+    let attempt = find_attempt(&store, task, workflow)?.clone();
+    let sessions = attempt_session_ids(&attempt)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    interrupt_and_drain_sessions(&sessions)?;
     let mut changed = attempt;
     changed.state = "interrupted".into();
     store_attempt(&mut store, changed);
     store.save()?;
-    println!("interrupted OpenCode execution; Aven task status was not changed");
+    println!("interrupted owned OpenCode execution sessions; Aven task status was not changed");
     Ok(())
 }
-fn reconcile(path: PathBuf, task: &str) -> Result<()> {
+fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     let mut store = LockedStore::open(path.clone())?;
-    let mut attempt = find_attempt(&store, task)?.clone();
+    let mut attempt = find_attempt(&store, task, workflow)?.clone();
     ensure_attempt_current(
         &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
         &attempt,
     )?;
+    refresh_attempt_execution_state(&mut attempt)?;
+    // Persist authoritative execution state even when no Aven repair is due;
+    // task acceptance remains exclusively under the task workflow.
+    store_attempt(&mut store, attempt.clone());
+    store.save()?;
     if attempt.aven_update_pending && write_aven_links(&attempt.aven, &attempt).is_ok() {
         attempt.aven_update_pending = false;
         store_attempt(&mut store, attempt.clone());
         store.save()?;
         println!("repaired pending Aven status, metadata, and handoff update");
     }
-    if attempt.execution_mode == ExecutionMode::Worktrees && advance_worktree_phases(&mut attempt)?
+    if attempt.execution_mode == ExecutionMode::Worktrees
+        && advance_worktree_phases(&mut attempt, &mut store)?
     {
         store_attempt(&mut store, attempt.clone());
         store.save()?;
@@ -2246,9 +2616,15 @@ fn reconcile(path: PathBuf, task: &str) -> Result<()> {
     };
     Ok(())
 }
-fn log_event(path: PathBuf, task: &str, event: &str, detail: &str) -> Result<()> {
+fn log_event(
+    path: PathBuf,
+    task: &str,
+    workflow: Option<&str>,
+    event: &str,
+    detail: &str,
+) -> Result<()> {
     let mut store = LockedStore::open(path)?;
-    let mut attempt = find_attempt(&store, task)?.clone();
+    let mut attempt = find_attempt(&store, task, workflow)?.clone();
     ensure_log_task(&mut attempt)?;
     let record = write_debug_event(&attempt, event, detail);
     store_attempt(&mut store, attempt.clone());
@@ -2270,22 +2646,30 @@ fn git_head(directory: &Path) -> Result<String> {
         Some(directory),
     )
 }
-fn tracked_worktree_is_clean(directory: &Path) -> Result<bool> {
-    Ok(run_in(
+fn dispatcher_runtime_file(directory: &Path, relative: &str) -> bool {
+    match relative {
+        ".opencode/agents/orchestrator.md" => fs::read_to_string(directory.join(relative))
+            .is_ok_and(|contents| contents == ORCHESTRATOR_AGENT),
+        ".opencode/agents/babysitter.md" => fs::read_to_string(directory.join(relative))
+            .is_ok_and(|contents| contents == BABYSITTER_AGENT),
+        _ => false,
+    }
+}
+fn worktree_is_integration_clean(directory: &Path) -> Result<bool> {
+    let status = run_in(
         "git",
-        &[
-            "status".into(),
-            "--porcelain".into(),
-            "--untracked-files=no".into(),
-        ],
+        &["status".into(), "--porcelain".into()],
         None,
         Some(directory),
-    )?
-    .is_empty())
+    )?;
+    Ok(status.lines().all(|line| {
+        line.strip_prefix("?? ")
+            .is_some_and(|path| dispatcher_runtime_file(directory, path))
+    }))
 }
-fn phase_is_done(attempt: &Attempt, phase: &PhaseAttempt) -> Result<bool> {
+fn phase_is_done_for(invocation: &Invocation, phase: &PhaseAttempt) -> Result<bool> {
     Ok(phase_task(
-        &attempt.aven,
+        invocation,
         &EpicPhase {
             task_id: phase.task_id.clone(),
             task_ref: phase.task_ref.clone(),
@@ -2296,6 +2680,9 @@ fn phase_is_done(attempt: &Attempt, phase: &PhaseAttempt) -> Result<bool> {
     .and_then(Value::as_str)
         == Some("done"))
 }
+fn phase_is_done(attempt: &Attempt, phase: &PhaseAttempt) -> Result<bool> {
+    phase_is_done_for(&attempt.aven, phase)
+}
 fn phase_session_succeeded(phase: &PhaseAttempt) -> Result<bool> {
     Ok(
         opencode("GET", &format!("/api/session/{}", phase.session_id), None)?
@@ -2304,7 +2691,7 @@ fn phase_session_succeeded(phase: &PhaseAttempt) -> Result<bool> {
             == Some("succeeded"),
     )
 }
-fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
+fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Result<bool> {
     ensure_attempt_current(
         &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
         attempt,
@@ -2325,9 +2712,9 @@ fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
             );
         }
         let root = Path::new(&attempt.worktree);
-        if !tracked_worktree_is_clean(root)? {
+        if !worktree_is_integration_clean(root)? {
             bail!(
-                "coordinator worktree has tracked changes; refusing to integrate {}",
+                "coordinator worktree has user changes or unowned output; refusing to integrate {}",
                 phase.task_ref
             );
         }
@@ -2344,6 +2731,10 @@ fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
         attempt.phases[index].integrated_commit = git_head(root)?;
         attempt.phases[index].state = "integrated".into();
         changed = true;
+        // Integration is a durable boundary. A crash while admitting the next
+        // phase must resume from this completed integration, never repeat it.
+        store_attempt(store, attempt.clone());
+        store.save()?;
 
         let Some(next) = attempt.phases.get(index + 1).cloned() else {
             continue;
@@ -2352,9 +2743,9 @@ fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
             continue;
         }
         let next_directory = Path::new(&next.worktree);
-        if !tracked_worktree_is_clean(next_directory)? {
+        if !worktree_is_integration_clean(next_directory)? {
             bail!(
-                "next phase worktree {} has tracked changes; refusing to advance it",
+                "next phase worktree {} has user changes or unowned output; refusing to advance it",
                 next.task_ref
             );
         }
@@ -2364,16 +2755,15 @@ fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
             None,
             Some(next_directory),
         )?;
-        let task = phase_task(
-            &attempt.aven,
-            &EpicPhase {
-                task_id: next.task_id.clone(),
-                task_ref: next.task_ref.clone(),
-                title: next.title.clone(),
-            },
-        )?;
+        // Re-read immediately before admission: a dependency may have been
+        // added while the prior worker was integrating.
+        let task = phase_is_eligible(&attempt.aven, &next, Some(&attempt.phases[index]))?;
         let mut admitted = next;
         admitted.prompt_id = identifier("msg");
+        admitted.state = "prompt-pending".into();
+        attempt.phases[index + 1] = admitted.clone();
+        store_attempt(store, attempt.clone());
+        store.save()?;
         let response = opencode(
             "POST",
             &format!("/api/session/{}/prompt", admitted.session_id),
@@ -2397,12 +2787,10 @@ fn advance_worktree_phases(attempt: &mut Attempt) -> Result<bool> {
             .iter()
             .all(|phase| phase.state == "integrated");
     if all_integrated && attempt.state != "completed" {
-        aven(
-            &attempt.aven,
-            &["edit", &attempt.task_ref, "--status", "done"],
-            None,
-        )?;
-        attempt.state = "completed".into();
+        // Integration proves execution, not the root task's acceptance gates.
+        // Leave Aven status to the reviewer/implementer and surface a distinct
+        // lifecycle state for a coordinator awaiting that review.
+        attempt.state = "needs-review".into();
         changed = true;
     }
     if changed {
@@ -2476,16 +2864,17 @@ fn main() -> Result<()> {
             babysitter,
             mode,
         ),
-        Commands::Resume { task } => reconcile(path, &task),
-        Commands::Status { task } => status(path, &task),
+        Commands::Resume { task, workflow } => reconcile(path, &task, workflow.as_deref()),
+        Commands::Status { task, workflow } => status(path, &task, workflow.as_deref()),
         Commands::List { running } => list(path, running),
-        Commands::Reconcile { task } => reconcile(path, &task),
+        Commands::Reconcile { task, workflow } => reconcile(path, &task, workflow.as_deref()),
         Commands::Log {
             task,
+            workflow,
             event,
             detail,
-        } => log_event(path, &task, &event, &detail),
-        Commands::Interrupt { task } => interrupt(path, &task),
+        } => log_event(path, &task, workflow.as_deref(), &event, &detail),
+        Commands::Interrupt { task, workflow } => interrupt(path, &task, workflow.as_deref()),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
         Commands::Doctor => doctor(),
     };
@@ -2554,6 +2943,21 @@ mod tests {
             attempt_key("task-id", "planning"),
             attempt_key("task-id", "implementation")
         );
+    }
+    #[test]
+    fn lifecycle_commands_accept_an_explicit_workflow_selector() {
+        let cli = Cli::try_parse_from([
+            "aven-dispatch",
+            "status",
+            "APP-1",
+            "--workflow",
+            "implementation",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Status { workflow: Some(ref workflow), .. } if workflow == "implementation"
+        ));
     }
     #[test]
     fn targets_not_focused_selection_drive_validation() {
@@ -2681,6 +3085,7 @@ mod tests {
             title: "first phase".into(),
             branch: "app/phase-1".into(),
             worktree: "/phase-1".into(),
+            worktree_created_by_attempt: true,
             pane: "w1:p1".into(),
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
@@ -2703,6 +3108,54 @@ mod tests {
     #[test]
     fn branch_uses_immutable_id() {
         assert_eq!(branch("APP", "ABC123"), "APP/dispatch-abc123");
+    }
+    #[test]
+    fn automatic_worktree_cleanup_is_never_forced() {
+        let args = worktree_remove_args("w1");
+        assert_eq!(args, vec!["worktree", "remove", "--workspace", "w1"]);
+        assert!(!args.iter().any(|argument| argument == "--force"));
+    }
+    #[test]
+    fn phase_metadata_accepts_planner_schema_and_legacy_alias() {
+        assert_eq!(
+            phase_number(&json!({"metadata":{"sdd.plan-phase":"2"}}), "APP-2").unwrap(),
+            2
+        );
+        assert_eq!(
+            phase_number(&json!({"metadata":{"sdd.phase":"1"}}), "APP-1").unwrap(),
+            1
+        );
+        assert!(phase_number(&json!({"metadata":{"sdd.plan-phase":"zero"}}), "APP-X").is_err());
+    }
+    #[test]
+    fn phase_dependency_ids_are_read_without_response_order() {
+        assert_eq!(
+            phase_dependencies(
+                &json!({"dependencies":{"depends_on":[{"task_id":"immutable-predecessor"}]}})
+            ),
+            vec!["immutable-predecessor"]
+        );
+    }
+    #[test]
+    fn only_exact_bundled_runtime_files_are_integration_exceptions() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join(".opencode/agents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("orchestrator.md"), ORCHESTRATOR_AGENT).unwrap();
+        fs::write(agents.join("babysitter.md"), BABYSITTER_AGENT).unwrap();
+        assert!(dispatcher_runtime_file(
+            root.path(),
+            ".opencode/agents/orchestrator.md"
+        ));
+        assert!(dispatcher_runtime_file(
+            root.path(),
+            ".opencode/agents/babysitter.md"
+        ));
+        fs::write(agents.join("unrelated.md"), "user output").unwrap();
+        assert!(!dispatcher_runtime_file(
+            root.path(),
+            ".opencode/agents/unrelated.md"
+        ));
     }
     #[test]
     fn stale_legacy_lock_file_does_not_block_dispatch_store_access() {
@@ -2741,6 +3194,62 @@ mod tests {
         );
     }
     #[test]
+    fn authoritative_session_outcome_controls_running_state() {
+        assert_eq!(
+            authoritative_execution_state("running", &json!({"data":{"outcome":"succeeded"}})),
+            "needs-review"
+        );
+        assert_eq!(
+            authoritative_execution_state("running", &json!({"data":{"outcome":"failed"}})),
+            "failed"
+        );
+        assert_eq!(
+            authoritative_execution_state("running", &json!({"data":{}})),
+            "running"
+        );
+        assert_eq!(
+            authoritative_execution_state("interrupted", &json!({"data":{}})),
+            "interrupted"
+        );
+    }
+    #[test]
+    fn reset_recovery_reads_saved_operation_sessions_and_attempts() {
+        let operation = json!({
+            "attempt_ids": ["att-root", "att-phase"],
+            "sessions": ["ses-root", "ses-worker"],
+            "detached_children": ["APP-P1"]
+        });
+        assert_eq!(
+            reset_operation_strings(&operation, "attempt_ids").unwrap(),
+            vec!["att-root", "att-phase"]
+        );
+        assert_eq!(
+            reset_operation_strings(&operation, "sessions").unwrap(),
+            vec!["ses-root", "ses-worker"]
+        );
+        assert!(reset_operation_strings(&json!({"sessions":"bad"}), "sessions").is_err());
+    }
+    #[test]
+    fn reset_recovery_preserves_saved_attempt_ids_without_current_snapshots() {
+        let operation = json!({
+            "attempt_ids": ["att-root", "att-worker"],
+            "sessions": ["ses-root", "ses-worker"]
+        });
+        // Model recovery after both the checkout-local store and task metadata
+        // snapshots have already been removed: only the operation record is
+        // available for the auditing/completed checkpoint.
+        let attempts = merged_reset_inventory(
+            Vec::new(),
+            reset_operation_strings(&operation, "attempt_ids").unwrap(),
+        );
+        let sessions = merged_reset_inventory(
+            Vec::new(),
+            reset_operation_strings(&operation, "sessions").unwrap(),
+        );
+        assert_eq!(attempts, vec!["att-root", "att-worker"]);
+        assert_eq!(sessions, vec!["ses-root", "ses-worker"]);
+    }
+    #[test]
     fn dispatcher_events_are_machine_readable_json() {
         let attempt = Attempt {
             task_id: "task-id".into(),
@@ -2749,6 +3258,7 @@ mod tests {
             attempt_id: "att_1".into(),
             branch: "app/dispatch-task-id".into(),
             worktree: "/worktree".into(),
+            worktree_created_by_attempt: true,
             pane: "w1:p1".into(),
             agent: "build".into(),
             model: "provider/model".into(),
@@ -2760,6 +3270,7 @@ mod tests {
             phases: Vec::new(),
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
+            pending_prompt: String::new(),
             state: "running".into(),
             aven_update_pending: false,
             log_cursor: String::new(),
@@ -2792,6 +3303,7 @@ mod tests {
             attempt_id: "att_1".into(),
             branch: String::new(),
             worktree: String::new(),
+            worktree_created_by_attempt: false,
             pane: String::new(),
             agent: String::new(),
             model: String::new(),
@@ -2803,6 +3315,7 @@ mod tests {
             phases: Vec::new(),
             session_id: String::new(),
             prompt_id: String::new(),
+            pending_prompt: String::new(),
             state: "running".into(),
             aven_update_pending: false,
             log_cursor: String::new(),
