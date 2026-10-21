@@ -104,7 +104,7 @@ enum Commands {
         #[arg(long)]
         workflow: Option<String>,
     },
-    /// Safely discard dispatch and planning state for one task without deleting code or history.
+    /// Invalidate dispatch execution state while preserving the durable Aven plan.
     Reset {
         /// Task ref, or omit when invoked by an Aven focused-task command.
         task: Option<String>,
@@ -1947,45 +1947,23 @@ fn interrupt_and_drain_sessions(sessions: &[String]) -> Result<()> {
         active_sessions(sessions, &opencode("GET", "/api/session/active", None)?).join(", ")
     );
 }
-fn owned_reset_children(
-    invocation: &Invocation,
-    root: &Value,
-    root_ref: &str,
-) -> Result<Vec<String>> {
-    let root_id = field(root, "/task/id")?;
+fn reset_phase_children(root: &Value) -> Result<Vec<String>> {
     let empty = Vec::new();
-    let children = root
-        .pointer("/epic_children")
+    root.pointer("/epic_children")
         .and_then(Value::as_array)
-        .unwrap_or(&empty);
-    let mut owned = Vec::new();
-    for child in children {
-        let reference = child
-            .get("ref")
-            .and_then(Value::as_str)
-            .context("epic child is missing ref")?;
-        let child = refresh_task_by_ref(invocation, reference)?;
-        let metadata = child
-            .get("metadata")
-            .and_then(Value::as_object)
-            .context("epic child has no metadata")?;
-        let owner = metadata.get("sdd.plan-root").and_then(Value::as_str);
-        let phase = metadata
-            .get("sdd.plan-phase")
-            .or_else(|| metadata.get("sdd.phase"))
-            .and_then(Value::as_str);
-        if matches!(owner, Some(owner) if owner == root_id || owner == root_ref)
-            && phase.is_some_and(|phase| !phase.is_empty())
-        {
-            owned.push(reference.to_owned());
-        } else {
-            bail!(
-                "direct child {reference} is not a generated phase owned by {root_ref}; refusing reset"
-            );
-        }
-    }
-    Ok(owned)
+        .unwrap_or(&empty)
+        .iter()
+        .map(|child| {
+            child
+                .get("ref")
+                .and_then(Value::as_str)
+                .filter(|reference| !reference.is_empty())
+                .map(str::to_owned)
+                .context("epic child is missing ref")
+        })
+        .collect()
 }
+
 fn reset_operation_strings(operation: &Value, key: &str) -> Result<Vec<String>> {
     operation
         .get(key)
@@ -2016,7 +1994,7 @@ fn confirm_reset(reference: &str, attempts: usize) -> Result<()> {
         bail!("reset mutates state only with --yes when no interactive terminal is available");
     }
     print!(
-        "Reset {reference}, clearing {attempts} dispatch attempt(s) and its plan marker? [y/N] "
+        "Reset {reference}, invalidating {attempts} dispatch attempt(s) while preserving its Aven plan? [y/N] "
     );
     io::stdout().flush()?;
     let mut answer = String::new();
@@ -2048,7 +2026,9 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
     for attempt in metadata_attempts(&root, &task_id)? {
         attempts.insert(attempt.attempt_id.clone(), attempt);
     }
-    let mut children = owned_reset_children(&invocation, &root, &reference)?;
+    // This inventory is for audit only. It is deliberately derived from the
+    // current Aven graph and is never used to alter epic membership.
+    let children = reset_phase_children(&root)?;
     let mut recovered_sessions = Vec::new();
     let mut recovered_attempt_ids = Vec::new();
     if recovering {
@@ -2063,17 +2043,10 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         }
         recovered_sessions = reset_operation_strings(&operation, "sessions")?;
         recovered_attempt_ids = reset_operation_strings(&operation, "attempt_ids")?;
-        for child in operation
-            .get("detached_children")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-        {
-            if !children.iter().any(|current| current == child) {
-                children.push(child.to_owned());
-            }
-        }
+        // Legacy operation records may contain `detached_children` from the
+        // former destructive reset implementation. Ignore that stale inventory:
+        // it must never attach, detach, or otherwise override the membership
+        // currently recorded by Aven.
     }
     let active = opencode("GET", "/api/session/active", None)
         .context("cannot establish OpenCode session activity; reset refuses to guess")?;
@@ -2089,7 +2062,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         merged_reset_inventory(attempts.keys().cloned().collect(), recovered_attempt_ids);
     let running = active_sessions(&sessions, &active);
     println!(
-        "reset target={reference} generation={} attempts={} sessions={} generated_children={}",
+        "reset target={reference} generation={} attempts={} sessions={} phase_children={}",
         generation,
         operation_attempt_ids.len(),
         sessions.len(),
@@ -2114,7 +2087,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         interrupt_and_drain_sessions(&running)?;
     }
     if !recovering {
-        let operation = json!({"schema":"aven-dispatch-reset/v1", "generation": generation, "state":"incomplete", "attempt_ids": operation_attempt_ids, "sessions": sessions, "detached_children": children});
+        let operation = json!({"schema":"aven-dispatch-reset/v1", "generation": generation, "state":"incomplete", "attempt_ids": operation_attempt_ids, "sessions": sessions, "phase_children": children});
         let begin = vec![
             "edit".to_owned(),
             reference.clone(),
@@ -2144,12 +2117,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         .attempts
         .retain(|_, attempt| attempt.task_id != task_id);
     store.save()?;
-    let mut cleanup = vec![
-        "edit".to_owned(),
-        reference.clone(),
-        "--status".into(),
-        "todo".into(),
-    ];
+    let mut cleanup = vec!["edit".to_owned(), reference.clone()];
     let existing_metadata = root.get("metadata").and_then(Value::as_object);
     for key in [
         "dispatch.backend",
@@ -2162,9 +2130,6 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         "dispatch.attempt.default",
         "dispatch.attempt.planning",
         "dispatch.attempt.implementation",
-        "sdd.plan-worked-out",
-        "sdd.plan-kind",
-        "sdd.plan-schema",
     ] {
         // Aven treats removal of an absent custom field as an error. A reset
         // commonly follows an aborted dispatch, so optional legacy/workflow
@@ -2188,7 +2153,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
             cleanup.extend(["--remove-metadata".into(), key.clone()]);
         }
     }
-    cleanup.extend(["--metadata".into(), "dispatch.reset-state=incomplete".into(), "--metadata".into(), format!("dispatch.reset-operation={}", json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"auditing", "attempt_ids":operation_attempt_ids, "sessions":sessions, "detached_children":children}))]);
+    cleanup.extend(["--metadata".into(), "dispatch.reset-state=incomplete".into(), "--metadata".into(), format!("dispatch.reset-operation={}", json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"auditing", "attempt_ids":operation_attempt_ids, "sessions":sessions, "phase_children":children}))]);
     run(
         if invocation.aven_exe.is_empty() {
             "aven"
@@ -2203,7 +2168,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         None,
     )?;
     let note = format!(
-        "## Dispatcher reset\n\nReset generation {} supersedes the prior dispatch and plan. Removed {} attempt record(s) from the shared store and Aven snapshots. Preserved sessions, branches, worktrees, source files, specification, notes, history, the root epic, and its generated phase subtasks: {}. Plan again before implementation.",
+        "## Dispatcher reset\n\nReset generation {} supersedes prior dispatch execution only. Removed {} attempt record(s) from the shared store and Aven snapshots. Preserved the approved Aven plan, including task status, metadata, epic membership, phase dependencies, specification, notes, history, sessions, branches, worktrees, and source files. Current phase inventory: {}. A new dispatch may use the retained approved plan.",
         generation,
         attempts.len(),
         if children.is_empty() {
@@ -2224,13 +2189,13 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
             "--metadata",
             &format!(
                 "dispatch.reset-operation={}",
-                json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"completed", "attempt_ids":operation_attempt_ids, "sessions":sessions, "detached_children":children})
+                json!({"schema":"aven-dispatch-reset/v1", "generation":generation, "state":"completed", "attempt_ids":operation_attempt_ids, "sessions":sessions, "phase_children":children})
             ),
         ],
         None,
     )?;
     println!(
-        "reset complete for {reference}; plan and dispatch state were cleared without deleting source artifacts"
+        "reset complete for {reference}; dispatch attempts were invalidated while the Aven plan was preserved"
     );
     Ok(())
 }
@@ -2957,11 +2922,27 @@ mod tests {
             "interrupted"
         );
     }
+
+    #[test]
+    fn reset_phase_inventory_uses_current_membership_without_plan_ownership_checks() {
+        let root = json!({
+            "epic_children": [
+                {"ref": "APP-MANUAL"},
+                {"ref": "APP-PHASE"}
+            ]
+        });
+        assert_eq!(
+            reset_phase_children(&root).unwrap(),
+            vec!["APP-MANUAL", "APP-PHASE"]
+        );
+    }
     #[test]
     fn reset_recovery_reads_saved_operation_sessions_and_attempts() {
         let operation = json!({
             "attempt_ids": ["att-root", "att-phase"],
             "sessions": ["ses-root", "ses-worker"],
+            // This legacy field is parsed for a safe recovery audit but never
+            // used to change current Aven membership.
             "detached_children": ["APP-P1"]
         });
         assert_eq!(
