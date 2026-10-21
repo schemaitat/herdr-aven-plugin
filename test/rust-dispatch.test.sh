@@ -36,7 +36,12 @@ esac
 EOF
 cat > "$fake/git" <<'EOF'
 #!/bin/sh
+case " $* " in
+  *" rev-parse --show-toplevel "*) printf '%s\n' "${RUST_REPO_ROOT:-/parent}" ;;
+  *)
 printf 'worktree /parent\nHEAD deadbeef\nbranch refs/heads/main\n\n'
+  ;;
+esac
 EOF
 cat > "$fake/herdr" <<'EOF'
 #!/bin/sh
@@ -82,7 +87,7 @@ chmod +x "$fake"/*
 # fixed response with one derived from --data without parsing task text.
 sed -i 's/{"data":{"id":"msg_expected"}}/{"data":{"id":"msg_1a"}}/' "$fake/opencode"
 
-context='{"version":1,"invocation":{"origin_cwd":"/repo"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}}}'
+context='{"version":1,"invocation":{"origin_cwd":"/repo/nested/directory"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}}}'
 
 # Use an explicit deterministic pre-created ID expectation is impossible in a
 # black-box process test, so admission intentionally returns the caller ID via
@@ -102,8 +107,8 @@ esac
 EOF
 chmod +x "$fake/opencode"
 
-printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" >/dev/null
-assert_file_contains "$log" 'herdr worktree create --cwd /parent --branch app/dispatch-immutable-task --label APP-1 quoted "task" --no-focus' 'worktree is created without moving focus away from the picker'
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" RUST_REPO_ROOT=/repo-checkout RUST_WORKTREE="$work/worktree" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" >/dev/null
+assert_file_contains "$log" 'herdr worktree create --cwd /repo-checkout --branch app/dispatch-immutable-task --label APP-1 quoted "task" --no-focus' 'nested-CWD dispatch creates the workspace from its Git checkout root without moving focus'
 assert_file_contains "$log" 'herdr-api pane.focus w1:p1' 'dispatch focuses the worktree pane after attaching the session'
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
