@@ -589,9 +589,20 @@ worktrees, and Herdr session. OpenCode and Cargo installation are stubbed:
 no real agent runs, no tokens are spent, and user sessions/configs stay intact.
 Failure artifacts are retained for debugging.
 
-Main entrypoints: `src/main.rs` (dispatcher), `bin/run.sh` (plugin actions and
-panes), `herdr-plugin.toml` (manifest), and `scripts/install-aven-command.sh`
-(Aven command installation).
+Main entrypoints: `src/main.rs` (dispatcher orchestration), `bin/run.sh`
+(plugin actions and panes), `herdr-plugin.toml` (manifest), and
+`scripts/install-aven-command.sh` (Aven command installation).
+
+The Rust dispatcher keeps its internal boundaries deliberately small:
+
+- `src/model.rs` owns Aven command-context parsing and the serde-backed
+  dispatcher state model.
+- `src/process.rs` owns command execution, OpenCode/Aven transport helpers,
+  and dispatcher state-path handling.
+- `src/main.rs` owns command lifecycle orchestration and integrations.
+
+This separation is intentionally not a framework: add a module only when a
+shared concern has a clear owner.
 
 **Troubleshooting:** Reopen Aven after changing commands. Check executable and
 project resolution with `aven.tasks.doctor`; inspect plugin failures with
