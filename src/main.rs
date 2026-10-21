@@ -21,7 +21,7 @@ use model::{
 use process::header_value;
 use process::{
     LockedStore, absolute_path, aven, aven_args, field, identifier, now, opencode, opencode_in,
-    opencode_text, opencode_text_in, run, run_in, store_attempt, store_path,
+    opencode_text, opencode_text_in, repository_root, run, run_in, store_attempt, store_path,
 };
 
 #[derive(Parser)]
@@ -770,22 +770,18 @@ fn create_worktree(
     label: &str,
     base: Option<&str>,
 ) -> Result<WorktreeResource> {
+    let origin = repository_root(origin)?;
     let listing = run(
         "git",
         &[
             "-C".into(),
-            origin.into(),
+            origin.clone(),
             "worktree".into(),
             "list".into(),
             "--porcelain".into(),
         ],
         None,
     )?;
-    let repo = listing
-        .lines()
-        .find_map(|line| line.strip_prefix("worktree "))
-        .map(str::to_owned)
-        .context("resolve parent checkout")?;
     let existing = listing.split("\n\n").find_map(|entry| {
         entry
             .lines()
@@ -803,7 +799,7 @@ fn create_worktree(
         args.extend([
             "open".into(),
             "--cwd".into(),
-            repo,
+            origin.clone(),
             "--path".into(),
             path.into(),
         ]);
@@ -811,7 +807,7 @@ fn create_worktree(
         args.extend([
             "create".into(),
             "--cwd".into(),
-            repo,
+            origin,
             "--branch".into(),
             branch.to_owned(),
         ]);

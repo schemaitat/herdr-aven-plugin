@@ -108,6 +108,26 @@ pub(crate) fn absolute_path(path: PathBuf) -> Result<PathBuf> {
     }
 }
 
+/// Resolve a caller-provided directory to the root of its current Git
+/// worktree. Dispatcher commands can be invoked from any subdirectory, while
+/// Herdr workspace creation needs a stable checkout path.
+pub(crate) fn repository_root(directory: &str) -> Result<String> {
+    let root = run(
+        "git",
+        &[
+            "-C".into(),
+            directory.into(),
+            "rev-parse".into(),
+            "--show-toplevel".into(),
+        ],
+        None,
+    )?;
+    if root.is_empty() {
+        bail!("Git did not return a repository root for {directory}");
+    }
+    Ok(root)
+}
+
 pub(crate) fn run_in(
     program: &str,
     args: &[String],
