@@ -27,7 +27,8 @@ export function secure(app: FastifyInstance, origin: string, token = randomBytes
       return reply.code(403).send({ error: 'Local same-origin access only' });
     }
     if (!['GET', 'HEAD'].includes(request.method)) return reply.code(405).send({ error: 'Read-only' });
-    // No endpoint accepts user-supplied scope, paths, commands, URLs, or query tokens.
+    // Only allowlisted discovered project keys select read scope within the configured workspace.
+    // No endpoint accepts filesystem paths, commands, upstream URLs, workspace overrides or query tokens.
     const api = request.url.startsWith('/api/') || request.routeOptions.url?.startsWith('/api/');
     if (request.url.includes('?') && (api || request.url.startsWith('/bootstrap'))) return reply.code(400).send({ error: 'Query parameters are not supported' });
     if (api) {

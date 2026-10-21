@@ -2,18 +2,21 @@ import { spawn } from 'node:child_process';
 
 export interface Scope { cwd: string; project: string; workspace: string; herdr: boolean; session: string }
 export type ReadCommand =
+  | { kind: 'projects' }
   | { kind: 'list'; upcoming?: boolean }
   | { kind: 'context'; ref: string }
   | { kind: 'snapshot' }
   | { kind: 'worktrees' };
 export const LIST_LIMIT = 500;
 export type Runner = (command: ReadCommand) => Promise<unknown>;
-const identifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+export const identifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+export const PROJECT_LIMIT = 100;
 
 export function commandVector(scope: Scope, command: ReadCommand): [string, string[]] {
   if (!identifier.test(scope.project) || !identifier.test(scope.workspace)) throw new Error('Invalid startup scope');
   const avenScope = ['--project', scope.project, '--workspace', scope.workspace];
   switch (command.kind) {
+    case 'projects': return ['aven', ['project', 'list', '--workspace', scope.workspace, '--limit', String(PROJECT_LIMIT), '--json']];
     case 'list': return ['aven', ['list', ...avenScope, '--limit', String(LIST_LIMIT), '--json', ...(command.upcoming ? ['--upcoming'] : [])]];
     case 'context': {
       if (!/^[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(command.ref)) throw new Error('Invalid task reference');
@@ -30,13 +33,21 @@ export function commandVector(scope: Scope, command: ReadCommand): [string, stri
 }
 
 // No shell, stdin, API-controlled arguments, or executable overrides. Bound both streams together.
-export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 1024 * 1024, concurrency: 4 }, signal?: AbortSignal): Runner {
+export function commandBudget(concurrency = 4) {
   let active = 0;
   const queue: (() => void)[] = [];
+  return {
+    async acquire() { if (active >= concurrency) await new Promise<void>(resolve => queue.push(resolve)); else active++; },
+    release() { const next = queue.shift(); if (next) next(); else active--; },
+  };
+}
+const processBudget = commandBudget();
+export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 1024 * 1024, concurrency: 4 }, signal?: AbortSignal): Runner {
+  const local = commandBudget(bounds.concurrency);
   return async command => {
     const [program, args] = commandVector(scope, command);
-    if (active >= bounds.concurrency) await new Promise<void>(resolve => queue.push(resolve));
-    else active++;
+    await local.acquire();
+    await processBudget.acquire();
     try {
       if (signal?.aborted) throw new Error('Source cancelled');
       return await new Promise<unknown>((resolve, reject) => {
@@ -66,9 +77,8 @@ export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 
         });
       });
     } finally {
-      const next = queue.shift();
-      if (next) next(); // Transfer the reserved slot rather than briefly releasing it.
-      else active--;
+      processBudget.release();
+      local.release();
     }
   };
 }

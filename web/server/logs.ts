@@ -25,18 +25,19 @@ export function summarizeEvent(raw: unknown, sessionId: string, secrets: string[
   return { id: `opencode:${sessionId}:${item.id}`, source: 'opencode', sessionId, cursor: item.durable ? String(item.durable.seq) : undefined,
     observedAt: new Date(item.created).toISOString(), text: safeText(item.type, secrets), durable };
 }
-const cursorSchema = z.object({ scope: z.string().max(1024), source: z.enum(['opencode', 'dispatcher']), after: z.string().max(256) });
+const cursorSchema = z.object({ scope: z.string().max(1024), source: z.enum(['opencode', 'dispatcher']), after: z.string().max(256), project: z.string().max(128), workspace: z.string().max(128) });
 export const scopeKey = (id: string) => Buffer.from(id).toString('base64url');
-export const pageCursor = (scope: string, source: 'opencode' | 'dispatcher', after: string) => Buffer.from(JSON.stringify({ scope, source, after })).toString('base64url');
+export const pageCursor = (scope: string, source: 'opencode' | 'dispatcher', after: string, identity: GraphSnapshot['scope']) => Buffer.from(JSON.stringify({ scope, source, after, ...identity })).toString('base64url');
 
 // Shared bounded lazy reader: cache and admission bound apply across ALL browsers.
+let active = 0; // Process-wide, including all project readers.
 export function createLogs(api: OpenCodeSource, run: Runner, workspace: string) {
   const lifetime = new AbortController();
   const cache = new Map<string, { time: number; page: Promise<LogPage> }>();
-  let active = 0;
   return {
     close() { lifetime.abort(); cache.clear(); },
     async page(graph: GraphSnapshot, key: string, encoded = 'start'): Promise<LogPage> {
+      if (lifetime.signal.aborted || graph.scope.workspace !== workspace) throw new Error('Invalid project scope');
       if (!/^[A-Za-z0-9_-]{1,2048}$/.test(key) || !/^[A-Za-z0-9_-]{1,2048}$/.test(encoded)) throw new Error('Invalid scope/cursor');
       const id = Buffer.from(key, 'base64url').toString();
       const node = graph.nodes.find(node => node.id === id);
@@ -46,11 +47,11 @@ export function createLogs(api: OpenCodeSource, run: Runner, workspace: string) 
       let after = '';
       if (encoded !== 'start') {
         const cursor = cursorSchema.parse(JSON.parse(Buffer.from(encoded, 'base64url').toString()));
-        if (cursor.scope !== id || cursor.source !== (session ? 'opencode' : 'dispatcher')) throw new Error('Cursor scope mismatch');
+        if (cursor.scope !== id || cursor.source !== (session ? 'opencode' : 'dispatcher') || cursor.workspace !== graph.scope.workspace || cursor.project !== graph.scope.project) throw new Error('Cursor scope mismatch');
         after = cursor.after;
       }
       if (!session && !logRef) return { entries: [], message: 'History unavailable for this entity. Select a linked OpenCode session or dispatcher attempt.', gap: false };
-      const cacheKey = `${key}/${encoded}`;
+      const cacheKey = JSON.stringify([graph.scope.workspace, graph.scope.project, key, encoded, session, logRef, node.details.attemptId, node.details.taskId]);
       const hit = cache.get(cacheKey);
       if (hit && Date.now() - hit.time < 5000) return hit.page;
       if (active >= 2) return { entries: [], message: 'Log reader busy; retry shortly (shared concurrency limit 2).', gap: true };
@@ -77,11 +78,11 @@ export function createLogs(api: OpenCodeSource, run: Runner, workspace: string) 
               if (entry) entries.push(entry); else gap = true;
               if (entries.length === PAGE_SIZE) break;
             }
-            return { entries, next: entries.length === PAGE_SIZE || (capped && last >= 0) ? pageCursor(id, 'opencode', String(last)) : undefined, gap,
+            return { entries, next: entries.length === PAGE_SIZE || (capped && last >= 0) ? pageCursor(id, 'opencode', String(last), graph.scope) : undefined, gap,
               message: capped && last < 0 ? 'History inspection cap reached without a durable sequence; remaining history cannot be resumed from this unsupported response.' : 'Durable API event summaries only; prompt, reasoning and tool payloads omitted. Sequence gaps are reported.' };
           }
           // Installed Aven has bounded context reads, not a note-page API. Page its available note window locally; disclose coverage.
-          const context = z.object({ workspace: z.object({ key: z.literal(workspace) }), metadata: z.record(z.string(), z.unknown()),
+           const context = z.object({ task: z.object({ display_ref: z.literal(logRef!) }), workspace: z.object({ key: z.literal(workspace) }), metadata: z.record(z.string(), z.unknown()),
             related: z.array(z.object({ task_id: z.string() })), notes: z.array(z.object({ id: z.string().max(128), created_at: z.string(), body: z.string().max(65536) })).max(2000) }).parse(await run({ kind: 'context', ref: logRef! }));
           if (context.metadata['dispatch.attempt-id'] !== node.details.attemptId || !context.related.some(other => other.task_id === node.details.taskId)) throw new Error('Unlinked log task');
           const notes = context.notes.filter(note => Number.isFinite(Date.parse(note.created_at))).map(note => ({ ...note, created_at: new Date(note.created_at).toISOString() }))
@@ -93,7 +94,7 @@ export function createLogs(api: OpenCodeSource, run: Runner, workspace: string) 
             const event = z.object({ schema: z.literal('aven-dispatch-event/v1'), attempt_id: z.literal(String(node.details.attemptId)), event: z.string(), state: z.string().optional() }).safeParse(raw);
             const cursor = `${note.created_at}/${note.id}`;
             if (event.success) entries.push({ id: `dispatcher:${node.details.attemptId}:${note.id}`, source: 'dispatcher', attemptId: String(node.details.attemptId), cursor, observedAt: note.created_at, text: safeText(`${event.data.event}${event.data.state ? ` · ${event.data.state}` : ''}`, api.secrets), durable: true });
-            if (entries.length === PAGE_SIZE) { next = pageCursor(id, 'dispatcher', cursor); break; }
+            if (entries.length === PAGE_SIZE) { next = pageCursor(id, 'dispatcher', cursor, graph.scope); break; }
           }
           return { entries, next, gap: true, message: 'Dispatcher note window (Aven context limit; older history may be unavailable). Payload details omitted. Cursor resumes by source timestamp and note ID.' };
         } catch { return { entries, gap: true, message: 'History unavailable, unsupported, oversized or interrupted. Live observations are not durable history; retry to recover.' }; }

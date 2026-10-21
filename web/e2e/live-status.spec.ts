@@ -4,6 +4,7 @@ import type { Activity, GraphSnapshot } from '../shared/graph.js';
 import { applyActivity } from '../server/activity.js';
 import { apiEvent, liveFixture } from '../test/fixtures/opencode-api.js';
 import { summarizeEvent } from '../server/logs.js';
+import { projectDiscovery } from './project-fixture.js';
 
 function live(state: Activity['state'], version?: number): GraphSnapshot {
   const now = Date.now();
@@ -19,6 +20,7 @@ async function visualState(page: Page) {
   });
 }
 test.beforeEach(async ({ page }) => {
+  await projectDiscovery(page, 'demo');
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
 });
@@ -90,7 +92,7 @@ test('authenticated stream reconnects/resnapshots version gaps, ignores duplicat
     return route.fulfill({ contentType: 'text/event-stream', body: frames });
   });
   const hostile = '<img src=x onerror="window.__injected=true">';
-  await page.route('**/api/logs/**', route => {
+  await page.route('**/api/projects/*/logs/**', route => {
     logReads++; expect(route.request().headers().authorization).toBe('Bearer fixture-token');
     return route.fulfill({ json: { entries: [{ id: `log-${logReads}`, source: 'opencode', sessionId: 'ses_one', cursor: String(logReads), observedAt: new Date().toISOString(), text: hostile, durable: true }], next: logReads === 1 ? 'fixture-cursor' : undefined, message: 'Durable summaries; payloads omitted', gap: true } });
   });

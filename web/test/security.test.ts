@@ -76,7 +76,8 @@ describe('loopback same-origin authenticated read API', () => {
 });
 
 describe('fixed source command vectors', () => {
-  it('only admits the four read shapes with explicit startup scope', () => {
+  it('only admits fixed read shapes with explicit server-owned scope', () => {
+    expect(commandVector(scope, { kind: 'projects' })).toEqual(['aven', ['project', 'list', '--workspace', 'default', '--limit', '100', '--json']]);
     expect(commandVector(scope, { kind: 'list', upcoming: true })).toEqual(['aven', ['list', '--project', 'demo', '--workspace', 'default', '--limit', '500', '--json', '--upcoming']]);
     expect(commandVector(scope, { kind: 'context', ref: 'DEMO-ONE' })).toEqual(['aven', ['context', 'DEMO-ONE', '--workspace', 'default', '--json']]);
     expect(commandVector(scope, { kind: 'snapshot' })).toEqual(['herdr', ['api', 'snapshot']]);
@@ -115,6 +116,15 @@ else setTimeout(()=>console.log('{}'), 30);
       expect(calls.map(call => call.args.slice(0, 2))).toEqual([['list', '--project'], ['context', 'DEMO-ONE'], ['api', 'snapshot'], ['worktree', 'list']]);
       for (let i = 1; i < calls.length; i++) expect(calls[i].time - calls[i - 1].time).toBeGreaterThanOrEqual(25);
       expect(JSON.stringify(calls)).not.toMatch(/reconcile|--running|edit|prompt|create|focus/);
+      // Separate project runners must not multiply the process-wide four-command budget.
+      const runners = Array.from({ length: 4 }, (_, i) => createRunner({ ...scope, cwd: temp, project: `p${i}` }));
+      await Promise.all(Array.from({ length: 12 }, (_, i) => runners[i % 4]({ kind: 'list' })));
+      const sharedCalls = (await readFile(audit, 'utf8')).trim().split('\n').slice(4).map(line => JSON.parse(line));
+      expect(sharedCalls).toHaveLength(12);
+      for (let i = 4; i < sharedCalls.length; i++) expect(sharedCalls[i].time - sharedCalls[i - 4].time).toBeGreaterThanOrEqual(25);
+      await runners[0]({ kind: 'projects' });
+      const discovery = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).at(-1);
+      expect(discovery.args).toEqual(['project', 'list', '--workspace', 'default', '--limit', '100', '--json']);
       process.env.EXPLORER_STUB_MODE = 'large';
       await expect(run({ kind: 'list' })).rejects.toThrow('output limit');
       process.env.EXPLORER_STUB_MODE = 'stderr';

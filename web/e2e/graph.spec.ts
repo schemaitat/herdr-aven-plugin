@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { graphFixture, scopeFixture, scopeClock } from '../test/fixtures/graph-snapshot.js';
 import { allTypes, onlyTypes } from './filter-controls.js';
+import { projectDiscovery } from './project-fixture.js';
 
 // Read-only test instrumentation: Cytoscape registers its core on its container.
 // No production debug endpoint or browser-global mutation capability is shipped.
@@ -25,6 +26,7 @@ async function point(page: Page, id?: string) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await projectDiscovery(page, 'graph-fixture');
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));

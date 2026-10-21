@@ -2,6 +2,13 @@ import { readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import type { Scope } from './commands.js';
 
+export interface ProjectConfig { scope: Scope; primary: string; storePath?: string; localCoverage?: boolean }
+
+export function projectConfig(config: ProjectConfig, project: string): ProjectConfig {
+  if (project === config.scope.project) return config;
+  return { ...config, scope: { ...config.scope, project, herdr: false }, storePath: undefined, localCoverage: false };
+}
+
 // Filesystem-only equivalent of the dispatcher's primary-checkout lookup; no store lock or git writes.
 export async function primaryCheckout(cwd: string): Promise<string> {
   const dotgit = resolve(cwd, '.git');

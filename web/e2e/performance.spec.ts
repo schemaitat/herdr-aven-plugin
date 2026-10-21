@@ -2,9 +2,11 @@ import { test, expect } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { largeGraph } from '../test/fixtures/large-graph.js';
 import { allTypes } from './filter-controls.js';
+import { projectDiscovery } from './project-fixture.js';
 
 test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-update stability', async ({ page }, info) => {
   let snapshot = largeGraph();
+  await projectDiscovery(page, snapshot.scope.project);
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: snapshot }));
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));

@@ -1,7 +1,9 @@
 import type { Entity } from '../shared/graph.js';
+import type { ProjectChoice } from '../shared/projects.js';
 import { ALL_TYPES, defaultFilters, type Filters, type TimePreset } from './graph/state.js';
 
-export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount, onSearch, matches, visible, unknownTimeExclusions }: {
+export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount, onSearch, matches, visible, unknownTimeExclusions, projects, project, onProject }: {
+  projects: ProjectChoice[]; project?: string; onProject: (project: string) => void;
   nodes: Entity[]; filters: Filters; onChange: (filters: Filters) => void;
   onCommand: (kind: 'fit' | 'reset' | 'in' | 'out') => void; mounted: boolean; onMount: () => void;
   onSearch: () => void;
@@ -11,6 +13,7 @@ export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount,
   const epic = epics.find(node => node.id === filters.epic);
   return <section aria-label="Graph and entity controls">
     <div className="toolbar" aria-label="Entity filters">
+      <label>Project<select aria-label="Project" value={project ?? ''} disabled={!project} onChange={event => onProject(event.target.value)}>{!project && <option value="">Loading projects…</option>}{project && !projects.some(choice => choice.key === project) && <option value={project}>{project} (current)</option>}{projects.map(choice => <option key={choice.key} value={choice.key}>{choice.name}</option>)}</select></label>
       <button onClick={onSearch}>Search /</button>
       <label>Search entities<input type="search" maxLength={256} value={filters.query} onChange={event => onChange({ ...filters, query: event.target.value })} placeholder="Task, session, pane, branch…" /></label>
       <details className="filter-popover" onKeyDown={event => {

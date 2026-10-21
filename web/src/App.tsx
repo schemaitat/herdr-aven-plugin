@@ -24,9 +24,16 @@ class CanvasBoundary extends Component<{ children: ReactNode; onFailure: () => v
 type Panel = 'entities' | 'activity' | 'history' | 'help';
 
 export function App() {
-  const { snapshot, error, connection, read } = useLiveGraph();
+  const live = useLiveGraph();
+  const [preferences, setPreferences] = useState<Filters>(defaultFilters);
+  return <Explorer key={live.selectionEpoch} live={live} preferences={preferences} onPreferences={setPreferences} />;
+}
+
+function Explorer({ live, preferences, onPreferences }: { live: ReturnType<typeof useLiveGraph>; preferences: Filters; onPreferences: (filters: Filters) => void }) {
+  const { snapshot, error, connection, read, listing, project, selectProject, discoveryError, retryDiscovery } = live;
   const [selected, setSelected] = useState<string>();
-  const [filters, setFilters] = useState<Filters>(defaultFilters);
+  const [filters, setFilters] = useState<Filters>(() => ({ ...preferences, query: '', epic: undefined }));
+  useEffect(() => { onPreferences({ ...defaultFilters(), kinds: filters.kinds, state: filters.state, time: filters.time }); }, [filters.kinds, filters.state, filters.time, onPreferences]);
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     if (filters.time === 'all') return;
@@ -83,14 +90,15 @@ export function App() {
   return <>
     <a className="skip-link" href="#entities" onClick={event => { event.preventDefault(); openPanel('entities', true); }}>Skip graph to entities</a>
     <main className="graph-shell">
-      <header className="scope-strip"><h1>Project explorer</h1><span>{snapshot ? `${snapshot.scope.workspace} / ${snapshot.scope.project}` : 'Connecting to local sources…'}</span><span className="readonly">READ ONLY</span>
+      <header className="scope-strip"><h1>Project explorer</h1><span>{snapshot ? `${snapshot.scope.workspace} / ${snapshot.scope.project}` : project && listing ? `${listing.workspace} / ${project} · loading` : 'Connecting to local sources…'}</span><span className="readonly">READ ONLY</span>
         <span className="muted">{snapshot ? `${snapshot.nodes.length} entities · ${snapshot.edges.length} relationships` : 'Loading a bounded, normalized snapshot'}</span>
         <div className="source-health" aria-label="Source health">{snapshot?.health.map(source => <span key={source.source} className={`health ${source.status}`} title={`${source.message} · Observed ${source.observedAt}`}><strong>{source.source} · {source.status}</strong><span className="health-message">{source.status !== 'ok' && source.message}</span></span>)}</div>
       </header>
       {error && <p role="alert" className="warning">{error} {snapshot && 'Displayed data is stale.'}</p>}
+      {discoveryError && <p role="status" className="warning">{discoveryError} <button onClick={retryDiscovery}>Retry project discovery</button></p>}
       {canvasFailed && <p role="alert" className="warning">Canvas unavailable. Entities and details remain available.</p>}
       <p role="status" className="live-connection">{connection}</p>
-      <Toolbar nodes={snapshot?.nodes ?? []} filters={filters} onChange={setFilters} onSearch={openSearch} matches={graph.discoveryNodes.length} visible={mounted ? graph.nodes.length : 0} unknownTimeExclusions={graph.unknownTimeExclusions} onCommand={kind => setCommand(previous => ({ kind, serial: previous.serial + 1 }))} mounted={mounted} onMount={() => { setMounted(value => !value); if (mounted) openPanel('entities'); }} />
+      <Toolbar projects={listing?.projects ?? []} project={project} onProject={selectProject} nodes={snapshot?.nodes ?? []} filters={filters} onChange={setFilters} onSearch={openSearch} matches={graph.discoveryNodes.length} visible={mounted ? graph.nodes.length : 0} unknownTimeExclusions={graph.unknownTimeExclusions} onCommand={kind => setCommand(previous => ({ kind, serial: previous.serial + 1 }))} mounted={mounted} onMount={() => { setMounted(value => !value); if (mounted) openPanel('entities'); }} />
       <nav className="panel-controls" aria-label="Inspection panels">{(['entities', 'activity', 'history', 'help'] as const).map(value => <button key={value} aria-expanded={panel === value} aria-controls="inspector" onClick={() => panel === value ? closePanel() : openPanel(value, true)}>{value === 'entities' ? 'Entities & details' : value === 'history' ? 'Event history' : value === 'help' ? 'Help & legend' : 'Live activity'}</button>)}</nav>
       {graph.cappedNodes > 0 && <p className="warning" role="status">Graph limited to 500 visible nodes · {graph.cappedNodes} additional matches · {graph.omittedRelationships} source relationships touch cap-hidden matches. Narrow search/type/status filters to reveal them. All {graph.discoveryNodes.length} matches remain in Entities and details; totals above are unchanged.</p>}
       {graph.hiddenTasks > 0 && <p className="warning" role="status">{graph.hiddenTasks} collapsed tasks · {graph.hiddenRelationships} relationships touch hidden tasks. External connections are summarized at visible epic hubs; internal blockers remain recorded. Expand epics to inspect all tasks.</p>}
@@ -105,7 +113,7 @@ export function App() {
             <DetailsPanel entity={entity} edge={selectedEdge} relationships={graph.allEdges} snapshot={snapshot} onSelect={setSelected} missing={Boolean(selected && !entity && !selectedEdge)} /></div>
           </div>}
           {panel === 'activity' && <ActivityPanel entity={entity} snapshot={snapshot} />}
-          {panel === 'history' && <LogPanel entity={entity} read={read} />}
+          {panel === 'history' && <LogPanel entity={entity} read={read} project={project} />}
           {panel === 'help' && <><p>Drag bubbles to arrange · Drag space to pan · Scroll to zoom · Double-click an epic to collapse · Select an edge for its evidence. Keyboard alternative: Entities & details.</p><Legend /><p>Local sources only · No prompts, approvals, focus changes, reconciliation, or task writes · Terminal observations do not imply acceptance.</p><div className="source-health">{snapshot?.health.map(source => <p key={source.source}>{source.source} · {source.status}: {source.message} · Observed {source.observedAt}</p>)}</div></>}
         </section>}
       </div>

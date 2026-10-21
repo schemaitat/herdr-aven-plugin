@@ -1,13 +1,13 @@
 import { resolve } from 'node:path';
 import { entityId, type EdgeKind, type Entity, type GraphSnapshot, type Provenance, type Relationship } from '../shared/graph.js';
 import type { Runner } from './commands.js';
-import type { startupConfig } from './config.js';
+import type { ProjectConfig } from './config.js';
 import { avenSource, type AvenRead } from './sources/aven.js';
 import { readDispatcher, type DispatchRead } from './sources/dispatcher.js';
 import { readHerdr, type HerdrRead } from './sources/herdr.js';
 import { attemptTime, effectiveTimes, sourceTime } from '../shared/scope.js';
 
-type Config = Awaited<ReturnType<typeof startupConfig>>;
+type Config = ProjectConfig;
 export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead, herdr: HerdrRead, now = Date.now()): GraphSnapshot {
   const nodes = new Map<string, Entity>();
   const edges = new Map<string, Relationship>();
@@ -142,7 +142,9 @@ export function createGraphReader(config: Config, run: Runner) {
       aven = next.health.status === 'unavailable' && aven.tasks.length ? { ...aven, health: { ...aven.health, status: 'stale', message: next.health.message } } : next;
       dispatch = await readDispatcher(config.storePath, aven);
     } else {
-      const next = await readHerdr(config.scope, config.primary, run);
+       const next: HerdrRead = config.localCoverage === false
+         ? { panes: [], workspaces: [], worktrees: [], health: { source: 'herdr', status: 'unavailable', observedAt: new Date().toISOString(), message: 'Local topology unavailable for non-startup project; startup repository topology is not reused' } }
+         : await readHerdr(config.scope, config.primary, run);
       herdr = next.health.status === 'unavailable' && herdr.panes.length ? { ...herdr, health: { ...herdr.health, status: 'stale', message: next.health.message } } : next;
     }
     return normalize(config, aven, dispatch, herdr);

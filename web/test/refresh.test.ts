@@ -22,6 +22,19 @@ function source() {
   return { control, api };
 }
 describe('shared bounded live collector', () => {
+  it('closing a project collector cannot close another adapter subscription or its polling lanes', async () => {
+    vi.useFakeTimers();
+    const first = source(); const second = source();
+    const a = createCollector(async () => liveFixture(), first.api);
+    const b = createCollector(async () => ({ ...liveFixture(), scope: { project: 'other', workspace: 'default' } }), second.api);
+    collectors.push(a, b); await Promise.all([a.snapshot(), b.snapshot()]);
+    const observed = vi.fn(); b.subscribe(observed);
+    await a.close(); const count = first.control.audit.length;
+    second.control.setActive(['ses_two']); await vi.advanceTimersByTimeAsync(2100);
+    expect(first.control.audit).toHaveLength(count); expect(observed).toHaveBeenCalled();
+    expect((await b.snapshot()).nodes.find(node => node.details.sessionId === 'ses_two')?.activity?.[0].state).toBe('working');
+    expect((await b.snapshot()).scope.project).toBe('other');
+  });
   it('recovers failed initialization without unhandled rejection or stopping retry lanes', async () => {
     vi.useFakeTimers();
     const { api } = source(); let failed = true;

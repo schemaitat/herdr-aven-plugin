@@ -204,15 +204,39 @@ same-origin boundary, not other software running as your local user. Do not
 publish the listener, reverse-proxy it publicly or paste service credentials into
 browser URLs. The dashboard does not launch a browser automatically.
 
+**Project** switches exactly one loaded project in the configured Aven workspace.
+Each tab/browser owns its selection; there is no server-global selected project,
+mutation endpoint, URL/cwd override, cross-workspace browsing or combined graph.
+The configured startup project is selected initially. Switching aborts old reads
+and streams and ignores late results, clears query/epic scope, selection, history,
+collapse and graph positions/camera, and retains type/state/time preferences.
+Discovery failures keep the current project and offer **Retry project discovery**;
+the startup alias remains usable even if discovery fails on first load.
+
+Choices come only from a fixed `aven project list --workspace <configured>
+--limit 100 --json` read, cached for 30 seconds. Only key/name reach the browser;
+capped or invalid-key coverage is disclosed. Unknown/malformed keys fail closed.
+Non-startup projects recover execution from their scoped Aven metadata and linked
+authenticated OpenCode sessions. Their local dispatcher store and Herdr topology
+coverage is explicitly unavailable: the startup store/repository topology is
+never borrowed, and other repositories/paths are not discovered.
+
 Reads use explicit project/workspace scope, a 500-item cap for each of Aven's
 available and upcoming lists, and at most 80 context hydrations per snapshot
 (four concurrent, four-second hydration admission budget). Contexts cache for five seconds, with actual read timestamps in
 provenance and rotating hydration when coverage exceeds the batch. One collector
-serves every browser: API and Herdr lanes poll independently at approximately
+per loaded project serves its browsers, with at most four collectors across all
+clients. Streams and in-flight reads hold leases; unreferenced collectors expire
+after 60 seconds since their last successful bounded read (or creation). Full
+admission returns retryable HTTP 503; close streams and retry after idle expiry.
+Eviction/shutdown closes readers, timers and each collector's own API subscription.
+CLI concurrency remains four process-wide, not four per project.
+API and Herdr lanes poll independently at approximately
 two seconds; Aven/dispatcher use a five-second lane. No lane overlaps itself.
 Authenticated same-origin fetch/SSE delivers versioned complete snapshots and
 health heartbeats; clients reconnect with backoff, resnapshot on gaps/restarts,
-and fall back to polling. Updates preserve graph camera, positions and selection.
+and fall back to polling. Ordinary same-project updates preserve graph camera,
+positions and selection; project switches deliberately reset them.
 Reaching a list cap or missing context is labelled **incomplete**, never silently
 treated as full coverage. Cross-project/unhydrated/missing references remain
 boundary stubs, without reading their details. CLI reads time out after four
@@ -236,11 +260,17 @@ events (and 1,000 displayed history entries per selection). Experimental durable
 logs may be unavailable. Linked dispatcher notes are a fallback: the installed
 Aven CLI supplies a bounded context window, not upstream note pagination, so
 older history is explicitly reported as potentially unavailable. History reads
-share a two-request limit and 32-page/five-second cache across browsers. Prompt,
+share a process-wide two-request limit and a 32-page/five-second cache per project
+across browsers. Every request authorizes its node/cursor against that project's
+current snapshot before cache lookup; caches include workspace/project identity. Prompt,
 reasoning, tool payloads and raw note bodies are omitted; summaries strip terminal
 controls, redact known credentials, cap text at 2,048 characters and render as
 untrusted text. Slow SSE readers are disconnected instead of queued without bound;
-there are at most 16 local streaming connections.
+there are at most 16 local streaming connections shared across scoped and alias routes.
+Authenticated GET `/api/projects` lists choices; `/api/projects/:project/snapshot`,
+`/api/projects/:project/stream` and `/api/projects/:project/logs/:scope/:cursor`
+resolve the same allowlisted project scope. Existing `/api/snapshot`, `/api/stream`
+and `/api/logs/:scope/:cursor` remain startup-project aliases.
 
 Security: the server rejects hostile Host/Origin and cross-site browser requests,
 disables CORS, and authenticates API reads with an in-memory per-run token obtained

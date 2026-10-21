@@ -5,8 +5,10 @@ import type { Core } from 'cytoscape';
 import { orbitalLayout } from '../src/graph/layout.js';
 import { defaultFilters, projectGraph } from '../src/graph/state.js';
 import { allTypes } from './filter-controls.js';
+import { projectDiscovery } from './project-fixture.js';
 
 test('loading, empty, offline/retry, stale and optional-source outage states recover without breaking inspection', async ({ page }) => {
+  await projectDiscovery(page, graphFixture.scope.project);
   let mode: 'empty' | 'offline' | 'optional' | 'stale' = 'empty';
   let release!: () => void;
   const loading = new Promise<void>(resolve => { release = resolve; });
@@ -31,10 +33,11 @@ test('loading, empty, offline/retry, stale and optional-source outage states rec
 });
 
 test('cap is disclosed without losing search/list/detail discovery; entity and log DOM is windowed', async ({ page }) => {
+  await projectDiscovery(page, 'performance-fixture');
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: largeGraph(560) }));
-  await page.route('**/api/logs/**', route => route.fulfill({ json: { entries: Array.from({ length: 100 }, (_, index) => ({ id: `log:${index}`, source: 'dispatcher', observedAt: '2026-10-20T12:00:00Z', text: `Summary ${index}`, durable: true })), message: 'Fixture window', gap: false } }));
+  await page.route('**/api/projects/*/logs/**', route => route.fulfill({ json: { entries: Array.from({ length: 100 }, (_, index) => ({ id: `log:${index}`, source: 'dispatcher', observedAt: '2026-10-20T12:00:00Z', text: `Summary ${index}`, durable: true })), message: 'Fixture window', gap: false } }));
   await page.goto('/');
   await allTypes(page);
   await expect(page.getByText(/Graph limited to 500 visible nodes · 60 additional matches/)).toBeVisible();
@@ -60,6 +63,7 @@ test('cap is disclosed without losing search/list/detail discovery; entity and l
 test('same-turn dense projection and reset controls use the latest identities/positions', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   const fixture = largeGraph();
+  await projectDiscovery(page, fixture.scope.project);
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: fixture }));

@@ -29,7 +29,7 @@ export async function boundedJsonFile(path: string, limit = 4 * 1024 * 1024): Pr
   } finally { await file.close(); }
 }
 
-export async function readDispatcher(path: string, aven: AvenRead, read = boundedJsonFile): Promise<DispatchRead> {
+export async function readDispatcher(path: string | undefined, aven: AvenRead, read = boundedJsonFile): Promise<DispatchRead> {
   const health: SourceHealth = { source: 'dispatcher', status: 'ok', observedAt: new Date().toISOString(), message: 'Read-only store + Aven recovery snapshots; no lock or reconciliation' };
   const candidates: DispatchRead['attempts'] = [];
   let rejected = 0;
@@ -51,12 +51,13 @@ export async function readDispatcher(path: string, aven: AvenRead, read = bounde
     }
   }
   try {
+    if (path === undefined) throw new Error('Local coverage not configured');
     const store = z.object({ attempts: z.record(z.string(), z.unknown()) }).parse(await read(path));
     if (Object.keys(store.attempts).length > 2000) throw new Error('Too many attempts');
     for (const raw of Object.values(store.attempts)) accept(raw, 'local-store');
   } catch {
     health.status = 'unavailable';
-    health.message = 'Local store absent, oversized, or unsupported; scoped Aven recovery snapshots remain available';
+    health.message = path === undefined ? 'Local store unavailable for non-startup project; scoped Aven recovery snapshots only' : 'Local store absent, oversized, or unsupported; scoped Aven recovery snapshots remain available';
   }
   // Latest attempt per task/workflow/generation wins. Local store wins ties (may be ahead of Aven metadata).
   const merged = new Map<string, DispatchRead['attempts'][number]>();

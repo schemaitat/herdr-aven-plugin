@@ -13,7 +13,7 @@ export function expireSnapshot(snapshot: GraphSnapshot, now = Date.now()): Graph
 }
 
 export interface LiveEnvelope { schema: 'live-graph/v1'; version: number; snapshot: GraphSnapshot }
-export interface HeartbeatEnvelope { schema: 'live-heartbeat/v1'; version: number; instance?: string; health: GraphSnapshot['health']; stream: GraphSnapshot['stream'] }
+export interface HeartbeatEnvelope { schema: 'live-heartbeat/v1'; scope?: GraphSnapshot['scope']; version: number; instance?: string; health: GraphSnapshot['health']; stream: GraphSnapshot['stream'] }
 export function parseFrame(frame: string): LiveEnvelope | HeartbeatEnvelope | undefined {
   const data = frame.split('\n').filter(line => line.startsWith('data: ')).map(line => line.slice(6)).join('\n');
   if (!data || data.length > 4 * 1024 * 1024) return;

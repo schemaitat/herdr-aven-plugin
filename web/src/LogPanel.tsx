@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Entity, LogPage, TimelineEvent } from '../shared/graph.js';
 import { WindowedList } from './WindowedList.js';
 
-export function LogPanel({ entity, read }: { entity?: Entity; read: (path: string, signal: AbortSignal) => Promise<Response> }) {
+export function LogPanel({ entity, read, project }: { entity?: Entity; project?: string; read: (path: string, signal: AbortSignal) => Promise<Response> }) {
   const [entries, setEntries] = useState<TimelineEvent[]>([]);
   const [message, setMessage] = useState('History is loaded only on request. Select a linked session or attempt.');
   const [cursor, setCursor] = useState<string>();
@@ -11,16 +11,16 @@ export function LogPanel({ entity, read }: { entity?: Entity; read: (path: strin
   useEffect(() => {
     controller.current?.abort(); setEntries([]); setCursor(undefined); setBusy(false); setMessage('History is loaded only on request. Select a linked session or attempt.');
     return () => controller.current?.abort();
-  }, [entity?.id]);
+  }, [entity?.id, project]);
   async function load() {
-    if (!entity || busy) return;
+    if (!entity || !project || busy) return;
     const request = new AbortController(); controller.current = request; setBusy(true);
     try {
       const bytes = new TextEncoder().encode(entity.id);
       const scope = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-      const response = await read(`/api/logs/${scope}/${cursor ?? 'start'}`, request.signal);
+      const response = await read(`/api/projects/${encodeURIComponent(project)}/logs/${scope}/${cursor ?? 'start'}`, request.signal);
       const page: LogPage = await response.json();
-      if (request.signal.aborted) return;
+      if (request.signal.aborted || controller.current !== request) return;
       setEntries(previous => [...new Map([...previous, ...page.entries].map(item => [item.id, item])).values()].slice(-1000));
       setCursor(page.next); setMessage(`${page.gap ? 'History gap / incomplete coverage. ' : ''}${page.message}`);
     } catch { if (!request.signal.aborted) setMessage('History unavailable. Retry; live events are not durable history.'); }

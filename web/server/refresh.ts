@@ -10,12 +10,12 @@ export interface Collector {
   subscribe(listener: (snapshot: GraphSnapshot, kind?: 'snapshot' | 'heartbeat') => void): () => void;
   close(): Promise<void>;
 }
-export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<GraphSnapshot>, api: OpenCodeSource): Collector {
+export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<GraphSnapshot>, api: OpenCodeSource, expectedScope = { project: 'unknown', workspace: 'unknown' }): Collector {
   const controller = new AbortController();
   const listeners = new Set<(snapshot: GraphSnapshot, kind?: 'snapshot' | 'heartbeat') => void>();
   const readings = new Map<string, Activity>();
   const children = new Map<string, string>();
-  let graph: GraphSnapshot = { schema: 'local-explorer/v1', observedAt: new Date().toISOString(), scope: { project: 'unknown', workspace: 'unknown' }, nodes: [], edges: [], health: [{ source: 'aven', status: 'unavailable', observedAt: '', message: 'Initial collection unavailable; retrying automatically' }] };
+  let graph: GraphSnapshot = { schema: 'local-explorer/v1', observedAt: new Date().toISOString(), scope: expectedScope, nodes: [], edges: [], health: [{ source: 'aven', status: 'unavailable', observedAt: '', message: 'Initial collection unavailable; retrying automatically' }] };
   let scope = new Set<string>();
   let version = 0;
   const instance = randomUUID();
@@ -30,6 +30,7 @@ export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<Gr
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const jobs = new Set<Promise<unknown>>();
   function later(callback: () => void, ms: number) {
+    if (controller.signal.aborted) return;
     const timer = setTimeout(() => { timers.delete(timer); if (!controller.signal.aborted) callback(); }, ms);
     timers.add(timer);
   }
@@ -95,7 +96,7 @@ export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<Gr
     later(() => track(apiTick()), Math.max(0, 2000 - (Date.now() - lastApi)));
     const heartbeat = () => { publish(true); later(heartbeat, 1000); };
     later(heartbeat, 1000);
-    track(listen());
+    if (!controller.signal.aborted) track(listen());
   })();
   async function listen() {
     let backoff = 500;

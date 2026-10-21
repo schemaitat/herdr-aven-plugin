@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { devAssetPath, localAddress, secure } from './security.js';
-import { startupConfig } from './config.js';
+import { projectConfig, startupConfig } from './config.js';
 import { createRunner } from './commands.js';
 import { createGraphReader } from './graph.js';
 import { createCollector } from './refresh.js';
@@ -12,6 +12,7 @@ import { createOpenCodeSource } from './sources/opencode.js';
 import { createLogs } from './logs.js';
 import { streamRoute } from './stream.js';
 import { routes } from './routes.js';
+import { projectManager, projectRegistry } from './projects.js';
 
 const address = localAddress(process.env.UI_HOST ?? '127.0.0.1', Number(process.env.UI_PORT ?? 4318));
 const config = await startupConfig();
@@ -20,12 +21,20 @@ const nonce = randomBytes(24).toString('base64');
 secure(app, address.origin, undefined, process.argv.includes('--dev') ? nonce : undefined);
 const lifetime = new AbortController();
 const run = createRunner(config.scope, undefined, lifetime.signal);
-const api = createOpenCodeSource();
-const collector = createCollector(createGraphReader(config, run), api);
-const logs = createLogs(api, run, config.scope.workspace);
-routes(app, () => collector.snapshot(), logs);
-streamRoute(app, collector);
-app.addHook('preClose', async () => { lifetime.abort(); logs.close(); await collector.close(); });
+const manager = projectManager(projectRegistry(config.scope, run), project => {
+  const scoped = projectConfig(config, project);
+  const controller = new AbortController();
+  const reader = createRunner(scoped.scope, undefined, controller.signal);
+  // Each collector owns its own event connection. Closing one cannot cancel another's stream.
+  const api = createOpenCodeSource();
+  const collector = createCollector(createGraphReader(scoped, reader), api, { project, workspace: config.scope.workspace });
+  const logs = createLogs(api, reader, config.scope.workspace);
+  return { collector, logs, async close() { controller.abort(); logs.close(); await collector.close(); } };
+});
+const projects = { manager, startup: config.scope.project, workspace: config.scope.workspace };
+routes(app, async () => { throw new Error('Use resolved project source'); }, undefined, projects);
+streamRoute(app, undefined, projects);
+app.addHook('preClose', async () => { lifetime.abort(); await manager.close(); });
 
 if (process.argv.includes('--dev')) {
   const { createServer } = await import('vite');

@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { graphFixture } from '../test/fixtures/graph-snapshot.js';
+import { projectDiscovery } from './project-fixture.js';
+
+test.beforeEach(async ({ page }) => { await projectDiscovery(page, 'graph-fixture'); });
 
 test('keyboard bypass, visible focus, non-color relationship cues and reduced-motion narrow layout', async ({ page }, info) => {
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));

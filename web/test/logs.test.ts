@@ -76,7 +76,7 @@ describe('bounded scoped log reads', () => {
     const notes = Array.from({ length: 105 }, (_, i) => ({ id: `N${String(i).padStart(4, '0')}`, created_at: new Date(1000 + i).toISOString(), body: JSON.stringify({ schema: 'aven-dispatch-event/v1', attempt_id: 'attempt-a', event: 'phase-completed', state: 'needs-review', detail: 'private prompt and secret body' }) }));
     const logs = createLogs(api, async command => {
       reads++; expect(command).toEqual({ kind: 'context', ref: 'DL-ONE' });
-      return { workspace: { key: 'default' }, metadata: { 'dispatch.attempt-id': 'attempt-a' }, related: [{ task_id: 'TASK1' }], notes: [{ id: 'OTHER', created_at: '', body: 'untrusted non-event note' }, ...notes] };
+      return { task: { display_ref: 'DL-ONE' }, workspace: { key: 'default' }, metadata: { 'dispatch.attempt-id': 'attempt-a' }, related: [{ task_id: 'TASK1' }], notes: [{ id: 'OTHER', created_at: '', body: 'untrusted non-event note' }, ...notes] };
     }, 'default');
     const key = scopeKey('attempt:one');
     const first = await logs.page(liveFixture(), key); expect(first.entries).toHaveLength(100); expect(first.gap).toBe(true); expect(first.message).toContain('older history may be unavailable');
@@ -84,7 +84,7 @@ describe('bounded scoped log reads', () => {
     expect(reads).toBe(2); expect(JSON.stringify(first)).not.toContain('private prompt');
     await expect(logs.page(liveFixture(), scopeKey('not-in-project'))).rejects.toThrow('Unknown scope');
     await expect(logs.page(liveFixture(), scopeKey('session:opencode:ses_one'), first.next)).rejects.toThrow('mismatch');
-    await expect(logs.page(liveFixture(), key, pageCursor('attempt:one', 'opencode', '0'))).rejects.toThrow('mismatch');
+    await expect(logs.page(liveFixture(), key, pageCursor('attempt:one', 'opencode', '0', liveFixture().scope))).rejects.toThrow('mismatch');
     expect((await logs.page(liveFixture(), scopeKey('session:opencode:ses_terminal'))).message).toContain('History unavailable');
     logs.close(); api.close();
   });
@@ -98,9 +98,30 @@ describe('bounded scoped log reads', () => {
     const first = logs.page(liveFixture(), scopeKey('session:opencode:ses_one'));
     const shared = logs.page(liveFixture(), scopeKey('session:opencode:ses_one'));
     const other = logs.page(liveFixture(), scopeKey('session:opencode:ses_two'));
-    const busy = await logs.page(liveFixture(), scopeKey('session:opencode:ses_one'), pageCursor('session:opencode:ses_one', 'opencode', '1'));
+    const busy = await logs.page(liveFixture(), scopeKey('session:opencode:ses_one'), pageCursor('session:opencode:ses_one', 'opencode', '1', liveFixture().scope));
     expect(requests).toBe(2); expect(busy.message).toContain('busy');
     logs.close(); await Promise.all([first, shared, other]); expect(aborted).toBe(2); api.close();
+  });
+  it('shares log admission across projects, isolates same-ID caches/cursors and rejects changed context identity/workspace', async () => {
+    const { api } = logApi([]); let reads = 0; let finish!: () => void;
+    const waiting = new Promise<void>(resolve => { finish = resolve; });
+    api.logs = async function* () { reads++; await waiting; yield apiEvent(1); };
+    const one = createLogs(api, async () => ({}), 'default');
+    const two = createLogs(api, async () => ({}), 'default');
+    const key = scopeKey('session:opencode:ses_one'); const other = { ...liveFixture(), scope: { workspace: 'default', project: 'other' } };
+    const first = one.page(liveFixture(), key); const second = two.page(other, key);
+    expect(reads).toBe(2);
+    expect((await two.page(other, scopeKey('session:opencode:ses_two'))).message).toContain('busy');
+    finish(); await Promise.all([first, second]);
+    await one.page(other, key); expect(reads).toBe(3); // Same reader cannot reuse the other project's ID cache.
+    await expect(two.page(other, key, pageCursor('session:opencode:ses_one', 'opencode', '1', liveFixture().scope))).rejects.toThrow('mismatch');
+    await expect(one.page({ ...liveFixture(), nodes: [] }, key)).rejects.toThrow('Unknown scope');
+    await expect(one.page({ ...liveFixture(), scope: { workspace: 'wrong', project: 'demo' } }, key)).rejects.toThrow('scope');
+    for (const identity of [{ workspace: { key: 'wrong' }, task: { display_ref: 'DL-ONE' } }, { workspace: { key: 'default' }, task: { display_ref: 'DL-OTHER' } }]) {
+      const notes = createLogs(api, async () => ({ ...identity, metadata: { 'dispatch.attempt-id': 'attempt-a' }, related: [{ task_id: 'TASK1' }], notes: [] }), 'default');
+      expect((await notes.page(liveFixture(), scopeKey('attempt:one'))).message).toContain('History unavailable'); notes.close();
+    }
+    one.close(); two.close(); api.close();
   });
   it('redacts known credentials/authorization, strips terminal control, caps text, and bounds ordered live retention', () => {
     const text = safeText('\x1b[31msecret\x1b[0m\x1b]0;hostile title\x07\x00 Bearer abc.def <script>alert(1)</script> sk-abcdefghijkl ghp_abcdef', ['secret']);
