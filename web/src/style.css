@@ -45,6 +45,7 @@ ul { list-style: none; padding: 0; margin: 0; }
 .entity-text { flex: 1; min-width: 0; }
 .entity-text small { color: #b0bfdc; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
 .entity-text strong { display: block; font-size: 13px; font-weight: 500; margin: 5px 0; overflow-wrap: anywhere; }
+.one-hop-badge { display: inline-block; margin: 4px 0 0; padding: 1px 5px; border: 1px solid #55dff7; border-radius: 999px; color: #9af2ff; font-size: 10px; }
 .state { font-size: 11px; color: #b7c7e0; }
 .details { padding: 24px; min-height: 380px; }
 .details h2 { margin-top: 16px; line-height: 1.5; }
@@ -84,7 +85,7 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 .event-log li { padding: .5rem; border-bottom: 1px solid #354365; white-space: pre-wrap; }
 
 /* The graph owns the remaining viewport; inspection is a non-modal surface. */
-.graph-shell { height: 100dvh; max-width: none; margin: 0; padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+.graph-shell { height: 100dvh; max-width: none; margin: 0; padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; position: relative; }
 .scope-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
 .scope-strip h1 { font-size: 16px; margin: 0; letter-spacing: -.02em; }
 .scope-strip > span { overflow-wrap: anywhere; min-width: 0; }
@@ -94,7 +95,7 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 .scope-strip .health strong { margin: 0; font-size: 10px; letter-spacing: 0; }
 .health-message { max-width: 26rem; overflow-wrap: anywhere; }
 .graph-shell .live-connection, .graph-shell > .warning { margin: 0; font-size: 11px; padding: 4px 8px; }
-.graph-shell .toolbar { margin: 0 0 6px; gap: 8px; align-items: end; }
+.graph-shell .toolbar { margin: 0; gap: 6px; align-items: center; }
 .graph-shell .toolbar label { min-width: 120px; gap: 3px; font-size: 11px; }
 .graph-shell .toolbar label:first-of-type { flex: 1; }
 .graph-shell input, .graph-shell select { padding: 6px 8px; }
@@ -132,8 +133,31 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 .filter-options select { width: 100%; min-width: 0; }
 .filter-options button { padding: 6px 10px; font-size: 12px; }
 .filter-options p { margin: 0; font-size: 12px; }
-.scope-chips { display: flex; flex-wrap: wrap; gap: 4px 8px; max-height: 48px; overflow: auto; margin-bottom: 6px; font-size: 11px; color: #b2c1d9; }
+.scope-chips { display: none; }
 .scope-chips > span { padding: 2px 6px; border-radius: 6px; background: #172238; overflow-wrap: anywhere; }
+.focus-status { position: absolute; z-index: 4; bottom: 14px; left: 14px; margin: 0; padding: 7px 10px; border: 1px solid #354b70; border-radius: 8px; background: #0d1528eF; font-size: 12px; }
+.pinned-selection { position: relative; z-index: 3; flex: none; }
+.pinned-selection .details { min-height: 0; padding: 10px 14px; background: #101a2eeb; border-color: #52658d; }
+.compact-details .eyebrow { margin: 0 0 4px; text-transform: none; letter-spacing: 0; color: #aebbd2; }
+.details-title { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto; gap: 12px; align-items: center; }
+.details-title h2 { margin: 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.details-title .badge { margin: 0; font-size: 12px; color: #d2c3ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.details-title button, .details dd button { padding: 5px 8px; margin-left: 6px; font-size: 11px; }
+.compact-details details { margin-top: 8px; font-size: 12px; }
+.compact-details summary { cursor: pointer; color: #b6c9e6; }
+.graph-panel { position: relative; border: 0; border-radius: 0; background: #080d1b; }
+.graph-cues { position: absolute; inset: 0 0 34px; pointer-events: none; overflow: hidden; }
+.graph-cue { position: absolute; width: 56px; height: 56px; margin: -28px; border-radius: 50%; border: 2px solid transparent; }
+.graph-cue.working { border-color: #67efb8; box-shadow: 0 0 0 3px #67efb830; }
+.graph-cue.neighbor { border-color: #55dff7; box-shadow: 0 0 0 5px #55dff720; animation: neighbor-pulse 1.8s ease-in-out infinite; }
+.graph-cue.working.neighbor { box-shadow: 0 0 0 3px #67efb840, 0 0 0 7px #55dff71f; }
+.graph-cues.paused .graph-cue, .graph-cues:has(.graph-cue) { animation-play-state: running; }
+.graph-cues.paused .graph-cue, .graph-cues.hidden .graph-cue { animation-play-state: paused; }
+@keyframes neighbor-pulse { 50% { box-shadow: 0 0 0 10px #55dff700; } }
+.sources { margin-left: auto; position: relative; }
+.sources summary { list-style: none; cursor: pointer; padding: 7px 10px; border: 1px solid #35415c; border-radius: 8px; color: #ace0db; white-space: nowrap; }
+.sources > div { position: absolute; z-index: 12; right: 0; top: calc(100% + 6px); width: min(420px, 90vw); padding: 10px; border: 1px solid #58678b; background: #10192b; border-radius: 8px; }
+.sources p { margin: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 650px) {
   .graph-shell { padding: 8px; gap: 6px; }
   .scope-strip .source-health { max-height: 58px; overflow: auto; }
@@ -142,6 +166,10 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
   .graph-shell .toolbar label:first-of-type { flex-basis: calc(100% - 96px); }
   .graph-shell .graph-controls { gap: 4px; }
   .graph-shell .graph-controls button { padding: 6px 8px; }
-  .workspace.inspecting { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(100px, 1fr) minmax(0, 1.4fr); }
+   .workspace.inspecting { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(100px, 1fr) minmax(0, 1.4fr); }
   .workspace.list-only { grid-template-rows: minmax(0, 1fr); }
-}
+   .details-title { grid-template-columns: 1fr; gap: 4px; }
+   .details-title .badge { white-space: normal; }
+   .pinned-selection .details { max-height: 170px; overflow: auto; }
+ }
+@media (prefers-reduced-motion: reduce) { .graph-cue { animation: none !important; } }

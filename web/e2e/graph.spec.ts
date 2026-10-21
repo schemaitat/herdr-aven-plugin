@@ -56,6 +56,7 @@ test('bubble shapes, typed directed relationships, derived provenance and graph/
   await expect(details.getByRole('heading', { name: 'Build graph', exact: true })).toBeVisible();
   const list = page.getByRole('region', { name: 'Entities', exact: true });
   await expect(list.getByRole('button', { name: /task Build graph/ })).toHaveAttribute('aria-pressed', 'true');
+  await details.locator('summary').click();
   await expect(details.getByText('← incoming blocks (blocked by this source)', { exact: true })).toBeVisible();
   await list.getByRole('button', { name: /agent worker \/ graph/ }).click();
   await expect(details.getByText('Derived from recorded task blocker and assignments', { exact: true }).first()).toBeVisible();
@@ -69,6 +70,21 @@ test('bubble shapes, typed directed relationships, derived provenance and graph/
   await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
   await page.screenshot({ path: info.outputPath('graph-fixture.png'), fullPage: true });
   expect(errors).toEqual([]);
+});
+
+test('single-click entity focus exposes visible one-hop pulse markers and direct edge emphasis', async ({ page }) => {
+  const pointToTask = await point(page, 'task:b');
+  await page.mouse.click(pointToTask.x, pointToTask.y);
+  await expect(page.getByText('Connected component · shortest-hop rings', { exact: false })).toBeVisible();
+  await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).not.toHaveCount(0);
+  await expect(page.getByText('1 hop', { exact: true }).first()).toBeVisible();
+  const emphasized = await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.elements('.direct-edge').map(edge => edge.id()));
+  expect(emphasized.length).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Show all', exact: true }).first().click();
+  // Show all restores overview geometry but deliberately retains selection/cues.
+  await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).not.toHaveCount(0);
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
+  await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).toHaveCount(0);
 });
 
 test('actual pan, wheel zoom, drag, fit/reset and ordinary snapshot refresh retain context', async ({ page }) => {
@@ -137,6 +153,7 @@ test('collapse/expand, cross-epic boundaries, search/type/status filters and key
   await expect(button).toHaveAttribute('aria-pressed', 'true');
   const details = page.getByRole('complementary', { name: 'Entity details' });
   await expect(details.getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+  await details.locator('summary').click();
   await details.getByRole('button', { name: 'Review graph', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(details.getByRole('heading', { name: 'Review graph', exact: true })).toBeVisible();
   await page.getByLabel('Search entities').fill('');
@@ -164,7 +181,7 @@ test('ordinary renders retain one instance; disposal/remount destroys old core a
   await page.mouse.move(location.x + 60, location.y + 25, { steps: 8 }); await page.mouse.up();
   const retained = await graph(page);
   for (let i = 0; i < 3; i++) {
-    await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+    await page.getByRole('button', { name: 'List only', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Reset positions', exact: true })).toBeDisabled();
     expect(await page.evaluate(() => (window as unknown as { prior: Core }).prior.destroyed())).toBe(true);
     expect(await page.evaluate(() => {
@@ -345,7 +362,9 @@ test('real drag reacts within 100ms, neighbors follow, pins survive filters, sel
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task Build graph/ }).click(); await sleep(page);
   const selected = await graph(page);
   expect(distance(selected.positions, 'task:b', 'task:a')).toBeLessThan(distance(baseline.positions, 'task:b', 'task:a'));
-  expect(selected.positions['pane:unused']).toEqual(baseline.positions['pane:unused']);
+  // Single-click component focus intentionally removes disconnected resources
+  // from this projection; their overview geometry is retained for Show all.
+  expect(selected.positions['pane:unused']).toBeUndefined();
   const clearance = await page.locator('.graph-canvas').evaluate(element => {
     const nodes = (element as GraphContainer)._cyreg.cy.nodes().map(node => ({ p: node.position(), radius: node.outerWidth() / 2 }));
     let minimum = Infinity;
@@ -388,28 +407,41 @@ test('Pause freezes by next frame, runtime reduced motion runs no ticks, rapid s
   await page.keyboard.press('ArrowDown'); await page.keyboard.press('Escape'); await sleep(page);
   expect(await graph(page)).toEqual(baseline);
   await list.getByRole('button', { name: /task Build graph/ }).click();
-  await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+  await page.getByRole('button', { name: 'List only', exact: true }).click();
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
   await page.getByRole('button', { name: 'Show graph', exact: true }).click(); await sleep(page);
-  await expect(page.locator('.graph-status')).toContainText('14 entities');
+  await expect(page.locator('.graph-status')).toContainText('12 entities');
   await page.getByRole('button', { name: 'Reset positions', exact: true }).click();
+  // Capture the full deterministic overview explicitly before entering another
+  // component; clear selection is the approved focus-exit path.
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
   const overview = await graph(page);
   await list.getByRole('button', { name: /task Review graph/ }).click(); await sleep(page);
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   const frozen = await graph(page);
-  await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+  await page.getByRole('button', { name: 'List only', exact: true }).click();
   await page.getByRole('button', { name: 'Show graph', exact: true }).click(); await sleep(page);
   expect((await graph(page)).positions).toEqual(frozen.positions);
   await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
-  expect((await graph(page)).positions).toEqual(frozen.positions);
+  const cleared = await graph(page);
+  // Clear selection exits component focus. Paused shared geometry remains frozen,
+  // while disconnected overview-only resources are projected back in.
+  for (const [id, position] of Object.entries(frozen.positions)) expect(cleared.positions[id]).toEqual(position);
+  for (const id of ['pane:unused', 'worktree:unused']) {
+    expect(frozen.positions[id]).toBeUndefined();
+    expect(cleared.positions[id]).toBeDefined();
+  }
   await page.getByRole('button', { name: 'Resume motion', exact: true }).click(); await sleep(page);
-  expect((await graph(page)).positions).toEqual(overview.positions);
+  const resumed = await graph(page);
+  // Resume applies the full overview captured before entering the component.
+  expect(resumed.positions).toEqual(overview.positions);
 });
 
 test('component keyboard entry, anchor removal and hidden-kind boundaries keep other filters intact', async ({ page }) => {
   const list = page.getByRole('region', { name: 'Entities', exact: true });
   await list.getByRole('button', { name: /task Build graph/ }).click();
-  await page.getByRole('button', { name: 'Focus component', exact: true }).focus(); await page.keyboard.press('Enter');
+  // Entity activation is itself the keyboard-equivalent component entry.
+  await expect(page.getByRole('button', { name: 'Show all', exact: true }).first()).toBeVisible();
   expect((await graph(page)).nodes).not.toContain('pane:unused');
   await page.getByLabel('Search entities').fill('Unassigned pane');
   await expect(page.getByText('Component anchor is unavailable', { exact: false })).toBeVisible();
@@ -419,7 +451,7 @@ test('component keyboard entry, anchor removal and hidden-kind boundaries keep o
   await onlyTypes(page, ['task']);
   await page.keyboard.press('Escape');
   await list.getByRole('button', { name: /task Build graph/ }).click();
-  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
+  // Show all exits focus, so the transient focused action is not repeated.
   expect((await graph(page)).nodes.every(id => id.startsWith('task:'))).toBe(true);
   await page.getByRole('button', { name: 'Show all', exact: true }).first().click();
   expect((await graph(page)).nodes.every(id => id.startsWith('task:'))).toBe(true);

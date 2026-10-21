@@ -26,7 +26,7 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
     return { epicFill: cy.getElementById('epic:a').style('background-fill'), blocksArrow: cy.edges('[kind = "blocks"]').first().style('target-arrow-shape'), assignedPattern: cy.edges('[kind = "assigned"]').first().style('line-style'), nodeLabel: cy.getElementById('task:b').data('label') };
   });
   expect(styles).toMatchObject({ epicFill: 'radial-gradient', blocksArrow: 'triangle', assignedPattern: 'dashed' });
-  expect(styles.nodeLabel).toContain('active');
+  expect(styles.nodeLabel).toContain('Build graph');
   const motion = page.getByRole('button', { name: 'Pause motion', exact: true });
   await motion.focus(); await page.keyboard.press('Enter');
   await expect(page.getByRole('button', { name: 'Resume motion', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -45,6 +45,22 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.getByLabel('Search entities')).toBeVisible();
   await page.screenshot({ path: info.outputPath('cosmos-narrow.png'), fullPage: true });
+});
+
+test('one-hop relationship cue has a textual equivalent and reduced motion leaves its static glow', async ({ page }) => {
+  await projectDiscovery(page, 'graph-fixture');
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.emulateMedia({ reducedMotion: 'reduce' }); await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Build graph/ }).click();
+  await expect(page.getByText('1 hop', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).not.toHaveCount(0);
+  await expect(page.locator('.graph-cue.neighbor').evaluateAll(items => items.every(item => getComputedStyle(item).animationName === 'none'))).resolves.toBe(true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
+  await page.screenshot({ path: '/tmp/opencode/hap-nrfe-narrow-chrome.png' });
 });
 
 test('viewport shell has no overflow; drawers return focus, leave background controls reachable and support list-only use', async ({ page }, info) => {
@@ -83,7 +99,9 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     })).toBeGreaterThanOrEqual(9.5);
     await page.screenshot({ path: info.outputPath(`shell-${size.width}.png`) });
     const canvas = await page.locator('.graph-canvas').boundingBox();
-    expect(canvas!.height).toBeGreaterThan(size.height * .45);
+    // The canvas owns the remaining viewport; pinned selection/compact controls
+    // deliberately take space without creating a side-by-side inspector crop.
+    expect(canvas!.height).toBeGreaterThan(size.height * .38);
     await entities.click();
     await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
     await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
@@ -92,7 +110,7 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
     await page.keyboard.press('Escape'); await expect(entities).toBeFocused();
   }
-  await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+  await page.getByRole('button', { name: 'List only', exact: true }).click();
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();

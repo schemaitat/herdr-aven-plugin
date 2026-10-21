@@ -1,5 +1,7 @@
 import type { ElementDefinition } from 'cytoscape';
 import type { Entity, GraphSnapshot, Relationship } from '../../shared/graph.js';
+import { graphLabel } from './labels.js';
+import { isCurrentWorking } from './activity.js';
 
 export interface GraphEdge extends Omit<Relationship, 'kind'> {
   kind: Relationship['kind'] | 'agent-dependency';
@@ -35,7 +37,7 @@ export function waitingCue(node: Entity): string {
 }
 
 export function elements(nodes: Entity[], edges: GraphEdge[]): ElementDefinition[] {
-  return [...nodes.map(node => ({ data: { id: node.id, kind: node.kind, label: `${node.label}\n${node.kind} · ${node.state}${node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? '\n● Working · linked execution' : ''}${waitingCue(node) ? `\n${waitingCue(node)}` : ''}`, state: node.state, working: node.activity?.some(item => item.state === 'working' && item.freshness === 'current') ? 'yes' : 'no' } })),
+  return [...nodes.map(node => ({ data: { id: node.id, kind: node.kind, label: graphLabel(node), fullLabel: node.label, state: node.state, working: isCurrentWorking(node) ? 'yes' : 'no' } })),
     ...edges.map(edge => ({ data: { id: edge.id, source: edge.source, target: edge.target, kind: edge.kind,
       label: `${edge.summary ? 'collapsed · ' : ''}${edge.kind === 'agent-dependency' ? 'derived dependency' : edge.kind}`, summary: Boolean(edge.summary) } }))];
 }

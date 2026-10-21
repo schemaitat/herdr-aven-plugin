@@ -6,22 +6,33 @@ import { orbitalLayout, type Position } from './layout.js';
 import { highlight, syncElements, type GraphMemory } from './interactions.js';
 import { clearOverlaps, GraphPhysics, MotionScheduler, selectionTargets, topologyKey } from './physics.js';
 import { styles } from './styles.js';
+import { hopRingTargets } from './physics.js';
+import { nonOverlappingLabels } from './labels.js';
+import { isCurrentWorking } from './activity.js';
 
 function readableLabels(cy: Core) {
   if (cy.nodes().length > 100) { cy.nodes().removeStyle('font-size text-max-width'); cy.edges().removeStyle('font-size'); return; }
+  const zoom = cy.zoom();
+  const labels = cy.nodes().map(node => {
+    const point = node.renderedPosition(), text = String(node.data('label') ?? '');
+    return { id: node.id(), x: point.x, y: point.y + node.renderedOuterHeight() / 2 + 12, width: Math.max(36, text.length * 7), height: 14, priority: node.hasClass('selected') ? 2 : node.hasClass('neighbor') ? 1 : 0 };
+  });
+  const visible = nonOverlappingLabels(labels);
   cy.batch(() => {
-    cy.nodes().style({ 'font-size': Math.max(12, 10 / cy.zoom()), 'text-max-width': `${Math.max(150, 130 / cy.zoom())}px` });
-    cy.edges().style('font-size', Math.max(9, 8 / cy.zoom()));
+    cy.nodes().style({ 'font-size': Math.max(12, 10 / zoom), 'text-max-width': `${Math.max(120, 130 / zoom)}px` });
+    cy.nodes().forEach(node => { node.style('label', visible.has(node.id()) ? 'data(label)' : ''); });
+    cy.edges().style('font-size', Math.max(9, 8 / zoom));
   });
 }
 type Command = { kind: 'fit' | 'reset' | 'in' | 'out' | 'restore' | 'rollback'; serial: number; camera?: GraphMemory['camera']; positions?: Map<string, Position> };
 interface Props {
-  nodes: Entity[]; edges: GraphEdge[]; selected?: string; component?: string; paused?: boolean;
+  nodes: Entity[]; edges: GraphEdge[]; selected?: string; component?: string; distances?: Map<string, number>; paused?: boolean;
   onSelect: (id: string) => void; onToggle: (id: string) => void; command: Command; memory: GraphMemory;
 }
 
 export function GraphView(props: Props) {
   const container = useRef<HTMLDivElement>(null);
+  const markers = useRef<HTMLDivElement>(null);
   const latest = useRef(props); latest.current = props;
   const control = useRef<{ sync: () => void; selection: () => void; pause: () => void; command: () => void }>(undefined);
   const [zoom, setZoom] = useState(1);
@@ -46,6 +57,17 @@ export function GraphView(props: Props) {
       host.dataset.motion = scheduler.active ? 'active' : 'sleeping';
       host.dataset.physicsTicks = String(ticks);
       memory.visual = positions();
+      const selected = latest.current.selected;
+      const neighbors = new Set(latest.current.edges.flatMap(edge => edge.source === selected ? [edge.target] : edge.target === selected ? [edge.source] : []));
+      const working = new Set(latest.current.nodes.filter(isCurrentWorking).map(node => node.id));
+      if (markers.current) markers.current.replaceChildren(...[...new Set([...neighbors, ...working])].flatMap(id => {
+        const node = cy.getElementById(id); if (!node.length) return [];
+        const point = node.renderedPosition(), marker = document.createElement('span');
+        marker.className = `graph-cue${working.has(id) ? ' working' : ''}${neighbors.has(id) ? ' neighbor' : ''}`;
+        marker.setAttribute('data-cue', `${working.has(id) ? 'working ' : ''}${neighbors.has(id) ? 'one-hop' : ''}`.trim());
+        marker.dataset.key = `${working.has(id) ? `working:${id}` : ''}${neighbors.has(id) ? ` neighbor:${id}` : ''}`;
+        marker.style.transform = `translate(${point.x}px, ${point.y}px)`; return [marker];
+      }));
     };
     const scheduler = new MotionScheduler({ now: () => performance.now(), request: callback => requestAnimationFrame(callback), cancel: frame => cancelAnimationFrame(frame) }, paint);
     scheduler.visibility(document.hidden);
@@ -85,7 +107,9 @@ export function GraphView(props: Props) {
       pendingReturn = undefined;
       const { nodes, edges, selected, paused } = latest.current;
       const anchor = dragAnchor ?? (nodes.some(node => node.id === selected) ? selected : undefined);
-      const targets = selectionTargets(nodes, edges, memory.positions, anchor);
+       const targets = anchor && latest.current.component && latest.current.distances?.size
+         ? hopRingTargets(nodes, latest.current.distances, anchor, memory.positions)
+         : selectionTargets(nodes, edges, memory.positions, anchor);
       const fixedPositions = fixed(anchor);
       activationPins = fixedPositions;
       if (media.matches) {
@@ -116,7 +140,7 @@ export function GraphView(props: Props) {
       const id = event.target.id(), point = { ...event.target.position() };
       pins().set(id, point); memory.positions.set(id, point); dragging = undefined; activate(id);
     };
-    const visibility = () => scheduler.visibility(document.hidden);
+    const visibility = () => { scheduler.visibility(document.hidden); markers.current?.classList.toggle('hidden', document.hidden); };
     const preference = () => { if (media.matches) { cancel(); activate(); } else activate(); };
     control.current = {
       sync() {
@@ -140,7 +164,7 @@ export function GraphView(props: Props) {
         else if (changed) activate();
         key = nextKey; previousComponent = component;
         if (!fitted && nodes.length) { cy.resize(); cy.fit(undefined, 50); fitted = true; }
-        rememberCamera(); readableLabels(cy); setZoom(cy.zoom());
+         rememberCamera(); readableLabels(cy); paint(); setZoom(cy.zoom());
         performance.clearMeasures('graph.layout'); performance.clearMeasures('graph.sync');
         performance.measure('graph.layout', { start: layoutStart, end: syncStart, detail: { computed: changed } });
         performance.measure('graph.sync', { start: syncStart, end: performance.now() });
@@ -180,13 +204,14 @@ export function GraphView(props: Props) {
       cy.destroy(); control.current = undefined;
     };
   }, []);
-  useEffect(() => control.current?.sync(), [props.nodes, props.edges, props.memory, props.component]);
+  useEffect(() => control.current?.sync(), [props.nodes, props.edges, props.memory, props.component, props.distances]);
   const firstSelection = useRef(true), firstPause = useRef(true);
   useEffect(() => { if (firstSelection.current) { firstSelection.current = false; return; } control.current?.selection(); }, [props.selected]);
   useEffect(() => { if (firstPause.current) { firstPause.current = false; return; } control.current?.pause(); }, [props.paused]);
   useEffect(() => control.current?.command(), [props.command]);
   return <section className="graph-panel" aria-label="Relationship graph">
     <div ref={container} className="graph-canvas" aria-hidden="true" />
+    <div ref={markers} className={`graph-cues${props.paused ? ' paused' : ''}`} aria-hidden="true" />
     <p className="graph-status" role="status">{props.nodes.length} entities · {props.edges.length} connections · Zoom {Math.round(zoom * 100)}%</p>
   </section>;
 }

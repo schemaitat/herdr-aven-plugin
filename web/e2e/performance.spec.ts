@@ -103,3 +103,19 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   expect(activePhysics.physicsTicks).toBeGreaterThan(30);
   expect(after.minimumClearance).toBeGreaterThanOrEqual(0);
 });
+
+test('component selection promotes its eligible anchor within the fixed canvas cap', async ({ page }) => {
+  const snapshot = largeGraph(560);
+  await projectDiscovery(page, snapshot.scope.project);
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: snapshot }));
+  await page.goto('/'); await allTypes(page);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  for (let i = 0; i < 13; i++) await page.getByRole('button', { name: 'Next entities', exact: true }).click();
+  await page.getByRole('button', { name: /Task 559/ }).click();
+  await page.waitForTimeout(100);
+  const displayed = await page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().length);
+  expect(displayed).toBeLessThanOrEqual(500);
+  await expect(page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.getElementById('task:559').length)).resolves.toBe(1);
+});

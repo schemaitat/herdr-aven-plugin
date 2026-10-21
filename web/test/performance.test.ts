@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { largeGraph } from './fixtures/large-graph.js';
 import { ALL_TYPES, defaultFilters, projectGraph, VISIBLE_NODE_CAP } from '../src/graph/state.js';
 import { orbitalLayout } from '../src/graph/layout.js';
+import { hopRingTargets } from '../src/graph/physics.js';
 
 it('deterministic fixture and cap preserve full relationship/detail discovery', () => {
   const fixture = largeGraph();
@@ -25,4 +26,9 @@ it('deterministic fixture and cap preserve full relationship/detail discovery', 
   expect(searched.nodes.map(node => node.id)).toEqual(['task:559']);
   expect(orbitalLayout(fixture.nodes, fixture.edges)).toEqual(orbitalLayout([...fixture.nodes].reverse(), [...fixture.edges].reverse()));
   expect(new Set([...orbitalLayout(fixture.nodes, fixture.edges).values()].map(point => JSON.stringify(point))).size).toBe(500);
+  const positions = orbitalLayout(fixture.nodes, fixture.edges);
+  const distances = new Map(fixture.nodes.map((node, index) => [node.id, index % 6]));
+  const rings = hopRingTargets(fixture.nodes, distances, fixture.nodes[0]!.id, positions);
+  expect(hopRingTargets([...fixture.nodes].reverse(), distances, fixture.nodes[0]!.id, positions)).toEqual(rings);
+  expect(rings).toHaveLength(fixture.nodes.length);
 });

@@ -57,13 +57,13 @@ function Explorer({ live, preferences, onPreferences }: { live: ReturnType<typeo
   const [command, setCommand] = useState<{ kind: 'fit' | 'reset' | 'in' | 'out' | 'restore' | 'rollback'; serial: number; camera?: GraphMemory['camera']; positions?: GraphMemory['positions'] }>({ kind: 'fit', serial: 0 });
   const toggle = (id: string) => setCollapsed(previous => toggleEpic(previous, id));
   const entity = snapshot?.nodes.find(node => node.id === selected);
-  const graph = useMemo(() => snapshot ? projectGraph(snapshot, filters, collapsed, Date.now(), component, resolveComponent.current) : { nodes: [], discoveryNodes: [], edges: [], allEdges: [], cappedNodes: 0, omittedRelationships: 0, hiddenTasks: 0, hiddenRelationships: 0, unknownTimeExclusions: 0, componentAvailable: true }, [snapshot, filters, collapsed, clock, component]);
-  const focusComponent = (id?: string) => {
-    if (component || !id) {
+  const graph = useMemo(() => snapshot ? projectGraph(snapshot, filters, collapsed, Date.now(), component, resolveComponent.current) : { nodes: [], discoveryNodes: [], edges: [], allEdges: [], distances: new Map<string, number>(), cappedNodes: 0, omittedRelationships: 0, hiddenTasks: 0, hiddenRelationships: 0, unknownTimeExclusions: 0, componentAvailable: true }, [snapshot, filters, collapsed, clock, component]);
+  const focusComponent = (id?: string, toggle = false) => {
+    if (!id || toggle && component) {
       setComponent(undefined);
       setCommand(previous => ({ kind: 'restore', serial: previous.serial + 1, camera: componentCamera.current }));
     } else {
-      componentCamera.current = graphMemory.current.camera;
+      if (!component) componentCamera.current = graphMemory.current.camera;
       setComponent(id);
       setCommand(previous => ({ kind: 'fit', serial: previous.serial + 1 }));
     }
@@ -72,13 +72,19 @@ function Explorer({ live, preferences, onPreferences }: { live: ReturnType<typeo
     if (component && !graph.componentAvailable) { focusComponent(); setAnnouncement('Component anchor is unavailable in this scope. Showing all matching entities.'); }
   }, [component, graph.componentAvailable]);
   const selectedEdge = graph.edges.find(edge => edge.id === selected || (edge.summary && edge.evidence?.[0] === selected)) ?? graph.allEdges.find(edge => edge.id === selected);
+  const oneHop = useMemo(() => new Set(graph.edges.flatMap(edge => edge.source === selected ? [edge.target] : edge.target === selected ? [edge.source] : [])), [graph.edges, selected]);
   const openPanel = (next: Panel, focus = false) => {
     panelTrigger.current = document.activeElement as HTMLElement;
     setPanel(next);
     if (focus) requestAnimationFrame(() => document.getElementById(next === 'entities' ? 'entities' : 'inspector')?.focus());
   };
   const closePanel = () => { setPanel(undefined); panelTrigger.current?.focus(); };
-  const select = (id: string) => { setSelected(canonicalSelection(graph.edges, id)); if (!panel) openPanel('entities'); };
+  const select = (id: string) => {
+    const canonical = canonicalSelection(graph.edges, id);
+    setSelected(canonical);
+    // Evidence edges inspect without turning an arbitrary endpoint into a focus anchor.
+    if (graph.discoveryNodes.some(node => node.id === canonical)) focusComponent(canonical);
+  };
   const openSearch = () => {
     if (searchBaseline.current) return;
     const memory = graphMemory.current;
@@ -108,30 +114,26 @@ function Explorer({ live, preferences, onPreferences }: { live: ReturnType<typeo
   });
   return <>
     <a className="skip-link" href="#entities" onClick={event => { event.preventDefault(); openPanel('entities', true); }}>Skip graph to entities</a>
-    <main className="graph-shell">
-      <header className="scope-strip"><h1>Project explorer</h1><span>{snapshot ? `${snapshot.scope.workspace} / ${snapshot.scope.project}` : project && listing ? `${listing.workspace} / ${project} · loading` : 'Connecting to local sources…'}</span><span className="readonly">READ ONLY</span>
-        <span className="muted">{snapshot ? `${snapshot.nodes.length} entities · ${snapshot.edges.length} relationships` : 'Loading a bounded, normalized snapshot'}</span>
-        <div className="source-health" aria-label="Source health">{snapshot?.health.map(source => <span key={source.source} className={`health ${source.status}`} title={`${source.message} · Observed ${source.observedAt}`}><strong>{source.source} · {source.status}</strong><span className="health-message">{source.status !== 'ok' && source.message}</span></span>)}</div>
-      </header>
+      <main className="graph-shell">
       {error && <p role="alert" className="warning">{error} {snapshot && 'Displayed data is stale.'}</p>}
       {discoveryError && <p role="status" className="warning">{discoveryError} <button onClick={retryDiscovery}>Retry project discovery</button></p>}
       {canvasFailed && <p role="alert" className="warning">Canvas unavailable. Entities and details remain available.</p>}
       <p role="status" className="live-connection">{connection}</p>
       {announcement && <p role="status">{announcement}</p>}
-      {component && <p role="status">Connected component <button onClick={() => focusComponent()}>Show all</button></p>}
-      <Toolbar paused={paused} onPause={() => setPaused(value => !value)} projects={listing?.projects ?? []} project={project} onProject={selectProject} nodes={snapshot?.nodes ?? []} filters={filters} onChange={setFilters} onSearch={openSearch} matches={graph.discoveryNodes.length} visible={mounted ? graph.nodes.length : 0} unknownTimeExclusions={graph.unknownTimeExclusions} onCommand={kind => setCommand(previous => ({ kind, serial: previous.serial + 1 }))} mounted={mounted} onMount={() => { setMounted(value => !value); if (mounted) openPanel('entities'); }} />
+       {component && <p role="status" className="focus-status">Connected component · shortest-hop rings <button onClick={() => focusComponent()}>Show all</button></p>}
+       <Toolbar paused={paused} onPause={() => setPaused(value => !value)} projects={listing?.projects ?? []} project={project} onProject={selectProject} nodes={snapshot?.nodes ?? []} filters={filters} onChange={setFilters} onSearch={openSearch} matches={graph.discoveryNodes.length} visible={mounted ? graph.nodes.length : 0} unknownTimeExclusions={graph.unknownTimeExclusions} health={snapshot?.health} onCommand={kind => setCommand(previous => ({ kind, serial: previous.serial + 1 }))} mounted={mounted} onMount={() => { setMounted(value => !value); if (mounted) openPanel('entities'); }} />
       <nav className="panel-controls" aria-label="Inspection panels">{(['entities', 'activity', 'history', 'help'] as const).map(value => <button key={value} aria-expanded={panel === value} aria-controls="inspector" onClick={() => panel === value ? closePanel() : openPanel(value, true)}>{value === 'entities' ? 'Entities & details' : value === 'history' ? 'Event history' : value === 'help' ? 'Help & legend' : 'Live activity'}</button>)}</nav>
       {graph.cappedNodes > 0 && <p className="warning" role="status">Graph limited to 500 visible nodes · {graph.cappedNodes} additional matches · {graph.omittedRelationships} source relationships touch cap-hidden matches. Narrow search/type/status filters to reveal them. All {graph.discoveryNodes.length} matches remain in Entities and details; totals above are unchanged.</p>}
       {graph.hiddenTasks > 0 && <p className="warning" role="status">{graph.hiddenTasks} collapsed tasks · {graph.hiddenRelationships} relationships touch hidden tasks. External connections are summarized at visible epic hubs; internal blockers remain recorded. Expand epics to inspect all tasks.</p>}
       {snapshot && graph.discoveryNodes.length === 0 && <p className="warning" role="status">No matching entities in this scope. <button onClick={() => setFilters(defaultFilters())}>Reset empty scope</button>{filters.epic && !snapshot.nodes.some(node => node.id === filters.epic && node.kind === 'epic') && ' The selected epic is no longer in the loaded snapshot; clear epic or reset filters.'}</p>}
-      <div className={`workspace ${panel ? 'inspecting' : ''} ${!mounted ? 'list-only' : ''}`}>
-        {mounted && <CanvasBoundary onFailure={() => { setCanvasFailed(true); setMounted(false); setPanel('entities'); }}><Suspense fallback={<p className="empty" role="status">Loading relationship canvas… Open Entities for inspection.</p>}><GraphView nodes={graph.nodes} edges={graph.edges} selected={selectedEdge?.id ?? selected} component={component} paused={paused} onSelect={select} onToggle={focusComponent} command={command} memory={searchBaseline.current?.memory ?? graphMemory.current} /></Suspense></CanvasBoundary>}
+       {selected && <section className="pinned-selection" aria-label="Selected entity details"><DetailsPanel entity={entity} edge={selectedEdge} relationships={graph.allEdges} snapshot={snapshot} onSelect={select} onFocus={id => focusComponent(id, true)} onClear={() => { setSelected(undefined); focusComponent(); }} focused={Boolean(component)} missing={Boolean(selected && !entity && !selectedEdge)} compact /></section>}
+       <div className={`workspace ${panel ? 'inspecting' : ''} ${!mounted ? 'list-only' : ''}`}>
+         {mounted && <CanvasBoundary onFailure={() => { setCanvasFailed(true); setMounted(false); setPanel('entities'); }}><Suspense fallback={<p className="empty" role="status">Loading relationship canvas… Open Entities for inspection.</p>}><GraphView nodes={graph.nodes} edges={graph.edges} selected={selectedEdge?.id ?? selected} component={component} distances={graph.distances} paused={paused} onSelect={select} onToggle={id => focusComponent(id, true)} command={command} memory={searchBaseline.current?.memory ?? graphMemory.current} /></Suspense></CanvasBoundary>}
         {panel && <section id="inspector" tabIndex={-1} className="inspector" aria-label="Inspector" onPointerDown={event => event.stopPropagation()}>
           <div className="inspector-heading"><h2>{panel === 'entities' ? 'Entities & details' : panel === 'history' ? 'Event history' : panel === 'activity' ? 'Live activity' : 'Help & legend'}</h2><button onClick={closePanel}>Close panel</button></div>
           {panel === 'entities' && <div className="explorer">
-            <EntityList nodes={graph.discoveryNodes} selected={selected} onSelect={setSelected} loading={!snapshot && !error} collapsed={collapsed} onToggle={toggle} />
-            <div>{entity && !graph.nodes.some(node => node.id === entity.id) && <p className="muted">Selected entity is off-canvas (filtered, collapsed or beyond the visible-node cap). Its details and source relationships remain available.</p>}
-            <DetailsPanel entity={entity} edge={selectedEdge} relationships={graph.allEdges} snapshot={snapshot} onSelect={setSelected} onFocus={focusComponent} onClear={() => setSelected(undefined)} focused={Boolean(component)} missing={Boolean(selected && !entity && !selectedEdge)} /></div>
+             <EntityList nodes={graph.discoveryNodes} selected={selected} oneHop={oneHop} onSelect={select} loading={!snapshot && !error} collapsed={collapsed} onToggle={toggle} />
+             <div>{entity && !graph.nodes.some(node => node.id === entity.id) && <p className="muted">Selected entity is off-canvas (filtered, collapsed or beyond the visible-node cap). Its pinned details and source relationships remain available.</p>}</div>
           </div>}
           {panel === 'activity' && <ActivityPanel entity={entity} snapshot={snapshot} />}
           {panel === 'history' && <LogPanel entity={entity} read={read} project={project} />}

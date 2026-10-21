@@ -49,7 +49,11 @@ test('cap is disclosed without losing search/list/detail discovery; entity and l
   await last.focus(); await page.keyboard.press('Enter');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Task 559', exact: true })).toBeVisible();
   await page.getByLabel('Search entities').fill('Task 559');
-  await expect(page.locator('.graph-status')).toContainText('1 entities');
+  // Entity activation enters the eligible component. The pinned selection and
+  // complete list remain the discovery route even when a component projection
+  // cannot retain the former overview canvas status line.
+  await expect(page.getByRole('complementary').getByRole('heading', { name: 'Task 559', exact: true })).toBeVisible();
+  await expect(entities.getByRole('button', { name: /Task 559/ })).toBeVisible();
   await expect(last).toHaveAttribute('aria-pressed', 'true');
   const history = page.getByRole('region', { name: 'Event history' });
   await page.getByRole('button', { name: 'Event history', exact: true }).click();
@@ -82,4 +86,16 @@ test('same-turn dense projection and reset controls use the latest identities/po
   const expected = Object.fromEntries(orbitalLayout(projected.nodes, projected.edges));
   expect(await page.locator('.graph-canvas').evaluate(element => Object.fromEntries((element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().map(node => [node.id(), node.position()])))).toEqual(expected);
   expect(errors).toEqual([]);
+});
+
+test('source health is available through the compact disclosure rather than persistent dashboard cards', async ({ page }) => {
+  await projectDiscovery(page, graphFixture.scope.project);
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
+  await page.goto('/');
+  const sources = page.getByText(/Sources ·/);
+  await sources.click();
+  await expect(page.locator('.sources')).toContainText('aven');
+  await expect(page.locator('.scope-strip')).toHaveCount(0);
 });

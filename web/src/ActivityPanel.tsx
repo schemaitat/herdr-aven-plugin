@@ -1,5 +1,6 @@
 import type { Entity, GraphSnapshot } from '../shared/graph.js';
 import { WindowedList } from './WindowedList.js';
+import { compactId } from './graph/labels.js';
 
 export function ActivityPanel({ entity, snapshot }: { entity?: Entity; snapshot?: GraphSnapshot }) {
   const ids = new Set(entity?.activity?.map(item => item.sessionId));
@@ -7,7 +8,7 @@ export function ActivityPanel({ entity, snapshot }: { entity?: Entity; snapshot?
   return <section className="activity-panel" aria-label="Live activity"><h2>Live activity</h2>
     <p className="muted">API activity is authoritative for linked execution, not task acceptance. Terminal observations remain separate. Live events have no replay.</p>
     {snapshot?.stream && <p role="status">Upstream: {snapshot.stream.status} · {snapshot.stream.gaps} reconnect gaps</p>}
-    {entity?.activity?.map(item => <div key={item.sessionId} className={`activity-reading ${item.state} ${item.freshness}`}><strong>{item.state === 'working' ? 'Working' : item.state} · {item.freshness}</strong><code>{item.sessionId}</code>
+    {entity?.activity?.map(item => <div key={item.sessionId} className={`activity-reading ${item.state} ${item.freshness}`}><strong>{item.state === 'working' ? 'Working' : item.state} · {item.freshness}</strong><code title={item.sessionId}>{compactId(item.sessionId)}</code>
       <p>Approval: {String(item.approval)} · Input: {String(item.input)}{item.parentId && ` · explicit API parent ${item.parentId}`}</p>{item.freshness === 'current' && (item.approval === true || item.input === true) && <p className="waiting"><span aria-hidden="true">Ⅱ </span>Waiting for {item.approval === true ? 'approval' : 'input'}{item.approval === true && item.input === true ? ' / input' : ''} · separate from API activity</p>}<small>API observed {item.observedAt} · expires {item.expiresAt}</small></div>)}
     {entity?.details.terminalObservedState !== undefined && <p>Herdr terminal observation: {String(entity.details.terminalObservedState)} (may disagree with API)</p>}
     {!entity?.activity?.length && <p>Select a linked task, agent or session to inspect activity. Missing coverage is unknown, never idle/done.</p>}

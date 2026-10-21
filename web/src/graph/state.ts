@@ -24,6 +24,21 @@ export function componentMembers(ids: Set<string>, edges: GraphEdge[], anchor?: 
   return result;
 }
 
+/** Cached callers use this together with component membership; relationships are undirected only for distance. */
+export function hopDistances(ids: Set<string>, edges: GraphEdge[], anchor?: string): Map<string, number> {
+  const distances = new Map<string, number>();
+  if (!anchor || !ids.has(anchor)) return distances;
+  const adjacent = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!ids.has(edge.source) || !ids.has(edge.target) || edge.source === edge.target) continue;
+    adjacent.set(edge.source, [...(adjacent.get(edge.source) ?? []), edge.target]);
+    adjacent.set(edge.target, [...(adjacent.get(edge.target) ?? []), edge.source]);
+  }
+  distances.set(anchor, 0);
+  for (const id of distances.keys()) for (const next of adjacent.get(id) ?? []) if (!distances.has(next)) distances.set(next, distances.get(id)! + 1);
+  return distances;
+}
+
 export function componentResolver() {
   let key: string | undefined, members: Set<string> | undefined;
   return (ids: Set<string>, edges: GraphEdge[], anchor?: string) => {
@@ -61,7 +76,11 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
     if (edge.kind === 'contains' && collapsed.has(edge.source) && eligibleIds.has(edge.source) && eligibleIds.has(edge.target) && byId.get(edge.source)?.kind === 'epic' && byId.get(edge.target)?.kind === 'task') parent.set(edge.target, edge.source);
   }
   const nodes = eligible.filter(node => !parent.has(node.id));
-  const visibleNodes = nodes.slice(0, VISIBLE_NODE_CAP);
+  // A selected eligible anchor remains inspectable on the canvas even when sort/cap
+  // order would otherwise hide it. The cap itself never changes.
+  const orderedNodes = anchor && nodes.some(node => node.id === anchor) && !nodes.slice(0, VISIBLE_NODE_CAP).some(node => node.id === anchor)
+    ? [nodes.find(node => node.id === anchor)!, ...nodes.filter(node => node.id !== anchor)] : nodes;
+  const visibleNodes = orderedNodes.slice(0, VISIBLE_NODE_CAP);
   const cappedIds = new Set(nodes.slice(VISIBLE_NODE_CAP).map(node => node.id));
   const ids = new Set(visibleNodes.map(node => node.id));
   let hiddenRelationships = 0;
@@ -76,7 +95,7 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
       ...edge, id: JSON.stringify(['collapsed', edge.id, source, target]), source, target, summary: true, evidence: [edge.id, ...(edge.evidence ?? [])],
     });
   }
-  return { nodes: visibleNodes, discoveryNodes: nodes, eligibleGraph: { nodes: eligible, edges: eligibleEdges }, componentAvailable: !anchor || filteredIds.has(anchor), edges, allEdges, cappedNodes: nodes.length - visibleNodes.length, omittedRelationships, hiddenRelationships, hiddenTasks: parent.size, unknownTimeExclusions };
+  return { nodes: visibleNodes, discoveryNodes: nodes, eligibleGraph: { nodes: eligible, edges: eligibleEdges }, distances: hopDistances(eligibleIds, eligibleEdges, anchor), componentAvailable: !anchor || filteredIds.has(anchor), edges, allEdges, cappedNodes: nodes.length - visibleNodes.length, omittedRelationships, hiddenRelationships, hiddenTasks: parent.size, unknownTimeExclusions };
 }
 
 export function toggleEpic(previous: Set<string>, id: string): Set<string> {

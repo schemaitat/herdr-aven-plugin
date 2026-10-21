@@ -4,8 +4,14 @@ import { createRequire } from 'node:module';
 import { elements, relationships } from '../src/graph/elements.js';
 import { orbitalLayout } from '../src/graph/layout.js';
 import { graphFixture as fixture } from './fixtures/graph-snapshot.js';
+import { isCurrentWorking } from '../src/graph/activity.js';
 
 describe('graph identity, direction and evidence', () => {
+  test('only current linked API activity qualifies for a working ring', () => {
+    expect(isCurrentWorking({ activity: [{ sessionId: 'one', state: 'working', freshness: 'current', observedAt: '', expiresAt: '', approval: false, input: false }] })).toBe(true);
+    expect(isCurrentWorking({ activity: [{ sessionId: 'one', state: 'working', freshness: 'stale', observedAt: '', expiresAt: '', approval: false, input: false }] })).toBe(false);
+    expect(isCurrentWorking({ activity: undefined })).toBe(false);
+  });
   test('retains all normalized identities, standalone tasks and unassigned resources', () => {
     const edges = relationships(fixture);
     const projected = elements(fixture.nodes, edges);
@@ -34,7 +40,7 @@ describe('graph identity, direction and evidence', () => {
     const epic = layout.get('epic:a')!;
     for (const id of ['task:a', 'task:b']) {
       const child = layout.get(id)!;
-      expect(Math.hypot(child.x - epic.x, child.y - epic.y)).toBeCloseTo(170);
+      expect(Math.hypot(child.x - epic.x, child.y - epic.y)).toBeCloseTo(205);
     }
     expect(layout.has('task:solo')).toBe(true);
     expect(layout.has('worktree:unused')).toBe(true);

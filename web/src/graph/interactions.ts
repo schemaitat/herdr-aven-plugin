@@ -30,12 +30,13 @@ export function syncElements(cy: Core, next: ElementDefinition[], positions: Map
 
 export function highlight(cy: Core, selected?: string) {
   cy.batch(() => {
-    cy.elements().removeClass('selected neighbor muted');
+    cy.elements().removeClass('selected neighbor direct-edge muted');
     const element = selected ? cy.collection(cy.getElementById(selected)) : cy.collection();
     if (!element.length) return;
     const neighborhood = element.nodes().length ? element.closedNeighborhood() : element.union(element.connectedNodes());
     cy.elements().difference(neighborhood).addClass('muted');
     neighborhood.addClass('neighbor');
+    if (element.nodes().length) element.connectedEdges().filter(edge => !edge.data('summary') && edge.source().id() !== edge.target().id()).addClass('direct-edge');
     element.addClass('selected');
   });
 }

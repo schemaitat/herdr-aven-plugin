@@ -76,11 +76,13 @@ facets and may coexist with Working. Herdr observations remain inspectable even
 when they contradict the API. Missing/unsupported API data is unknown, not idle
 or done; observations expire after 4.5 seconds, including in disconnected browsers.
 
-The graph fills the viewport rather than stacking dashboard panels. The compact
-scope strip keeps connection, source health, stale/error and canvas-cap summaries
-visible. **Entities & details** opens a non-modal inspector with both the paged
-list and canonical relationship evidence. **Live activity**, **Event history**
-and **Help & legend** open the other inspection surfaces on demand. Escape or
+The graph canvas is edge-to-edge within the browser viewport; controls float in
+one compact full-width strip and **Sources** discloses detailed source health on
+demand. Selection is pinned across the top rather than buried in the Entity list:
+**Inspect details** expands canonical identity, provenance and relationships,
+including **Copy full ID**. **Entities** opens the complete paged list, while
+**Live activity**, **Event history** and **Help & legend** open other inspection
+surfaces on demand. Escape or
 **Close panel** closes the inspector and returns focus to its opener; background
 graph controls remain reachable. The skip link opens and focuses Entities.
 **Hide graph** and a failed optional canvas load both expose the list/detail path.
@@ -136,10 +138,11 @@ assignment, dotted placement and diamond worktree endpoints stay distinct.
 Click an edge for its direction, source identities and evidence. No connection
 or dependency is inferred from visual proximity.
 
-Drag bubbles or the background, wheel to zoom, or use Zoom/Fit/Reset controls.
-Double-click **any node** to focus its connected component; double-click any
-node again, or choose **Show all**, to leave component focus without clearing
-other filters. **Focus component** in details is the keyboard equivalent.
+Drag bubbles or the background, wheel to zoom, or use compact +/-/Fit/Reset
+controls. Clicking a canvas entity, Entity-list row, or related entity selects
+and focuses its connected component; edge clicks remain evidence inspection.
+Double-click remains a toggle shortcut. **Show all**, clear selection, or
+**Focus component** in details leave/re-enter focus without clearing other filters.
 Connectivity uses actual source and evidenced derived relationships in the
 current type/state/time/epic/search scope, before collapse and the canvas cap;
 it never traverses hidden kinds. Entry fits the component; exit restores the
@@ -147,7 +150,10 @@ previous camera. If its anchor leaves the eligible scope, focus clears with an
 announcement. Use an epic's explicit list button to collapse/expand. Collapsed
 external relationships are explicitly summarized at the hub, not invented;
 internal blockers remain in details.
-Updates do not reset the camera, selection or manually positioned nodes. Window
+Focused components arrange by deterministic undirected shortest-hop shells around
+the selected entity (computed before collapse/cap); clicking another focused
+entity reanchors the shells. The 500-node cap can promote an eligible anchor
+without changing the cap. Updates do not reset the camera, selection or manually positioned nodes. Window
 resizing also preserves the camera: use **Fit graph** after narrowing a window.
 **Hide graph** leaves the list/detail route usable without a canvas. A keyboard
 skip link bypasses the graph; list buttons and related-entity buttons share the
@@ -194,10 +200,16 @@ caps below). Large entity, relationship and event/history lists use explicit
 bounded DOM, variable-height text and complete keyboard traversal without a
 scroll-only virtual list. Live/history retention remains separately capped.
 At dense overview scale, graph labels are suppressed until zoomed to a legible
-size; the list/details remain readable at every zoom. Viewport texture caching
-and pixel ratio 1 bound canvas cost; labels settle after zooming stops. Fresh
-Working (●) and awaiting approval/input (Ⅱ) cues are shown separately, and may
-coexist; neither changes the task's source status.
+size; concise captions use collision suppression and full facts remain in the
+list/pinned inspector. Opaque session, attempt and UUID-style tokens show a
+recognizable prefix plus four payload characters only; canonical identities stay
+distinct for search, evidence, requests and copying. Viewport texture caching
+and pixel ratio 1 bound canvas cost. Current linked API worker/session activity
+has a green CSS ring; direct one-hop neighbors of a selection have a static cyan
+glow plus restrained CSS pulse, a visible **1 hop** list badge, and their actual
+incident source/evidenced edges are emphasized without changing arrows/dashes.
+These CSS cues freeze for Pause, reduced motion and hidden tabs, do not wake
+physics, and may coexist without implying task acceptance.
 
 Startup settings are trusted environment variables, never browser parameters:
 

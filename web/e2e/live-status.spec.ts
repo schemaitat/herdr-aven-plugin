@@ -83,6 +83,26 @@ test('disconnected browser hard-expires Working and recovers authoritative state
   await expect(task).toContainText('Task status: todo');
 });
 
+test('current working and selected direct neighbors expose visible CSS cues without waking physics', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: live('working') }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task task:one/ }).click();
+  await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).toHaveCount(2);
+  await expect(page.getByText('1 hop', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('.graph-cue[data-cue~="working"]')).not.toHaveCount(0);
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'sleeping', { timeout: 1800 });
+  const ticks = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
+  await page.waitForTimeout(120);
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(ticks);
+  await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
+  await expect(page.locator('.graph-cues')).toHaveClass(/paused/);
+  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
+  await page.screenshot({ path: '/tmp/opencode/hap-nrfe-desktop-chrome.png' });
+});
+
 test('authenticated stream reconnects/resnapshots version gaps, ignores duplicate/out-of-order snapshots and lazily pages safe history', async ({ page }) => {
   let snapshots = 0; let streams = 0; let logReads = 0;
   await page.route('**/api/snapshot', route => { snapshots++; return route.fulfill({ json: live(snapshots === 1 ? 'idle' : 'working', snapshots === 1 ? 1 : 3) }); });

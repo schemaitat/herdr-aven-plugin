@@ -51,6 +51,23 @@ export function selectionTargets(nodes: Entity[], edges: GraphEdge[], overview: 
   return result;
 }
 
+/** Deterministic caption-spaced shells for component focus. Pins are applied by the caller. */
+export function hopRingTargets(nodes: Entity[], distances: Map<string, number>, anchor: string, fallback: Map<string, Position>) {
+  const result = copy(fallback);
+  const center = fallback.get(anchor) ?? { x: 0, y: 0 };
+  result.set(anchor, { ...center });
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const rings = new Map<number, string[]>();
+  for (const [id, distance] of distances) if (id !== anchor && fallback.has(id) && byId.has(id)) rings.set(distance, [...(rings.get(distance) ?? []), id]);
+  for (const [distance, ids] of rings) {
+    ids.sort();
+    const largest = Math.max(...ids.map(id => nodeRadius(byId.get(id)!)));
+    const radius = Math.max(155 + distance * 175, ids.length * (largest * 2 + 56) / (2 * Math.PI));
+    ids.forEach((id, index) => { const angle = index * Math.PI * 2 / ids.length - Math.PI / 2; result.set(id, { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius }); });
+  }
+  return result;
+}
+
 // d3 owns copied particles/links only. Its internal timer is stopped immediately;
 // the caller is the sole clock and cannot queue multiple competing animations.
 export class GraphPhysics {

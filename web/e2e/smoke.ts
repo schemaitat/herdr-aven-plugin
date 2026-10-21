@@ -5,7 +5,7 @@ test('real scoped sources render with keyboard list/details and protected API', 
   page.on('pageerror', error => errors.push(error.message));
   page.on('response', response => { if (response.status() >= 400) console.log(`Browser asset error: ${response.status()} ${new URL(response.url()).pathname}`); });
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Project explorer' })).toBeVisible();
+  await expect(page.getByRole('main')).toBeVisible();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   await expect(entities.locator('button.entity').first()).toBeVisible({ timeout: 20000 });
@@ -14,6 +14,7 @@ test('real scoped sources render with keyboard list/details and protected API', 
   await page.keyboard.press('Enter');
   await expect(first).toHaveAttribute('aria-pressed', 'true');
   const details = page.getByRole('complementary', { name: 'Entity details' });
+  await details.locator('summary').click();
   await expect(details.getByText('Stable identity', { exact: true })).toBeVisible();
   await expect(details.getByRole('heading', { name: 'Provenance', exact: true })).toBeVisible();
   await page.getByLabel('Search entities').fill('no-such-entity-7c901');
@@ -50,8 +51,21 @@ test('untrusted labels are text and unavailable sources remain visible', async (
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('button', { name: new RegExp('img src=x') }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: hostile, exact: true })).toBeVisible();
+  await page.getByRole('complementary').locator('summary').click();
   await expect(page.getByText('<script>alert(1)</script>', { exact: true })).toBeVisible();
-  await expect(page.getByText('herdr · unavailable', { exact: true })).toBeVisible();
+  await page.getByText(/Sources ·/).click();
+  await expect(page.locator('.sources')).toContainText('herdr · unavailable');
   expect(await page.locator('img').count()).toBe(0);
   expect(await page.evaluate(() => '__injected' in window)).toBe(false);
+});
+
+test('compact presentation preserves a canonical full-ID copy action', async ({ page }) => {
+  await page.route('**/api/projects', route => route.fulfill({ json: { workspace: 'default', startup: 'fixture', projects: [{ key: 'fixture', name: 'Fixture' }], status: 'ok', message: 'Fixture' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: { schema: 'local-explorer/v1', scope: { project: 'fixture', workspace: 'default' }, observedAt: '', nodes: [{ id: 'session:ses_abcdefghijk', kind: 'session', label: 'ses_abcdefghijk', state: 'idle', details: {}, provenance: [] }], edges: [], health: [] } }));
+  await page.goto('/'); await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  await page.getByRole('button', { name: /ses_abcdefghijk/ }).click();
+  await page.getByText(/Inspect details/).click();
+  await expect(page.getByRole('button', { name: 'Copy full ID' })).toBeVisible();
+  await expect(page.locator('#entity-details code')).toContainText('session:ses_abcdefghijk');
 });

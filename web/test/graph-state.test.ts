@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import cytoscape from 'cytoscape';
 import { graphFixture as fixture } from './fixtures/graph-snapshot.js';
-import { ALL_TYPES, componentMembers, componentResolver, defaultFilters, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, type Filters } from '../src/graph/state.js';
+import { ALL_TYPES, componentMembers, componentResolver, defaultFilters, hopDistances, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, type Filters } from '../src/graph/state.js';
 import type { Entity, GraphSnapshot, Relationship } from '../shared/graph.js';
 import { effectiveTimes } from '../shared/scope.js';
 import { elements } from '../src/graph/elements.js';
@@ -29,6 +29,13 @@ describe('shared graph/list state', () => {
     const first = resolve(ids, fixture.edges, 'task:b');
     expect(resolve(new Set([...ids].reverse()), [...fixture.edges].reverse(), 'task:b')).toBe(first);
     ids.delete('task:b'); expect(resolve(ids, fixture.edges, 'task:b')).toBeUndefined();
+  });
+  test('hop distances are undirected, pre-collapse and retained with component projection', () => {
+    const graph = projectGraph(fixture, filters, new Set(['epic:a']), now, 'task:b');
+    expect(graph.distances.get('task:b')).toBe(0);
+    expect(graph.distances.get('task:a')).toBe(1);
+    expect(graph.distances.get('task:c')).toBe(1);
+    expect(hopDistances(new Set(['task:a', 'task:b']), graph.allEdges, 'task:b')).toEqual(new Map([['task:b', 0], ['task:a', 1]]));
   });
   test('collapse retains standalone/resources and directed cross-epic boundary evidence', () => {
     const graph = projectGraph(fixture, filters, new Set(['epic:a']), now);
