@@ -1,6 +1,7 @@
 import type { Entity, SourceHealth } from '../shared/graph.js';
 import type { ProjectChoice } from '../shared/projects.js';
-import { ALL_TYPES, defaultFilters, type Filters, type TimePreset } from './graph/state.js';
+import { RELATION_KINDS, type RelationKind } from './graph/elements.js';
+import { ALL_TYPES, defaultFilters, withRelationKind, withRelationKinds, type Filters, type TimePreset } from './graph/state.js';
 
 export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount, onSearch, matches, visible, unknownTimeExclusions, projects, project, onProject, paused, onPause, health }: {
   paused: boolean; onPause: () => void;
@@ -25,11 +26,12 @@ export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount,
       }}>
         <summary>Filters</summary>
         <div className="filter-options">
-          <fieldset><legend>Entity types</legend><div className="type-options">{ALL_TYPES.map(kind => <label key={kind}><input type="checkbox" checked={filters.kinds.has(kind)} onChange={event => {
+           <fieldset><legend>Entity types</legend><div className="type-options">{ALL_TYPES.map(kind => <label key={kind}><input type="checkbox" checked={filters.kinds.has(kind)} onChange={event => {
             const kinds = new Set(filters.kinds);
             if (event.target.checked) kinds.add(kind); else kinds.delete(kind);
             onChange({ ...filters, kinds });
-          }} />{kind}</label>)}</div><button onClick={() => onChange({ ...filters, kinds: new Set(ALL_TYPES) })}>All types</button></fieldset>
+           }} />{kind}</label>)}</div><button onClick={() => onChange({ ...filters, kinds: new Set(ALL_TYPES) })}>All types</button></fieldset>
+           <fieldset><legend>Relationship kinds</legend><div className="type-options relation-options">{RELATION_KINDS.map(kind => <label key={kind}><input type="checkbox" checked={filters.relationKinds.has(kind)} onChange={event => onChange(withRelationKind(filters, kind, event.target.checked))} />{kind}</label>)}</div><button onClick={() => onChange(withRelationKinds(filters, RELATION_KINDS))}>All relationships</button><button onClick={() => onChange(withRelationKinds(filters, [] as RelationKind[]))}>No relationships</button></fieldset>
           <label>Source state<select value={filters.state} onChange={event => onChange({ ...filters, state: event.target.value })}><option value="all">All states</option>{[...new Set([...nodes.map(node => node.state), ...(filters.state === 'all' ? [] : [filters.state])])].sort().map(value => <option key={value}>{value}</option>)}</select></label>
           <label>Recent source changes<select value={filters.time} onChange={event => onChange({ ...filters, time: event.target.value as TimePreset })}><option value="all">All time</option><option value="24h">Last 24 hours</option><option value="72h">Last 72 hours</option><option value="7d">Last 7 days</option><option value="14d">Last 14 days</option><option value="30d">Last 30 days</option></select></label>
           <label>Epic scope<select aria-label="Epic scope" value={filters.epic ?? ''} onChange={event => onChange({ ...filters, epic: event.target.value || undefined })}><option value="">All epics and standalone entities</option>{filters.epic && !epic && <option value={filters.epic}>Unavailable epic (clear scope to continue)</option>}{epics.map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label>
@@ -39,7 +41,7 @@ export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount,
       </details>
        <button onClick={() => onChange(defaultFilters())}>Reset filters</button>
     </div>
-    <div className="scope-chips" aria-label="Active scope"><span>{filters.kinds.size} of {ALL_TYPES.length} types</span><span>{filters.state === 'all' ? 'All states' : filters.state}</span><span>{filters.time === 'all' ? 'All time' : `Last ${filters.time} source changes`}</span>{filters.epic && <span>{epic?.label ?? 'Unavailable epic'} <button aria-label="Clear epic scope" onClick={() => onChange({ ...filters, epic: undefined })}>×</button></span>}{filters.query && <span>Search: {filters.query}</span>}<span>{matches} matches · {visible} on canvas</span>{filters.time !== 'all' && <span role="status">{unknownTimeExclusions} unknown/invalid/future-time exclusions</span>}</div>
+    <div className="scope-chips" aria-label="Active scope"><span>{filters.kinds.size} of {ALL_TYPES.length} types</span><span>{filters.relationKinds.size === 0 ? 'No relationships' : `${filters.relationKinds.size} of ${RELATION_KINDS.length} relationships`}</span><span>{filters.state === 'all' ? 'All states' : filters.state}</span><span>{filters.time === 'all' ? 'All time' : `Last ${filters.time} source changes`}</span>{filters.epic && <span>{epic?.label ?? 'Unavailable epic'} <button aria-label="Clear epic scope" onClick={() => onChange({ ...filters, epic: undefined })}>×</button></span>}{filters.query && <span>Search: {filters.query}</span>}<span>{matches} matches · {visible} on canvas</span>{filters.time !== 'all' && <span role="status">{unknownTimeExclusions} unknown/invalid/future-time exclusions</span>}</div>
     <div className="graph-controls"><button aria-label="Zoom in" disabled={!mounted} onClick={() => onCommand('in')}>+</button><button aria-label="Zoom out" disabled={!mounted} onClick={() => onCommand('out')}>−</button><button aria-label="Fit graph" disabled={!mounted} onClick={() => onCommand('fit')}>Fit</button><button disabled={!mounted} onClick={() => onCommand('reset')}>Reset positions</button><button aria-pressed={paused} onClick={onPause}>{paused ? 'Resume motion' : 'Pause motion'}</button><button onClick={onMount}>{mounted ? 'List only' : 'Show graph'}</button><details className="sources"><summary>Sources · {health?.every(source => source.status === 'ok') ? 'OK' : 'review'}</summary><div>{health?.map(source => <p key={source.source} className={`health ${source.status}`}><strong>{source.source}</strong> · {source.status} · {source.message}</p>)}</div></details></div>
   </section>;
 }

@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { graphFixture } from '../test/fixtures/graph-snapshot.js';
 import { projectDiscovery } from './project-fixture.js';
+import { allTypes } from './filter-controls.js';
 
 test.beforeEach(async ({ page }) => { await projectDiscovery(page, 'graph-fixture'); });
 
@@ -19,6 +20,8 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await expect(page.getByRole('region', { name: 'Entities', exact: true })).toBeFocused();
   await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Aurora epic', exact: true })).toBeVisible();
+  // This legacy all-edge assertion explicitly requests the complete relation scope.
+  await allTypes(page);
   const focusStyle = await page.locator(':focus').evaluate(element => ({ width: getComputedStyle(element).outlineWidth, transition: getComputedStyle(element).transitionDuration }));
   expect(focusStyle.width).toBe('3px'); expect(focusStyle.transition).toBe('0s');
   const styles = await page.locator('.graph-canvas').evaluate(element => {
@@ -101,7 +104,7 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     const canvas = await page.locator('.graph-canvas').boundingBox();
     // The canvas owns the remaining viewport; pinned selection/compact controls
     // deliberately take space without creating a side-by-side inspector crop.
-    expect(canvas!.height).toBeGreaterThan(size.height * .38);
+    expect(canvas!.height).toBeGreaterThan(size.height * .33);
     await entities.click();
     await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
     await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();

@@ -1,14 +1,23 @@
 import type { Entity, GraphSnapshot, NodeKind } from '../../shared/graph.js';
 import { effectiveTimes, ownership, reachable } from '../../shared/scope.js';
-import { relationships, waitingCue, type GraphEdge } from './elements.js';
+import { relationships, waitingCue, type GraphEdge, type RelationKind } from './elements.js';
 import { searchEntities } from './search.js';
 
 export const ALL_TYPES: NodeKind[] = ['epic', 'task', 'attempt', 'agent', 'session', 'workspace', 'pane', 'worktree', 'boundary'];
 export const DEFAULT_TYPES: NodeKind[] = ['epic', 'task', 'attempt', 'agent', 'session'];
+export const DEFAULT_RELATION_KINDS: RelationKind[] = ['contains', 'blocks'];
 export const TIME_WINDOWS = { '24h': 24, '72h': 72, '7d': 168, '14d': 336, '30d': 720 } as const;
 export type TimePreset = 'all' | keyof typeof TIME_WINDOWS;
-export interface Filters { query: string; kinds: Set<NodeKind>; state: string; time: TimePreset; epic?: string }
-export function defaultFilters(): Filters { return { query: '', kinds: new Set(DEFAULT_TYPES), state: 'all', time: 'all' }; }
+export interface Filters { query: string; kinds: Set<NodeKind>; relationKinds: Set<RelationKind>; state: string; time: TimePreset; epic?: string }
+export function defaultFilters(): Filters { return { query: '', kinds: new Set(DEFAULT_TYPES), relationKinds: new Set(DEFAULT_RELATION_KINDS), state: 'all', time: 'all' }; }
+/** Clone mutable filter sets whenever scope is retained outside an immediate UI event. */
+export function copyFilters(filters: Filters): Filters { return { ...filters, kinds: new Set(filters.kinds), relationKinds: new Set(filters.relationKinds) }; }
+export function withRelationKind(filters: Filters, kind: RelationKind, selected: boolean): Filters {
+  const relationKinds = new Set(filters.relationKinds);
+  if (selected) relationKinds.add(kind); else relationKinds.delete(kind);
+  return { ...filters, relationKinds };
+}
+export function withRelationKinds(filters: Filters, relationKinds: Iterable<RelationKind>): Filters { return { ...filters, relationKinds: new Set(relationKinds) }; }
 export const VISIBLE_NODE_CAP = 500;
 export function componentMembers(ids: Set<string>, edges: GraphEdge[], anchor?: string): Set<string> | undefined {
   if (!anchor || !ids.has(anchor)) return undefined;
@@ -50,6 +59,9 @@ export function componentResolver() {
 
 export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapsed: Set<string>, now: number, anchor?: string, resolveComponent = componentMembers) {
   const allEdges = relationships(snapshot);
+  // Scope topology before resolving components or distances. allEdges remains the
+  // complete canonical/evidenced relationship set for details and inspection.
+  const scopedEdges = allEdges.filter(edge => filters.relationKinds.has(edge.kind));
   const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
   const membership = filters.epic ? (byId.get(filters.epic)?.kind === 'epic' ? reachable(filters.epic, ownership(snapshot.nodes, snapshot.edges, true)) : new Set<string>()) : undefined;
   const times = effectiveTimes(snapshot.nodes, snapshot.edges, now);
@@ -67,10 +79,10 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
     return time >= cutoff;
   });
   const filteredIds = new Set(filtered.map(node => node.id));
-  const component = resolveComponent(filteredIds, allEdges, anchor);
+  const component = resolveComponent(filteredIds, scopedEdges, anchor);
   const eligible = component ? filtered.filter(node => component.has(node.id)) : filtered;
   const eligibleIds = new Set(eligible.map(node => node.id));
-  const eligibleEdges = allEdges.filter(edge => eligibleIds.has(edge.source) && eligibleIds.has(edge.target));
+  const eligibleEdges = scopedEdges.filter(edge => eligibleIds.has(edge.source) && eligibleIds.has(edge.target));
   const parent = new Map<string, string>();
   for (const edge of snapshot.edges) {
     if (edge.kind === 'contains' && collapsed.has(edge.source) && eligibleIds.has(edge.source) && eligibleIds.has(edge.target) && byId.get(edge.source)?.kind === 'epic' && byId.get(edge.target)?.kind === 'task') parent.set(edge.target, edge.source);
@@ -85,7 +97,7 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
   const ids = new Set(visibleNodes.map(node => node.id));
   let hiddenRelationships = 0;
   const edges: GraphEdge[] = [];
-  const omittedRelationships = allEdges.filter(edge => cappedIds.has(parent.get(edge.source) ?? edge.source) || cappedIds.has(parent.get(edge.target) ?? edge.target)).length;
+  const omittedRelationships = eligibleEdges.filter(edge => cappedIds.has(parent.get(edge.source) ?? edge.source) || cappedIds.has(parent.get(edge.target) ?? edge.target)).length;
   for (const edge of eligibleEdges) {
     const source = parent.get(edge.source) ?? edge.source;
     const target = parent.get(edge.target) ?? edge.target;

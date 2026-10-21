@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { graphFixture, scopeFixture, scopeClock } from '../test/fixtures/graph-snapshot.js';
-import { allTypes, onlyTypes } from './filter-controls.js';
+import { allTypes, onlyRelationships, onlyTypes } from './filter-controls.js';
 import { projectDiscovery } from './project-fixture.js';
 
 // Read-only test instrumentation: Cytoscape registers its core on its container.
@@ -269,12 +269,16 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   await page.clock.setFixedTime(scopeClock);
   await page.route('**/api/snapshot', route => route.fulfill({ json: scopeFixture }));
   await page.reload();
-  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
-  expect((await graph(page)).nodes).not.toContain('pane:a');
-  await page.getByText('Filters', { exact: true }).click();
-  for (const kind of ['epic', 'task', 'attempt', 'agent', 'session']) await expect(page.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
-  for (const kind of ['workspace', 'pane', 'worktree', 'boundary']) await expect(page.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
-  await expect(page.getByLabel('Recent source changes')).toHaveValue('all');
+   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+   expect((await graph(page)).nodes).not.toContain('pane:a');
+   await page.getByText('Filters', { exact: true }).click();
+  const types = page.getByRole('group', { name: 'Entity types', exact: true });
+  const relations = page.getByRole('group', { name: 'Relationship kinds', exact: true });
+  for (const kind of ['epic', 'task', 'attempt', 'agent', 'session']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
+  for (const kind of ['workspace', 'pane', 'worktree', 'boundary']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
+  for (const kind of ['contains', 'blocks']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
+  for (const kind of ['related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
+   await expect(page.getByLabel('Recent source changes')).toHaveValue('all');
   await onlyTypes(page, []);
   await expect(page.getByText('No matching entities in this scope.', { exact: false })).toBeVisible();
   expect((await graph(page)).nodes).toEqual([]);
@@ -301,7 +305,22 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   expect((await graph(page)).nodes).toEqual(['task:b']);
   await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
   await expect(page.getByLabel('Search entities')).toHaveValue('');
-  expect((await graph(page)).nodes).not.toContain('pane:a');
+   expect((await graph(page)).nodes).not.toContain('pane:a');
+});
+
+test('relationship presets scope edges and connectivity without removing eligible isolated entities', async ({ page }) => {
+  await page.getByText('Filters', { exact: true }).click();
+  await page.getByRole('button', { name: 'No relationships', exact: true }).click();
+  await page.keyboard.press('Escape');
+  expect((await graph(page)).nodes).toHaveLength(14);
+  expect(await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.edges().length)).toBe(0);
+  await page.getByText('Filters', { exact: true }).click();
+  await onlyRelationships(page, ['blocks']);
+  await page.keyboard.press('Escape');
+  const blockKinds = await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.edges().map(edge => edge.data('kind')));
+  expect(blockKinds).toEqual(['blocks', 'blocks', 'blocks']);
+  await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
+  await expect(page.locator('.scope-chips')).toContainText('2 of 8 relationships');
 });
 
 test('recent source windows disclose unknowns, shared resources do not leak other epic owners, and disappearing epic stays explicit', async ({ page }) => {

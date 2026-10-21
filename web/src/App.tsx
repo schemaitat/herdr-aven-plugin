@@ -4,7 +4,7 @@ import { ActivityPanel } from './ActivityPanel.js';
 import { LogPanel } from './LogPanel.js';
 import { EntityList } from './EntityList.js';
 import { DetailsPanel } from './DetailsPanel.js';
-import { canonicalSelection, componentResolver, defaultFilters, projectGraph, toggleEpic, type Filters } from './graph/state.js';
+import { canonicalSelection, componentResolver, copyFilters, defaultFilters, projectGraph, toggleEpic, type Filters } from './graph/state.js';
 import type { GraphMemory } from './graph/interactions.js';
 import { Toolbar } from './Toolbar.js';
 import { Legend } from './Legend.js';
@@ -32,8 +32,8 @@ export function App() {
 function Explorer({ live, preferences, onPreferences }: { live: ReturnType<typeof useLiveGraph>; preferences: Filters; onPreferences: (filters: Filters) => void }) {
   const { snapshot, error, connection, read, listing, project, selectProject, discoveryError, retryDiscovery } = live;
   const [selected, setSelected] = useState<string>();
-  const [filters, setFilters] = useState<Filters>(() => ({ ...preferences, query: '', epic: undefined }));
-  useEffect(() => { onPreferences({ ...defaultFilters(), kinds: filters.kinds, state: filters.state, time: filters.time }); }, [filters.kinds, filters.state, filters.time, onPreferences]);
+  const [filters, setFilters] = useState<Filters>(() => ({ ...copyFilters(preferences), query: '', epic: undefined }));
+  useEffect(() => { onPreferences({ ...defaultFilters(), kinds: new Set(filters.kinds), relationKinds: new Set(filters.relationKinds), state: filters.state, time: filters.time }); }, [filters.kinds, filters.relationKinds, filters.state, filters.time, onPreferences]);
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     if (filters.time === 'all') return;
@@ -88,7 +88,7 @@ function Explorer({ live, preferences, onPreferences }: { live: ReturnType<typeo
   const openSearch = () => {
     if (searchBaseline.current) return;
     const memory = graphMemory.current;
-    searchBaseline.current = { filters: { ...filters }, selected, component, geometry: memory.visual && new Map(memory.visual), camera: memory.camera && { zoom: memory.camera.zoom, pan: { ...memory.camera.pan } }, focus: document.activeElement as HTMLElement, memory: { positions: new Map([...memory.positions].map(([id, position]) => [id, { ...position }])), pins: new Map(memory.pins), visual: memory.visual && new Map(memory.visual), camera: memory.camera } };
+    searchBaseline.current = { filters: copyFilters(filters), selected, component, geometry: memory.visual && new Map(memory.visual), camera: memory.camera && { zoom: memory.camera.zoom, pan: { ...memory.camera.pan } }, focus: document.activeElement as HTMLElement, memory: { positions: new Map([...memory.positions].map(([id, position]) => [id, { ...position }])), pins: new Map(memory.pins), visual: memory.visual && new Map(memory.visual), camera: memory.camera } };
     setSearching(true);
   };
   const closeSearch = (commit: boolean) => {

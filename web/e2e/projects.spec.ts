@@ -112,7 +112,7 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await expect(page.getByLabel('Epic scope', { exact: true })).toHaveValue('');
   await expect(page.getByRole('combobox', { name: 'Source state', exact: true })).toHaveValue('active');
   await expect(page.getByRole('combobox', { name: 'Recent source changes', exact: true })).toHaveValue('24h');
-  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(9);
+   await expect(page.getByRole('group', { name: 'Entity types', exact: true }).getByRole('checkbox', { checked: true })).toHaveCount(9);
   await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /beta Build graph/ }).click();
