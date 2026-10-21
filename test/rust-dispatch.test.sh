@@ -12,6 +12,7 @@ log=$work/calls
 state=$work/state.json
 export RUST_DISPATCH_LOG=$log
 export HERDR_SOCKET_PATH=$work/herdr.sock
+export XDG_CONFIG_HOME=$work/config
 python3 "$PLUGIN_ROOT/test/herdr-socket-fixture.py" &
 socket_fixture=$!
 trap 'kill "$socket_fixture" 2>/dev/null || true' EXIT HUP INT TERM
@@ -51,6 +52,10 @@ fi
 if [ "$1" = pane ] && [ "$2" = run ]; then
   printf 'herdr-pane-run argc=%s command=%s\n' "$#" "$4" >> "$RUST_DISPATCH_LOG"
 fi
+if [ "$1" = pane ] && [ "$2" = process-info ]; then
+  printf '%s\n' '{"result":{"process_info":{"shell_pid":42,"foreground_processes":[{"pid":42}]}}}'
+  exit 0
+fi
 mkdir -p "$RUST_WORKTREE"
 case " $* " in
   *" pane split "*) printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
@@ -64,7 +69,7 @@ case " $* " in
   *" POST /api/session "*) printf '%s\n' '{"data":{"id":"ses_one"}}' ;;
   *" POST /api/session/ses_one/prompt "*) printf '%s\n' "$*" | grep -q 'msg_' || exit 1; printf '%s\n' '{"data":{"id":"msg_expected"}}' ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
+   *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":true},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":true}]}' ;;
    *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
@@ -85,11 +90,11 @@ cat > "$fake/opencode" <<'EOF'
 printf 'opencode %s\n' "$*" >> "$RUST_DISPATCH_LOG"
 case " $* " in
    *" POST /api/session/"*"/prompt "*) data=; while [ "$#" -gt 0 ]; do [ "$1" = --data ] && { data=$2; break; }; shift; done; id=$(printf '%s' "$data" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"data":{"id":"%s"}}\n' "$id" ;;
-   *" POST /api/session "*) case "$*" in *'"agent":"babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
-   *" GET /api/session/ses_one "*) if [ -n "${RUST_DISPATCH_SESSION_OUTCOME:-}" ]; then printf '{"data":{"outcome":"%s"}}\n' "$RUST_DISPATCH_SESSION_OUTCOME"; else printf '%s\n' '{"data":{}}'; fi ;;
+    *" POST /api/session "*) case "$*" in *'"agent":"aven-babysitter"'*) printf '%s\n' '{"data":{"id":"ses_babysitter"}}' ;; *) printf '%s\n' '{"data":{"id":"ses_one"}}' ;; esac ;;
+    *" GET /api/session/ses_one "*) if [ -n "${RUST_DISPATCH_SESSION_OUTCOME:-}" ]; then printf '{"data":{"outcome":"%s"}}\n' "$RUST_DISPATCH_SESSION_OUTCOME"; else printf '%s\n' '{"data":{}}'; fi ;;
    *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-   *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"babysitter","name":"Babysitter","mode":"subagent","hidden":false}]}' ;;
-   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false}]}' ;;
+   *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":true},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":true}]}' ;;
+    *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":true},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":true}]}' ;;
    *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -103,10 +108,14 @@ assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-
 [ ! -e "$work/worktree/.opencode/opencode.jsonc" ] || fail 'ordinary dispatch must not add an OpenCode config'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
 assert_file_contains "$log" 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' 'OpenCode inherits the dispatcher store in the worktree pane'
+assert_file_contains "$log" 'herdr pane send-keys w1:p1 ctrl+c' 'dispatcher clears the target pane before starting OpenCode'
+assert_file_contains "$log" 'herdr pane process-info --pane w1:p1' 'dispatcher verifies the target pane shell before starting OpenCode'
 assert_file_contains "$log" 'opencode --session '\''ses_one'\''' 'OpenCode starts in the worktree pane with its durable session'
 assert_file_contains "$log" 'herdr-pane-run argc=4 command=env AVEN_DISPATCH_STORE=' 'OpenCode command is one pane-run argument, not Herdr options'
 agent_start_line=$(grep -n 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' "$log" | head -n 1 | cut -d: -f1)
+pane_clear_line=$(grep -n 'herdr pane send-keys w1:p1 ctrl+c' "$log" | head -n 1 | cut -d: -f1)
 prompt_line=$(grep -n 'opencode api POST /api/session/ses_one/prompt' "$log" | head -n 1 | cut -d: -f1)
+[ "$pane_clear_line" -lt "$agent_start_line" ] || fail 'pane is cleared before the OpenCode command is sent'
 [ "$agent_start_line" -lt "$prompt_line" ] || fail 'OpenCode starts before prompt admission schedules execution'
 assert_file_contains "$log" 'Plan then implement an Aven task' 'explicit skills directory is loaded'
 assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
@@ -119,8 +128,9 @@ assert_not_contains "$(cat "$log")" 'Pre-provisioned cumulative worktrees' 'sing
 babysitter_state=$work/babysitter-state.json
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter >/dev/null
 assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'babysitter splits next to build pane'
-assert_file_contains "$log" 'opencode api GET /api/agent --header x-opencode-directory:%2F' 'babysitter discovery targets its worktree location'
-assert_file_contains "$log" '"agent":"babysitter"' 'babysitter session created through OpenCode API'
+assert_file_contains "$log" 'opencode api GET /api/agent' 'babysitter discovery queries the global agent context'
+assert_file_contains "$log" '"agent":"aven-babysitter"' 'global babysitter session created through OpenCode API'
+assert_file_contains "$log" 'opencode api POST /api/session --data {"agent":"aven-babysitter"' 'babysitter session creation uses the global agent scope'
 assert_file_contains "$log" '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' 'babysitter API session uses Luna'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_babysitter/prompt' 'babysitter prompt admitted through OpenCode API'
 assert_file_contains "$log" 'herdr pane run w1:p2 env AVEN_DISPATCH_STORE=' 'babysitter inherits the dispatcher store when its API-owned session attaches'
@@ -128,7 +138,7 @@ assert_file_contains "$log" 'opencode --session '\''ses_babysitter'\''' 'babysit
 assert_file_contains "$log" 'Supervise build OpenCode session ses_one in Herdr pane w1:p1' 'babysitter receives build identity'
 assert_file_contains "$babysitter_state" '"babysitter": true' 'opt-in babysitter persisted'
 assert_file_contains "$babysitter_state" '"babysitter_session_id": "ses_babysitter"' 'babysitter API session persisted'
-assert_file_contains "$work/worktree-babysitter/.opencode/agents/babysitter.md" 'You are the babysitter' 'only the babysitter agent is injected'
+assert_file_contains "$work/config/opencode/agents/aven-babysitter.md" 'You are the babysitter' 'babysitter is installed as a global aven-namespaced agent'
 [ ! -e "$work/worktree-babysitter/.opencode/opencode.jsonc" ] || fail 'babysitter dispatch must not add an OpenCode config'
 
 # `--agent select` always opens the Herdr popup picker, including when OpenCode
@@ -157,6 +167,27 @@ after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 assert_eq "$after" "$before" 're-dispatch does not admit a second prompt'
 assert_file_contains "$work/retry" 'reopened APP-1 in OpenCode session ses_one' 're-dispatch reopens the persisted session'
 
+# Legacy attempts could be checkpointed as prompt-pending before their prompt
+# body was durable. Single-session recovery rebuilds the deterministic workflow
+# prompt rather than leaving the selected task permanently stranded.
+legacy_state=$work/legacy-pending.json
+python3 - "$state" "$legacy_state" <<'PY'
+import json
+import sys
+
+source, target = sys.argv[1:]
+store = json.load(open(source))
+attempt = next(iter(store["attempts"].values()))
+attempt["state"] = "prompt-pending"
+attempt["pending_prompt"] = ""
+json.dump(store, open(target, "w"))
+PY
+before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
+printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$legacy_state" RUST_WORKTREE="$work/worktree-legacy" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" > "$work/legacy-retry"
+after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
+assert_eq "$after" "$((before + 1))" 'legacy pending attempt regenerates and admits its durable prompt'
+assert_file_contains "$work/legacy-retry" 'reopened APP-1 in OpenCode session ses_one' 'legacy pending attempt reopens its existing session'
+
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- reconcile APP-1 >/dev/null
 assert_file_contains "$state" '"log_cursor": "42"' 'durable log cursor persisted'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- interrupt APP-1 >/dev/null
@@ -174,7 +205,8 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- reset APP-1
 assert_file_contains "$work/reset" 'reset complete for APP-1' 'confirmed reset completes'
 assert_file_contains "$state" '"attempts": {}' 'reset removes the local attempt'
 assert_file_contains "$log" 'opencode api GET /api/session/active' 'reset checks active sessions before cleanup'
-assert_file_contains "$log" 'aven edit APP-1 --status todo --epic off' 'reset returns root to an ordinary todo task'
+assert_file_contains "$log" 'aven edit APP-1 --status todo' 'reset returns root to todo without changing its type'
+assert_not_contains "$(cat "$log")" 'aven edit APP-1 --status todo --epic off' 'reset never demotes an epic to a task'
 assert_file_contains "$log" 'sdd.plan-worked-out' 'reset clears plan marker metadata'
 
 # Cumulative worktrees are provisioned by the dispatcher, not left to the
@@ -190,10 +222,21 @@ assert_file_contains "$log" 'branch app/dispatch-epic-task-phase-02 --base app/d
 phase_one_line=$(grep -n 'label APP-P1 first phase' "$log" | tail -n 1 | cut -d: -f1)
 phase_two_line=$(grep -n 'label APP-P2 second phase' "$log" | tail -n 1 | cut -d: -f1)
 [ "$phase_one_line" -lt "$phase_two_line" ] || fail 'reverse-ordered Aven children are provisioned in validated phase order'
-assert_file_contains "$log" '"agent":"orchestrator"' 'root session uses the fixed orchestrator agent'
+assert_file_contains "$log" '"agent":"aven-orchestrator"' 'root session uses the fixed global orchestrator agent'
+assert_file_contains "$work/config/opencode/agents/aven-orchestrator.md" 'You coordinate one approved Aven implementation epic' 'orchestrator is installed as a global aven-namespaced agent'
 assert_file_contains "$cumulative_state" '"task_ref": "APP-P1"' 'first phase is persisted'
 assert_file_contains "$cumulative_state" '"task_ref": "APP-P2"' 'second phase is persisted'
 assert_file_contains "$cumulative_state" '"state": "provisioned"' 'blocked successor remains provisioned without a prompt'
 assert_file_contains "$cumulative_state" '"state": "running"' 'first phase is admitted to its worker session'
 assert_file_contains "$log" 'Pre-provisioned cumulative worktrees' 'worktree coordinator receives its topology instructions'
+
+# A reset clears execution/planning state but never changes an epic root into
+# a task or detaches its phase subtasks. The root remains the durable ADR
+# container and the phase relationship survives the reset.
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_state" cargo run --quiet -- reset APP-2 --yes > "$work/epic-reset"
+assert_file_contains "$work/epic-reset" 'reset complete for APP-2' 'epic reset completes'
+epic_reset_edit=$(grep 'aven edit APP-2 --status todo' "$log" | tail -n 1)
+assert_contains "$epic_reset_edit" '--status todo' 'epic reset restores todo status'
+assert_not_contains "$epic_reset_edit" '--epic' 'epic reset preserves the root epic type'
+assert_not_contains "$(cat "$log")" 'aven epic remove APP-P1 APP-2' 'epic reset preserves phase containment'
 printf 'rust dispatch ok\n'

@@ -324,8 +324,10 @@ and reuses that session without admitting a duplicate prompt.
 The `z s` workflow keeps specs, plans, subtasks, and progress in Aven, then
 implements only after it has set `sdd.plan-worked-out=true`. `z p` plans only:
 it keeps a single-phase plan on the root task or makes a multi-phase plan an
-epic with ordered phase tasks. `z i` enforces the same marker before changing
-code, so it will direct you to plan first rather than infer an incomplete plan.
+epic with ordered phase subtasks. That epic remains the overarching ADR and
+specification throughout implementation and reset; phases never replace or
+demote it. `z i` enforces the same marker before changing code, so it will
+direct you to plan first rather than infer an incomplete plan.
 Babysitting is available only for the implementation workflows: `z S` for
 plan-then-implement and `z b` for implementation of an existing plan.
 
@@ -360,8 +362,11 @@ recovered from the dispatcher snapshot stored on their Aven task.
 
 Aven starts in the focused pane's directory and infers its project, falling
 back to workspace scope when no project is mapped. The plugin does not copy
-or replace your OpenCode configuration. Opt-in babysitting adds only the
-bundled `.opencode/agents/babysitter.md` definition.
+or replace a project's OpenCode configuration. When needed, it installs its
+bundled global profiles as `~/.config/opencode/agents/aven-babysitter.md` and
+`aven-orchestrator.md` (or the equivalent under `$XDG_CONFIG_HOME`). These
+names are reserved for this plugin; differing user-defined files are never
+overwritten.
 
 ### Agents and custom workflows
 
@@ -429,9 +434,10 @@ cleanup. It refuses reset if session activity cannot be inspected. Use
 `--yes` deliberately.
 
 On success reset removes local/Aven dispatch attempts and the three SDD plan
-markers, returns the root task to ordinary `todo`, and writes a superseding
-audit note. Generated phase children are detached only when their ownership
-metadata proves they belong to the root; ambiguous children cause a refusal.
+markers, returns the root to `todo` without changing its task type, and writes
+a superseding audit note. An epic therefore remains the overarching ADR even
+after reset, with its generated phase subtasks still attached. Ambiguous
+children cause a refusal rather than being changed.
 Task identity, spec, notes, attachments, unrelated task metadata and links,
 OpenCode sessions, Git branches, worktrees, and source files are retained.
 Reset never deletes sessions or cleans a checkout. Plan the task again before

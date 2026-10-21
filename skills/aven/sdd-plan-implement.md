@@ -152,9 +152,11 @@ aven edit {ref} --status todo \
   --metadata sdd.plan-schema=v1
 ```
 
-For two or more strictly ordered phases, make `{ref}` an epic and add one child
-per phase. Do not create parallel branches, a one-child epic, or a child with
-more than one blocker:
+For two or more strictly ordered phases, make `{ref}` an epic and keep it as the
+overarching ADR/specification record for the lifetime of the work. Add one child
+task per phase. The children are the independently executable subtasks; they do
+not replace or redefine the epic. Do not create parallel branches, a one-child
+epic, or a child with more than one blocker:
 
 1. Make the root task an epic and add a child per piece:
 
@@ -208,7 +210,8 @@ For a multi-phase root epic selected through `z s`, follow only the
 dispatcher-supplied **Execution mode** guidance for this attempt. Do not infer
 or coordinate a different execution topology. Do not dispatch children
 separately, run phases in parallel, or release a successor before predecessor
-verification.
+verification. Never use `aven edit {ref} --epic off`, convert the epic into a
+task, or move its ADR/specification onto a phase task.
 For each piece, and for the root task when it is not decomposed:
 
 1. Mark it active: `aven edit <ref> --status active`.

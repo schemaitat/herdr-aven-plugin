@@ -465,6 +465,13 @@ fn opencode(method: &str, path: &str, data: Option<Value>) -> Result<Value> {
     let output = opencode_text(method, path, data)?;
     serde_json::from_str(&output).with_context(|| format!("OpenCode returned non-JSON for {path}"))
 }
+/// Issue an OpenCode request in a worktree's configuration scope. Session
+/// creation resolves an agent before it reads the session `location`, so the
+/// request itself must carry this scope for worktree-local agents.
+fn opencode_in(method: &str, path: &str, data: Option<Value>, directory: &Path) -> Result<Value> {
+    let output = opencode_text_in(method, path, data, Some(directory))?;
+    serde_json::from_str(&output).with_context(|| format!("OpenCode returned non-JSON for {path}"))
+}
 fn opencode_text(method: &str, path: &str, data: Option<Value>) -> Result<String> {
     opencode_text_in(method, path, data, None)
 }
@@ -784,6 +791,8 @@ fn select_mode(requested: Option<ExecutionMode>, workflow: &str) -> Result<Execu
 }
 const BABYSITTER_AGENT: &str = include_str!("../agents/babysitter.md");
 const ORCHESTRATOR_AGENT: &str = include_str!("../agents/orchestrator.md");
+const BABYSITTER_AGENT_ID: &str = "aven-babysitter";
+const ORCHESTRATOR_AGENT_ID: &str = "aven-orchestrator";
 const ORCHESTRATOR_MODEL: &str = "github-copilot/gpt-6-luna";
 const MODEL_CHOICES: &[(&str, &str)] = &[
     ("Latest Sol", "github-copilot/gpt-6.1-sol"),
@@ -802,38 +811,43 @@ struct PrimaryAgent {
     name: String,
     model: Option<String>,
 }
-
-/// Add only the bundled babysitter agent. The worktree's OpenCode config stays
-/// entirely user-owned: in particular, no opencode.json/opencode.jsonc is
-/// created or copied by dispatch.
-fn install_babysitter_agent(worktree: &str) -> Result<()> {
-    let destination = Path::new(worktree).join(".opencode/agents/babysitter.md");
-    if destination.exists() {
-        return Ok(());
-    }
-    let parent = destination
-        .parent()
-        .context("babysitter agent destination has no parent")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create babysitter agent directory {}", parent.display()))?;
-    fs::write(&destination, BABYSITTER_AGENT)
-        .with_context(|| format!("write bundled babysitter agent {}", destination.display()))
+fn is_legacy_dispatcher_agent(agent_id: &str) -> bool {
+    matches!(agent_id, "babysitter" | "orchestrator")
 }
-fn install_orchestrator_agent(worktree: &str) -> Result<()> {
-    let destination = Path::new(worktree).join(".opencode/agents/orchestrator.md");
+
+fn global_opencode_agents_dir() -> Result<PathBuf> {
+    let config_dir = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .context("cannot resolve XDG_CONFIG_HOME or HOME for global OpenCode agents")?;
+    Ok(config_dir.join("opencode/agents"))
+}
+fn install_agent_definition(directory: &Path, agent_id: &str, contents: &str) -> Result<PathBuf> {
+    let destination = directory.join(format!("{agent_id}.md"));
     if destination.exists() {
-        if fs::read_to_string(&destination)? != ORCHESTRATOR_AGENT {
-            bail!("existing orchestrator agent differs; refusing to overwrite user configuration");
+        if fs::read_to_string(&destination)? != contents {
+            bail!(
+                "global OpenCode agent {} already exists with different contents; refusing to overwrite user configuration",
+                destination.display()
+            );
         }
-        return Ok(());
+        return Ok(destination);
     }
-    fs::create_dir_all(
-        destination
-            .parent()
-            .context("orchestrator agent has no parent")?,
-    )?;
-    fs::write(destination, ORCHESTRATOR_AGENT)?;
-    Ok(())
+    fs::create_dir_all(directory).with_context(|| {
+        format!(
+            "create global OpenCode agent directory {}",
+            directory.display()
+        )
+    })?;
+    fs::write(&destination, contents)
+        .with_context(|| format!("write bundled OpenCode agent {}", destination.display()))?;
+    Ok(destination)
+}
+/// Install plugin-owned agents once in OpenCode's global agent directory. The
+/// stable `aven-*` IDs work from every temporary Herdr worktree, avoiding
+/// per-worktree configuration caches and preserving project configuration.
+fn install_global_agent(agent_id: &str, contents: &str) -> Result<PathBuf> {
+    install_agent_definition(&global_opencode_agents_dir()?, agent_id, contents)
 }
 
 fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
@@ -847,6 +861,12 @@ fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
         .iter()
         .filter(|agent| agent.pointer("/mode").and_then(Value::as_str) == Some("primary"))
         .filter(|agent| agent.pointer("/hidden").and_then(Value::as_bool) != Some(true))
+        .filter(|agent| {
+            agent
+                .pointer("/id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| !is_legacy_dispatcher_agent(id))
+        })
         .filter_map(|agent| {
             let id = agent.pointer("/id").and_then(Value::as_str)?;
             let name = agent.pointer("/name").and_then(Value::as_str).unwrap_or(id);
@@ -1285,7 +1305,60 @@ fn focus_pane(pane: &str) -> Result<()> {
     }
     Ok(())
 }
+fn process_info_has_foreground_shell(process_info: &Value) -> Result<bool> {
+    let shell_pid = process_info
+        .pointer("/result/process_info/shell_pid")
+        .and_then(Value::as_u64)
+        .context("Herdr pane process-info shell_pid")?;
+    let foreground = process_info
+        .pointer("/result/process_info/foreground_processes")
+        .and_then(Value::as_array)
+        .context("Herdr pane process-info foreground_processes")?;
+    Ok(!foreground.is_empty()
+        && foreground
+            .iter()
+            .all(|process| process.pointer("/pid").and_then(Value::as_u64) == Some(shell_pid)))
+}
+fn pane_has_foreground_shell(pane: &str) -> Result<bool> {
+    let output = run(
+        "herdr",
+        &[
+            "pane".into(),
+            "process-info".into(),
+            "--pane".into(),
+            pane.into(),
+        ],
+        None,
+    )?;
+    let process_info: Value =
+        serde_json::from_str(&output).context("Herdr pane process-info response")?;
+    process_info_has_foreground_shell(&process_info)
+}
+/// Clear a partial terminal line and prove that a shell, not an existing
+/// OpenCode/agent process, owns terminal input before using `pane run`.
+fn clear_pane_for_command(pane: &str) -> Result<()> {
+    run(
+        "herdr",
+        &[
+            "pane".into(),
+            "send-keys".into(),
+            pane.into(),
+            "ctrl+c".into(),
+        ],
+        None,
+    )?;
+    for _ in 0..50 {
+        if pane_has_foreground_shell(pane)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!(
+        "pane {pane} remains occupied after Ctrl+C; refusing to send an OpenCode command as agent prompt input"
+    )
+}
 fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Result<()> {
+    clear_pane_for_command(pane)?;
     run(
         "herdr",
         &[
@@ -1302,40 +1375,47 @@ fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Re
     )?;
     Ok(())
 }
-fn babysitter_agent_is_available(worktree: &str) -> Result<()> {
-    let agents = opencode_text_in("GET", "/api/agent", None, Some(Path::new(worktree)))?;
-    let agents: Value = serde_json::from_str(&agents).context("OpenCode agent list response")?;
-    if agents
-        .pointer("/data")
-        .and_then(Value::as_array)
-        .is_some_and(|agents| {
-            agents
-                .iter()
-                .any(|agent| agent.pointer("/id").and_then(Value::as_str) == Some("babysitter"))
-        })
-    {
-        Ok(())
-    } else {
-        bail!(
-            "bundled babysitter agent is not discoverable in {}; supervision was not started",
-            worktree
-        )
+fn wait_for_global_agent(agent_id: &str) -> Result<()> {
+    // Global Markdown profiles are discovered from the server's global
+    // context. A location-scoped request intentionally returns only profiles
+    // merged for that worktree, so it cannot prove a global agent exists.
+    for attempt in 0..50 {
+        let agents = opencode_text("GET", "/api/agent", None)?;
+        let agents: Value =
+            serde_json::from_str(&agents).context("OpenCode agent list response")?;
+        if agents
+            .pointer("/data")
+            .and_then(Value::as_array)
+            .is_some_and(|agents| {
+                agents
+                    .iter()
+                    .any(|agent| agent.pointer("/id").and_then(Value::as_str) == Some(agent_id))
+            })
+        {
+            return Ok(());
+        }
+        if attempt < 49 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
+    bail!("global bundled {agent_id} agent is not discoverable")
 }
 fn start_babysitter(
     attempt: &mut Attempt,
     store_path: &Path,
     store: &mut LockedStore,
 ) -> Result<()> {
-    install_babysitter_agent(&attempt.worktree)?;
-    babysitter_agent_is_available(&attempt.worktree)?;
+    install_global_agent(BABYSITTER_AGENT_ID, BABYSITTER_AGENT)?;
+    wait_for_global_agent(BABYSITTER_AGENT_ID)?;
+    // Resolve the global `aven-babysitter` profile in the server's global
+    // context. Its explicit session location still selects the build worktree.
     let session = opencode(
         "POST",
         "/api/session",
         Some(json!({
             "title": format!("Babysit {}", attempt.task_ref),
             "location": {"directory": attempt.worktree},
-            "agent": "babysitter",
+            "agent": BABYSITTER_AGENT_ID,
             "model": model_ref(Some("github-copilot/gpt-6-luna"))?,
             "permissions": [{"action": "*", "resource": "*", "effect": "allow"}],
         })),
@@ -1539,7 +1619,7 @@ fn provision_phase_worktrees(
             &format!("{} {}", task.task_ref, task.title),
             Some(&attempt.branch),
         )?;
-        let session = opencode(
+        let session = opencode_in(
             "POST",
             "/api/session",
             Some(json!({
@@ -1549,6 +1629,7 @@ fn provision_phase_worktrees(
                 "model": model_ref(Some(&attempt.model))?,
                 "permissions": autonomous_permissions(),
             })),
+            Path::new(&resource.path),
         )?;
         let session_id = field(&session, "/data/id")?.to_owned();
         start_opencode_in_pane(&resource.pane, &session_id, store_path)?;
@@ -1850,35 +1931,57 @@ fn dispatch(
         store_attempt(&mut store, reopened.clone());
         store.save()?;
         start_opencode_in_pane(&reopened.pane, &reopened.session_id, &path)?;
-        if reopened.babysitter && !reopened.babysitter_session_id.is_empty() {
-            let output = run(
-                "herdr",
-                &[
-                    "pane".into(),
-                    "split".into(),
-                    reopened.pane.clone(),
-                    "--direction".into(),
-                    "right".into(),
-                    "--cwd".into(),
-                    reopened.worktree.clone(),
-                    "--no-focus".into(),
-                ],
-                None,
-            )?;
-            let response: Value =
-                serde_json::from_str(&output).context("Herdr pane split response")?;
-            reopened.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
-            start_opencode_in_pane(
-                &reopened.babysitter_pane,
-                &reopened.babysitter_session_id,
-                &path,
-            )?;
+        if reopened.babysitter {
+            if reopened.babysitter_session_id.is_empty() {
+                // A prior dispatch can fail during babysitter discovery after
+                // the build session is durable. Retry the missing sidecar on
+                // reopen rather than silently reopening without supervision.
+                start_babysitter(&mut reopened, &path, &mut store)?;
+            } else {
+                let output = run(
+                    "herdr",
+                    &[
+                        "pane".into(),
+                        "split".into(),
+                        reopened.pane.clone(),
+                        "--direction".into(),
+                        "right".into(),
+                        "--cwd".into(),
+                        reopened.worktree.clone(),
+                        "--no-focus".into(),
+                    ],
+                    None,
+                )?;
+                let response: Value =
+                    serde_json::from_str(&output).context("Herdr pane split response")?;
+                reopened.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
+                start_opencode_in_pane(
+                    &reopened.babysitter_pane,
+                    &reopened.babysitter_session_id,
+                    &path,
+                )?;
+            }
         }
         if matches!(prior_state.as_str(), "prompt-pending" | "terminal-pending") {
             if reopened.pending_prompt.is_empty() {
-                bail!(
-                    "attempt is awaiting prompt admission but has no durable prompt body; inspect authoritative session before retrying"
-                );
+                if reopened.execution_mode == ExecutionMode::Worktrees {
+                    bail!(
+                        "worktree attempt is awaiting prompt admission without a durable prompt body; its coordinator topology cannot be reconstructed safely, so reset and redispatch it"
+                    );
+                }
+                // Early dispatcher versions could persist a session as
+                // prompt-pending before checkpointing its deterministic root
+                // prompt. Rebuild that prompt for single-session/subsession
+                // workflows rather than permanently stranding the attempt.
+                reopened.prompt_id = identifier("msg");
+                reopened.pending_prompt = root_prompt(
+                    &task,
+                    &reopened.task_ref,
+                    skill,
+                    skills_dir,
+                    reopened.execution_mode,
+                    None,
+                )?;
             }
             reopened.state = "prompt-pending".into();
             store_attempt(&mut store, reopened.clone());
@@ -2006,27 +2109,37 @@ fn dispatch(
     store_attempt(&mut store, attempt.clone());
     store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees {
-        install_orchestrator_agent(&attempt.worktree)?;
+        install_global_agent(ORCHESTRATOR_AGENT_ID, ORCHESTRATOR_AGENT)?;
+        wait_for_global_agent(ORCHESTRATOR_AGENT_ID)?;
         provision_phase_worktrees(&mut attempt, &task, &path, &mut store, skills_dir.clone())?;
         store_attempt(&mut store, attempt.clone());
         store.save()?;
     }
     let (session_agent, session_model) = if attempt.execution_mode == ExecutionMode::Worktrees {
-        ("orchestrator".to_owned(), ORCHESTRATOR_MODEL.to_owned())
+        (
+            ORCHESTRATOR_AGENT_ID.to_owned(),
+            ORCHESTRATOR_MODEL.to_owned(),
+        )
     } else {
         (attempt.agent.clone(), attempt.model.clone())
     };
-    let session = opencode(
-        "POST",
-        "/api/session",
-        Some(json!({
-            "title": format!("{} {}", attempt.task_ref, selected.task.title),
-            "location": {"directory": attempt.worktree},
-            "agent": if session_agent.is_empty() { Value::Null } else { Value::String(session_agent.clone()) },
-            "model": model_ref(Some(&session_model))?,
-            "permissions": autonomous_permissions(),
-        })),
-    )?;
+    let session_payload = json!({
+        "title": format!("{} {}", attempt.task_ref, selected.task.title),
+        "location": {"directory": attempt.worktree},
+        "agent": if session_agent.is_empty() { Value::Null } else { Value::String(session_agent.clone()) },
+        "model": model_ref(Some(&session_model))?,
+        "permissions": autonomous_permissions(),
+    });
+    let session = if attempt.execution_mode == ExecutionMode::Worktrees {
+        opencode("POST", "/api/session", Some(session_payload))?
+    } else {
+        opencode_in(
+            "POST",
+            "/api/session",
+            Some(session_payload),
+            Path::new(&attempt.worktree),
+        )?
+    };
     attempt.session_id = field(&session, "/data/id")?.to_owned();
     attempt.coordinator_session_id = attempt.session_id.clone();
     attempt.coordinator_agent = session_agent;
@@ -2063,6 +2176,12 @@ fn dispatch(
     if admitted != attempt.prompt_id {
         bail!("OpenCode admitted an unexpected message id");
     }
+    // The build prompt is already durable and admitted. Checkpoint this before
+    // optional supervision so a babysitter setup failure cannot make a later
+    // reopen submit the build prompt a second time.
+    attempt.state = "running".into();
+    store_attempt(&mut store, attempt.clone());
+    store.save()?;
     if attempt.babysitter {
         start_babysitter(&mut attempt, &path, &mut store)?;
     }
@@ -2423,30 +2542,11 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         .attempts
         .retain(|_, attempt| attempt.task_id != task_id);
     store.save()?;
-    for child in &children {
-        aven(&invocation, &["epic", "remove", child, &reference], None)
-            .with_context(|| format!("detach generated phase {child}"))?;
-        aven(
-            &invocation,
-            &[
-                "edit",
-                child,
-                "--metadata",
-                &format!("dispatch.reset-generation={generation}"),
-                "--metadata",
-                "dispatch.reset-state=completed",
-            ],
-            None,
-        )
-        .with_context(|| format!("fence detached generated phase {child}"))?;
-    }
     let mut cleanup = vec![
         "edit".to_owned(),
         reference.clone(),
         "--status".into(),
         "todo".into(),
-        "--epic".into(),
-        "off".into(),
     ];
     let existing_metadata = root.get("metadata").and_then(Value::as_object);
     for key in [
@@ -2501,7 +2601,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
         None,
     )?;
     let note = format!(
-        "## Dispatcher reset\n\nReset generation {} supersedes the prior dispatch and plan. Removed {} attempt record(s) from the shared store and Aven snapshots. Preserved sessions, branches, worktrees, source files, specification, notes, and history. Detached generated phase task(s): {}. Plan again before implementation.",
+        "## Dispatcher reset\n\nReset generation {} supersedes the prior dispatch and plan. Removed {} attempt record(s) from the shared store and Aven snapshots. Preserved sessions, branches, worktrees, source files, specification, notes, history, the root epic, and its generated phase subtasks: {}. Plan again before implementation.",
         generation,
         attempts.len(),
         if children.is_empty() {
@@ -2670,13 +2770,10 @@ fn git_head(directory: &Path) -> Result<String> {
     )
 }
 fn dispatcher_runtime_file(directory: &Path, relative: &str) -> bool {
-    match relative {
-        ".opencode/agents/orchestrator.md" => fs::read_to_string(directory.join(relative))
-            .is_ok_and(|contents| contents == ORCHESTRATOR_AGENT),
-        ".opencode/agents/babysitter.md" => fs::read_to_string(directory.join(relative))
-            .is_ok_and(|contents| contents == BABYSITTER_AGENT),
-        _ => false,
-    }
+    // Bundled agents are global definitions, not tolerated untracked output in
+    // a phase worktree. Every local file must remain visible to integration.
+    let _ = (directory, relative);
+    false
 }
 fn worktree_is_integration_clean(directory: &Path) -> Result<bool> {
     let status = run_in(
@@ -3003,15 +3100,24 @@ mod tests {
         );
     }
     #[test]
-    fn babysitter_agent_is_injected_without_a_config_file() {
+    fn pane_command_admission_requires_the_shell_to_own_input() {
+        assert!(process_info_has_foreground_shell(
+            &json!({"result":{"process_info":{"shell_pid":42,"foreground_processes":[{"pid":42}]}}})
+        )
+        .unwrap());
+        assert!(!process_info_has_foreground_shell(
+            &json!({"result":{"process_info":{"shell_pid":42,"foreground_processes":[{"pid":99,"name":"opencode"}]}}})
+        )
+        .unwrap());
+    }
+    #[test]
+    fn bundled_agent_definition_is_written_to_a_named_global_agent_path() {
         let root = tempfile::tempdir().unwrap();
-        let worktree = root.path().join("worktree");
-        install_babysitter_agent(worktree.to_str().unwrap()).unwrap();
-        assert_eq!(
-            fs::read_to_string(worktree.join(".opencode/agents/babysitter.md")).unwrap(),
-            BABYSITTER_AGENT
-        );
-        assert!(!worktree.join(".opencode/opencode.jsonc").exists());
+        let agents = root.path().join("opencode/agents");
+        let destination =
+            install_agent_definition(&agents, BABYSITTER_AGENT_ID, BABYSITTER_AGENT).unwrap();
+        assert_eq!(fs::read_to_string(&destination).unwrap(), BABYSITTER_AGENT);
+        assert_eq!(destination, agents.join("aven-babysitter.md"));
     }
     #[test]
     fn orchestrator_definition_monitors_every_phase_and_defers_final_integration() {
@@ -3042,6 +3148,13 @@ mod tests {
             .filter_map(|agent| agent.pointer("/id").and_then(Value::as_str))
             .collect();
         assert_eq!(selected, vec!["build"]);
+    }
+    #[test]
+    fn legacy_dispatcher_agent_ids_are_not_selectable() {
+        assert!(is_legacy_dispatcher_agent("babysitter"));
+        assert!(is_legacy_dispatcher_agent("orchestrator"));
+        assert!(!is_legacy_dispatcher_agent("aven-babysitter"));
+        assert!(!is_legacy_dispatcher_agent("build"));
     }
     #[test]
     fn namespaced_skill_is_loaded_below_the_skills_root() {
@@ -3167,17 +3280,17 @@ mod tests {
         );
     }
     #[test]
-    fn only_exact_bundled_runtime_files_are_integration_exceptions() {
+    fn global_runtime_agents_are_not_ignored_as_worktree_output() {
         let root = tempfile::tempdir().unwrap();
         let agents = root.path().join(".opencode/agents");
         fs::create_dir_all(&agents).unwrap();
         fs::write(agents.join("orchestrator.md"), ORCHESTRATOR_AGENT).unwrap();
         fs::write(agents.join("babysitter.md"), BABYSITTER_AGENT).unwrap();
-        assert!(dispatcher_runtime_file(
+        assert!(!dispatcher_runtime_file(
             root.path(),
             ".opencode/agents/orchestrator.md"
         ));
-        assert!(dispatcher_runtime_file(
+        assert!(!dispatcher_runtime_file(
             root.path(),
             ".opencode/agents/babysitter.md"
         ));

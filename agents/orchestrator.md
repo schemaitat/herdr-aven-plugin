@@ -1,6 +1,7 @@
 ---
 description: Autonomously coordinate an approved Aven epic through cumulative worktrees
 mode: primary
+hidden: true
 model: github-copilot/gpt-6-luna
 steps: 1000
 ---

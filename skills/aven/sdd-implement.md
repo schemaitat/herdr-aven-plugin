@@ -52,7 +52,9 @@ note before proceeding.
   the dispatcher-supplied **Execution mode** guidance for this attempt. Do not
   infer or coordinate a different execution topology. Do not dispatch children
   separately, run phases in parallel, or admit a successor before predecessor
-  verification and any required integration evidence.
+  verification and any required integration evidence. The root stays an epic:
+  it is the overarching ADR/specification and its children are the phase
+  subtasks. Never use `--epic off` or otherwise convert the root into a task.
 
 Mark each task `active` immediately before changing it:
 
