@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { Entity } from '../shared/graph.js';
-import { searchEntities, searchScore } from '../src/graph/search.js';
+import { infoShortcut, searchEntities, searchScore, slashShortcut } from '../src/graph/search.js';
 import { ALL_TYPES, defaultFilters, projectGraph } from '../src/graph/state.js';
 import { RELATION_KINDS } from '../src/graph/elements.js';
 import { graphFixture } from './fixtures/graph-snapshot.js';
@@ -26,5 +26,19 @@ describe('bounded deterministic fuzzy search', () => {
     expect(graph.discoveryNodes).toEqual(searchEntities(snapshot.nodes, 't'));
     expect(graph.nodes).toEqual(graph.discoveryNodes.slice(0, 500));
     expect(graph.cappedNodes).toBe(graph.discoveryNodes.length - 500);
+  });
+});
+
+describe('semantic keyboard shortcuts', () => {
+  const key = (value: string, options: Record<string, boolean> = {}) => ({ key: value, defaultPrevented: false, repeat: false, isComposing: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target: undefined, ...options }) as unknown as KeyboardEvent;
+  test('accepts the produced slash with or without Shift, but not an unrelated shifted character', () => {
+    expect(slashShortcut(key('/'))).toBe(true);
+    expect(slashShortcut(key('/', { shiftKey: true }))).toBe(true);
+    expect(slashShortcut(key('7', { shiftKey: true }))).toBe(false);
+  });
+  test('requires lowercase unmodified i and ignores repeated, handled or composing input', () => {
+    expect(infoShortcut(key('i'))).toBe(true);
+    for (const candidate of [key('I', { shiftKey: true }), key('i', { repeat: true }), key('i', { ctrlKey: true }), key('i', { defaultPrevented: true }), key('i', { isComposing: true })]) expect(infoShortcut(candidate)).toBe(false);
+    for (const candidate of [key('/', { repeat: true }), key('/', { altKey: true }), key('/', { defaultPrevented: true }), key('/', { isComposing: true })]) expect(slashShortcut(candidate)).toBe(false);
   });
 });

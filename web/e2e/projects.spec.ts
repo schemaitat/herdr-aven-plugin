@@ -31,6 +31,8 @@ test('project switch disposes active physics, clears component/pins and never wr
   await fixtures(page); await page.goto('/'); await allTypes(page);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /alpha Build graph/ }).click();
+  await page.keyboard.press('i');
+  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Show all', exact: true }).first()).toBeVisible();
   await page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;

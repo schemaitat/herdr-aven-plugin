@@ -125,7 +125,7 @@ export function GraphView(props: Props) {
       cancel();
       pendingReturn = undefined;
       const { nodes, edges, selected, paused } = latest.current;
-      const anchor = dragAnchor ?? (nodes.some(node => node.id === selected) ? selected : undefined);
+      const anchor = dragAnchor ?? (latest.current.component && nodes.some(node => node.id === latest.current.component) ? latest.current.component : nodes.some(node => node.id === selected) ? selected : undefined);
        const targets = anchor && latest.current.component && latest.current.distances?.size
          ? hopRingTargets(nodes, latest.current.distances, anchor, memory.positions)
          : selectionTargets(nodes, edges, memory.positions, anchor);
@@ -165,7 +165,7 @@ export function GraphView(props: Props) {
       sync() {
         const { nodes, edges, component } = latest.current;
         const nextKey = topologyKey(nodes, edges), changedMemory = memory !== latest.current.memory;
-        const changed = nextKey !== key, componentExit = Boolean(previousComponent && !component);
+        const changed = nextKey !== key, componentExit = Boolean(previousComponent && !component), componentEntry = Boolean(component && component !== previousComponent);
         const initial = !fitted && nodes.length > 0;
         const layoutStart = performance.now();
         if (changed || changedMemory) cancel();
@@ -180,7 +180,7 @@ export function GraphView(props: Props) {
         highlight(cy, latest.current.selected);
         if (changedMemory) restore(memory.visual ?? memory.positions);
         else if (componentExit) restore();
-        else if (changed) activate();
+        else if (changed || componentEntry) activate();
         key = nextKey; previousComponent = component;
         if (!fitted && nodes.length) { cy.resize(); cy.fit(undefined, 50); fitted = true; }
          rememberCamera(); readableLabels(cy); paint(); setZoom(cy.zoom());
@@ -193,7 +193,7 @@ export function GraphView(props: Props) {
           performance.measure('graph.initial-sync', { start: syncStart, end: performance.now() });
         }
       },
-      selection() { highlight(cy, latest.current.selected); invalidateCues(); if (latest.current.selected) activate(); else restore(); },
+      selection() { highlight(cy, latest.current.selected); invalidateCues(); if (latest.current.component) return; if (latest.current.selected) activate(); else restore(); },
       pause() { if (latest.current.paused) cancel(); else if (pendingReturn) restore(pendingReturn); else activate(); },
       command() {
         const { command, nodes, edges } = latest.current;

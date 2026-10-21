@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { Entity, SourceHealth } from '../shared/graph.js';
 import type { ProjectChoice } from '../shared/projects.js';
 import { RELATION_KINDS, type RelationKind } from './graph/elements.js';
@@ -11,13 +12,20 @@ export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount,
   onSearch: () => void;
   matches: number; visible: number; unknownTimeExclusions: number;
 }) {
+  const graphTools = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 650px)');
+    const update = () => { if (graphTools.current) graphTools.current.open = !media.matches; };
+    update(); media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
   const epics = nodes.filter(node => node.kind === 'epic').sort((a, b) => a.label.localeCompare(b.label));
   const epic = epics.find(node => node.id === filters.epic);
   return <section aria-label="Graph and entity controls">
     <div className="toolbar" aria-label="Entity filters">
-      <label>Project<select aria-label="Project" value={project ?? ''} disabled={!project} onChange={event => onProject(event.target.value)}>{!project && <option value="">Loading projects…</option>}{project && !projects.some(choice => choice.key === project) && <option value={project}>{project} (current)</option>}{projects.map(choice => <option key={choice.key} value={choice.key}>{choice.name}</option>)}</select></label>
+       <label><span className="field-label">Project</span><select aria-label="Project" value={project ?? ''} disabled={!project} onChange={event => onProject(event.target.value)}>{!project && <option value="">Loading projects…</option>}{project && !projects.some(choice => choice.key === project) && <option value={project}>{project} (current)</option>}{projects.map(choice => <option key={choice.key} value={choice.key}>{choice.name}</option>)}</select></label>
        <button onClick={onSearch}>Search /</button>
-      <label>Search entities<input type="search" maxLength={256} value={filters.query} onChange={event => onChange({ ...filters, query: event.target.value })} placeholder="Task, session, pane, branch…" /></label>
+       <label><span className="field-label">Search entities</span><input type="search" maxLength={256} value={filters.query} onChange={event => onChange({ ...filters, query: event.target.value })} placeholder="Task, session, pane, branch…" /></label>
       <details className="filter-popover" onKeyDown={event => {
         if (event.key !== 'Escape') return;
         event.preventDefault(); event.stopPropagation();
@@ -42,6 +50,6 @@ export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount,
        <button onClick={() => onChange(defaultFilters())}>Reset filters</button>
     </div>
     <div className="scope-chips" aria-label="Active scope"><span>{filters.kinds.size} of {ALL_TYPES.length} types</span><span>{filters.relationKinds.size === 0 ? 'No relationships' : `${filters.relationKinds.size} of ${RELATION_KINDS.length} relationships`}</span><span>{filters.state === 'all' ? 'All states' : filters.state}</span><span>{filters.time === 'all' ? 'All time' : `Last ${filters.time} source changes`}</span>{filters.epic && <span>{epic?.label ?? 'Unavailable epic'} <button aria-label="Clear epic scope" onClick={() => onChange({ ...filters, epic: undefined })}>×</button></span>}{filters.query && <span>Search: {filters.query}</span>}<span>{matches} matches · {visible} on canvas</span>{filters.time !== 'all' && <span role="status">{unknownTimeExclusions} unknown/invalid/future-time exclusions</span>}</div>
-    <div className="graph-controls"><button aria-label="Zoom in" disabled={!mounted} onClick={() => onCommand('in')}>+</button><button aria-label="Zoom out" disabled={!mounted} onClick={() => onCommand('out')}>−</button><button aria-label="Fit graph" disabled={!mounted} onClick={() => onCommand('fit')}>Fit</button><button disabled={!mounted} onClick={() => onCommand('reset')}>Reset positions</button><button aria-pressed={paused} onClick={onPause}>{paused ? 'Resume motion' : 'Pause motion'}</button><button onClick={onMount}>{mounted ? 'List only' : 'Show graph'}</button><details className="sources"><summary>Sources · {health?.every(source => source.status === 'ok') ? 'OK' : 'review'}</summary><div>{health?.map(source => <p key={source.source} className={`health ${source.status}`}><strong>{source.source}</strong> · {source.status} · {source.message}</p>)}</div></details></div>
+     <details ref={graphTools} className="graph-options" open onKeyDown={event => { if (event.key === 'Escape' && window.matchMedia('(max-width: 650px)').matches && event.currentTarget.open) { event.preventDefault(); event.stopPropagation(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}><summary>Graph tools</summary><div className="graph-controls"><button aria-label="Zoom in" disabled={!mounted} onClick={() => onCommand('in')}>+</button><button aria-label="Zoom out" disabled={!mounted} onClick={() => onCommand('out')}>−</button><button aria-label="Fit graph" disabled={!mounted} onClick={() => onCommand('fit')}>Fit</button><button disabled={!mounted} onClick={() => onCommand('reset')}>Reset positions</button><button aria-pressed={paused} onClick={onPause}>{paused ? 'Resume motion' : 'Pause motion'}</button><button onClick={onMount}>{mounted ? 'List only' : 'Show graph'}</button><details className="sources"><summary>Sources · {health?.every(source => source.status === 'ok') ? 'OK' : 'review'}</summary><div>{health?.map(source => <p key={source.source} className={`health ${source.status}`}><strong>{source.source}</strong> · {source.status} · {source.message}</p>)}</div></details></div></details>
   </section>;
 }

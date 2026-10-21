@@ -32,7 +32,16 @@ export function searchEntities(nodes: Entity[], query: string): Entity[] {
     .map(entry => entry.node);
 }
 
+function shortcutAvailable(event: KeyboardEvent): boolean {
+  return !event.defaultPrevented && !event.repeat && !event.isComposing && !event.ctrlKey && !event.metaKey && !event.altKey &&
+    !(typeof Element !== 'undefined' && event.target instanceof Element && event.target.closest('input, select, textarea, [contenteditable]:not([contenteditable="false"])'));
+}
+
 export function slashShortcut(event: KeyboardEvent): boolean {
-  return event.key === '/' && !event.isComposing && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey &&
-    !(event.target instanceof Element && event.target.closest('input, select, textarea, [contenteditable]:not([contenteditable="false"])'));
+  // Test the produced character, not Shift: several keyboard layouts need Shift for /.
+  return event.key === '/' && shortcutAvailable(event);
+}
+
+export function infoShortcut(event: KeyboardEvent): boolean {
+  return event.key === 'i' && !event.shiftKey && shortcutAvailable(event);
 }

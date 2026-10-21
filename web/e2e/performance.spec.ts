@@ -16,6 +16,7 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   await expect(page.locator('.graph-status')).toContainText('500 entities · 1000 connections');
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /epic Orbit 000/ }).click();
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Orbit 000', exact: true })).toBeVisible();
   await page.locator('.graph-canvas').evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   const interactiveMs = performance.now() - started;
@@ -114,6 +115,8 @@ test('component selection promotes its eligible anchor within the fixed canvas c
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   for (let i = 0; i < 13; i++) await page.getByRole('button', { name: 'Next entities', exact: true }).click();
   await page.getByRole('button', { name: /Task 559/ }).click();
+  await page.keyboard.press('i');
+  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
   await page.waitForTimeout(100);
   const displayed = await page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().length);
   expect(displayed).toBeLessThanOrEqual(500);

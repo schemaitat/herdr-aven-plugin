@@ -76,18 +76,23 @@ facets and may coexist with Working. Herdr observations remain inspectable even
 when they contradict the API. Missing/unsupported API data is unknown, not idle
 or done; observations expire after 4.5 seconds, including in disconnected browsers.
 
-The graph canvas is edge-to-edge within the browser viewport; controls float in
-one compact full-width strip and **Sources** discloses detailed source health on
-demand. Selection is pinned across the top rather than buried in the Entity list:
-**Inspect details** expands canonical identity, provenance and relationships,
-including **Copy full ID**. **Entities** opens the complete paged list, while
+The graph canvas occupies the remaining browser viewport below a compact,
+top-pinned header. **Filters** and **Search /** are always discoverable;
+**Graph tools** on narrow screens, **Panels**, and **Sources** disclose secondary
+controls on demand. Selecting an entity does not open information. Press the
+visible **i** shortcut outside editable controls to toggle a bounded, scrollable
+entity-info surface containing canonical identity, provenance, relationships
+and **Copy full ID**. The shortcut is inert without a selection and never opens
+information during search. **Entities** opens the complete paged list, while
 **Live activity**, **Event history** and **Help & legend** open other inspection
 surfaces on demand. Escape or
 **Close panel** closes the inspector and returns focus to its opener; background
 graph controls remain reachable. The skip link opens and focuses Entities.
-**Hide graph** and a failed optional canvas load both expose the list/detail path.
+**List only** and a failed optional canvas load both preserve the list route;
+select an entry, then press **i** to inspect it without the canvas.
 
-Press **/** outside editable controls, or choose **Search /**, for transactional
+Press **/** outside editable controls, with or without Shift when that is how
+the keyboard produces `/`, or choose **Search /**, for transactional
 search. Matching is case-insensitive over label, ref and ID: exact matches rank
 before prefixes, then subsequence matches, with stable ID ties. Queries are bounded
 to 256 characters and each field to 4,096 characters; no search service is used.
@@ -103,16 +108,21 @@ The inline Search entities field also filters directly, without a transaction.
 Escape closes it and returns focus). Entity types are independent checkboxes:
 **epic, task, attempt, agent and session** are initially selected. **All types**
 also includes workspace, pane, worktree and boundary entities. Unchecking every
-type means no matches, not All. Source state initially includes all states.
+type means no matches, not All. Independent relationship checkboxes initially
+show **contains** and **blocks**; **All relationships** exposes every source
+kind plus evidenced agent dependencies, and **No relationships** leaves eligible
+nodes isolated. Hidden relations never connect or attract visible entities, but
+remain in canonical info evidence. Source state initially includes all states.
 Epic choices always come from the loaded snapshot, independent of other filters.
 Epic scope follows nested containment and explicit execution ownership only;
 blockers/related links and shared sessions, panes or workspaces never pull in
 unrelated owners. **Clear epic** removes only that scope. A vanished epic remains
 explicitly unavailable with an empty result until cleared; refresh never silently
 broadens the scope. Chips show the current scope, matching count and canvas count.
-**Reset filters** restores the default types, all states/time and no epic/query;
+**Reset filters** restores epic/task types, contains/blocks relations, all
+states/time and no epic/query;
 it does not erase selection or saved node positions. Selected off-canvas entities
-retain their details and all source relationships without overriding filters.
+retain their information and all source relationships when opened with **i**.
 
 Recent source changes initially includes **All time**. Rolling presets are
 **24 hours, 72 hours, 7 days, 14 days and 30 days** (not a calendar month), with an
@@ -128,21 +138,23 @@ historical graph or a guarantee of exhaustive task coverage. Filtering never
 expands source collection.
 
 **Graph guide.** Large violet circular epic hubs and smaller blue task bubbles
-form deterministic orbital groups (concentric rings for larger epics). Shapes
+seed deterministic evidenced connected groups, packed apart from unrelated
+components. Shapes
 distinguish agents, attempts, sessions, panes and worktrees; labels include the
 entity kind and source state, so color is never the only cue. The expandable
 legend explains each relationship: containment ends in a circle; **blocks**
 points **from blocker to blocked task**, not the reverse. Dashed derived-agent
 dependencies come only from recorded task blockers plus assignments; dashed
 assignment, dotted placement and diamond worktree endpoints stay distinct.
-Click an edge for its direction, source identities and evidence. No connection
+Select an edge, then press **i**, for direction, source identities and evidence. No connection
 or dependency is inferred from visual proximity.
 
 Drag bubbles or the background, wheel to zoom, or use compact +/-/Fit/Reset
-controls. Clicking a canvas entity, Entity-list row, or related entity selects
-and focuses its connected component; edge clicks remain evidence inspection.
-Double-click remains a toggle shortcut. **Show all**, clear selection, or
-**Focus component** in details leave/re-enter focus without clearing other filters.
+controls. Clicking a canvas entity, Entity-list row, or related entity only
+selects and highlights it; it does not change the component camera or open info.
+Double-click toggles explicit component focus. The **Focus component** button
+in the i-opened info surface enters or reanchors focus; **Show all** exits focus
+without clearing selection or other filters.
 Connectivity uses actual source and evidenced derived relationships in the
 current type/state/time/epic/search scope, before collapse and the canvas cap;
 it never traverses hidden kinds. Entry fits the component; exit restores the
@@ -151,11 +163,12 @@ announcement. Use an epic's explicit list button to collapse/expand. Collapsed
 external relationships are explicitly summarized at the hub, not invented;
 internal blockers remain in details.
 Focused components arrange by deterministic undirected shortest-hop shells around
-the selected entity (computed before collapse/cap); clicking another focused
-entity reanchors the shells. The 500-node cap can promote an eligible anchor
+the explicit focus anchor (computed before collapse/cap); selecting a different
+entity while focused does not reanchor it. An explicit focus action does.
+The 500-node cap can promote an eligible anchor
 without changing the cap. Updates do not reset the camera, selection or manually positioned nodes. Window
 resizing also preserves the camera: use **Fit graph** after narrowing a window.
-**Hide graph** leaves the list/detail route usable without a canvas. A keyboard
+**List only** leaves the list/info route usable without a canvas. A keyboard
 skip link bypasses the graph; list buttons and related-entity buttons share the
 same selection. Focus is outlined; there are no particle/starfield or activity
 animations.
@@ -164,7 +177,7 @@ animations.
 with many-body repulsion, radius-aware collision avoidance and weak deterministic
 orbital anchors to preserve epic groups. Selection anchors a tighter immediate
 neighborhood while unrelated nodes stay at their settled overview positions.
-**Clear selection** and leaving component focus return to the saved overview
+Clearing selection changes highlights only; leaving component focus returns to the saved overview
 without cumulative drift. Search Escape restores the pre-preview geometry and
 camera. Physical proximity never creates source relationships or changes state,
 direction, provenance, execution activity or task acceptance.
@@ -201,7 +214,7 @@ bounded DOM, variable-height text and complete keyboard traversal without a
 scroll-only virtual list. Live/history retention remains separately capped.
 At dense overview scale, graph labels are suppressed until zoomed to a legible
 size; concise captions use collision suppression and full facts remain in the
-list/pinned inspector. Opaque session, attempt and UUID-style tokens show a
+list/i-opened info surface. Opaque session, attempt and UUID-style tokens show a
 recognizable prefix plus four payload characters only; canonical identities stay
 distinct for search, evidence, requests and copying. Viewport texture caching
 and pixel ratio 1 bound canvas cost. Current linked API worker/session activity

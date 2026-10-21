@@ -26,6 +26,7 @@ test('loading, empty, offline/retry, stale and optional-source outage states rec
   await expect(page.locator('.health.unavailable')).toHaveCount(3);
   const entry = page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ });
   await entry.click();
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
   mode = 'stale';
   await expect(page.locator('.health.stale')).toContainText('Retained previous Aven snapshot');
@@ -47,11 +48,11 @@ test('cap is disclosed without losing search/list/detail discovery; entity and l
   for (let index = 0; index < 13; index++) await entities.getByRole('button', { name: 'Next entities', exact: true }).click();
   const last = entities.getByRole('button', { name: /Task 559/ });
   await last.focus(); await page.keyboard.press('Enter');
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Task 559', exact: true })).toBeVisible();
   await page.getByLabel('Search entities').fill('Task 559');
-  // Entity activation enters the eligible component. The pinned selection and
-  // complete list remain the discovery route even when a component projection
-  // cannot retain the former overview canvas status line.
+  // Selection does not change component focus; the complete list and i-opened
+  // evidence remain available even for an off-canvas match.
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Task 559', exact: true })).toBeVisible();
   await expect(entities.getByRole('button', { name: /Task 559/ })).toBeVisible();
   await expect(last).toHaveAttribute('aria-pressed', 'true');

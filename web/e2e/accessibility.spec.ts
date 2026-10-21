@@ -19,6 +19,8 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await page.keyboard.press('Enter');
   await expect(page.getByRole('region', { name: 'Entities', exact: true })).toBeFocused();
   await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
+  await expect(page.getByRole('complementary', { name: 'Entity details' })).toHaveCount(0);
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Aurora epic', exact: true })).toBeVisible();
   // This legacy all-edge assertion explicitly requests the complete relation scope.
   await allTypes(page);
@@ -40,6 +42,7 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await page.setViewportSize({ width: 390, height: 844 });
   // Resize intentionally preserves the camera; explicitly fit the narrow view.
   await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.width())).toBeLessThan(390);
+  await page.getByText('Graph tools', { exact: true }).click();
   await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
   await expect.poll(() => page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
@@ -81,6 +84,9 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     const beforeResize = await camera();
     await page.setViewportSize(size);
     await expect.poll(camera).toEqual(beforeResize);
+    const header = (await page.locator('.graph-header').boundingBox())!;
+    expect(header.y).toBeGreaterThanOrEqual(0);
+    expect(header.height).toBeLessThanOrEqual(size.width < 650 ? 200 : 120);
     await expect(page.getByRole('region', { name: 'Entities', exact: true })).toHaveCount(0);
     await page.getByText('Filters', { exact: true }).focus();
     await page.keyboard.press('Enter');
@@ -95,6 +101,7 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     await page.screenshot({ path: info.outputPath(`filters-${size.width}.png`) });
     await page.keyboard.press('Escape');
     await expect(page.getByText('Filters', { exact: true })).toBeFocused();
+    if (size.width < 650) await page.getByText('Graph tools', { exact: true }).click();
     await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
     await expect.poll(() => page.locator('.graph-canvas').evaluate(element => {
       const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
@@ -105,16 +112,33 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     // The canvas owns the remaining viewport; pinned selection/compact controls
     // deliberately take space without creating a side-by-side inspector crop.
     expect(canvas!.height).toBeGreaterThan(size.height * .33);
+    if (size.width < 650) await page.getByText('Panels', { exact: true }).click();
     await entities.click();
     await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
+    if (!await page.getByRole('complementary', { name: 'Entity details' }).count()) await page.keyboard.press('i');
     await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+    if (size.width < 650) {
+      const information = (await page.locator('.entity-info').boundingBox())!;
+      const inspector = (await page.locator('.inspector').boundingBox())!;
+      expect(information.y + information.height).toBeLessThanOrEqual(inspector.y);
+    }
     await page.getByRole('button', { name: 'Fit graph', exact: true }).focus();
     await expect(page.getByRole('button', { name: 'Fit graph', exact: true })).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
-    await page.keyboard.press('Escape'); await expect(entities).toBeFocused();
+    await page.keyboard.press('Escape');
+    if (size.width < 650) {
+      await expect(page.getByText('Graph tools', { exact: true })).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(page.getByText('Panels', { exact: true })).toBeFocused();
+    }
+    else await expect(entities).toBeFocused();
   }
+  await page.getByText('Graph tools', { exact: true }).click();
   await page.getByRole('button', { name: 'List only', exact: true }).click();
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
+  const infoBounds = (await page.locator('.entity-info').boundingBox())!;
+  const listPanel = (await page.locator('.inspector').boundingBox())!;
+  expect(infoBounds.y + infoBounds.height).toBeLessThanOrEqual(listPanel.y);
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
 });
@@ -127,5 +151,6 @@ test('failed lazy canvas exposes the list/details fallback', async ({ page }) =>
   await page.goto('/');
   await expect(page.getByRole('region', { name: 'Entities', exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Standalone investigation/ }).click();
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
 });
