@@ -25,9 +25,9 @@ Find the plan root:
   `aven context <root-ref> --full` and `aven show <root-ref> --json`; it is the
   root only when it has `sdd.plan-worked-out=true`.
 - If `{ref}` is an epic child, its context identifies `epic_parent`. Read that
-  parent with `aven context <parent-ref> --full` and `aven show <parent-ref>
-  --json`; it is the root only when it has `sdd.plan-worked-out=true` and
-   `sdd.plan-kind=multi-phase`. This is the durable fallback for
+   parent with `aven context <parent-ref> --full` and `aven show <parent-ref>
+   --json`; it is the root only when it has `sdd.plan-worked-out=true` and
+   `sdd.plan-kind=multi-phase`. This is the durable fallback for every
    dispatcher-provisioned phase tasks.
 - Otherwise there is no worked-out plan.
 
@@ -45,10 +45,9 @@ note before proceeding.
 
 ## 1. Choose work in plan order
 
-- For a single-phase root task, implement `{ref}`.
-- For a selected multi-phase child, verify it is unblocked with `aven list
+- For a selected phase child, verify it is unblocked with `aven list
   --ready --project <key>` and implement that child only.
-- For a selected multi-phase root epic, inspect `aven epic list {ref}` and use
+- For a selected root epic, inspect `aven epic list {ref}` and use
   the dispatcher-supplied **Execution mode** guidance for this attempt. Do not
   infer or coordinate a different execution topology. Do not dispatch children
   separately, run phases in parallel, or admit a successor before predecessor

@@ -452,15 +452,15 @@ and reuses that session without admitting a duplicate prompt.
 
 The `z s` workflow keeps specs, plans, subtasks, and progress in Aven, then
 implements only after it has set `sdd.plan-worked-out=true`. `z p` plans only:
-it keeps a single-phase plan on the root task or makes a multi-phase plan an
-epic with ordered phase subtasks. That epic remains the overarching ADR and
-specification throughout implementation and reset; phases never replace or
-demote it. `z i` enforces the same marker before changing code, so it will
+it makes every selected root an epic and creates one ordered phase subtask per
+implementation phase, including a single phase. That epic remains the
+overarching ADR and specification throughout implementation and reset; phases
+never replace or demote it. `z i` enforces the same marker before changing code, so it will
 direct you to plan first rather than infer an incomplete plan.
 Babysitting is available only for the implementation workflows: `z S` for
 plan-then-implement and `z b` for implementation of an existing plan.
 
-For a multi-phase plan, select the **root epic** and run `z s` or `z i` once.
+For every plan, select the **root epic** and run `z s` or `z i` once.
 Implementation supports `single-session` (the compatible default),
 `subsessions`, and `worktrees`; use `--mode` for unattended dispatch. Worktree
 mode creates one coordinator worktree plus one dedicated worker worktree for

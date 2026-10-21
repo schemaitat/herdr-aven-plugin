@@ -169,8 +169,8 @@ fn epic_phases(task: &Value) -> Result<Vec<EpicPhase>> {
         .pointer("/epic_children")
         .and_then(Value::as_array)
         .context("worktree mode requires a root epic with phase children")?;
-    if children.len() < 2 {
-        bail!("worktree mode requires at least two ordered epic phases");
+    if children.is_empty() {
+        bail!("worktree mode requires at least one ordered epic phase");
     }
     children
         .iter()

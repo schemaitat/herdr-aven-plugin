@@ -119,8 +119,8 @@ Work out *how* before writing code. The root `## Plan` note must read as an
 Architectural Decision Record: include **Context**, **Decision** (and why it
 was chosen), **Alternatives considered**, **Consequences**, **Affected files**,
 **Open questions**, **Trade-offs and risks**, and concrete **Done criteria**.
-For a single phase it also contains the ordered unchecked `TASK-NNN` steps;
-for multiple phases it contains a table of phase titles and actual child refs.
+It contains a table of phase titles and actual child refs. Every plan root is
+an epic, including a plan with one phase.
 Keep the plan in Aven:
 
 ```sh
@@ -142,21 +142,11 @@ rather than editing the first one away.
 
 ## 3. Persist the plan shape and its marker
 
-Use one root task for exactly one implementation phase. Set its durable marker
-only after the ADR note, ordered steps, and done criteria are complete:
-
-```sh
-aven edit {ref} --status todo \
-  --metadata sdd.plan-worked-out=true \
-  --metadata sdd.plan-kind=single-phase \
-  --metadata sdd.plan-schema=v1
-```
-
-For two or more strictly ordered phases, make `{ref}` an epic and keep it as the
-overarching ADR/specification record for the lifetime of the work. Add one child
-task per phase. The children are the independently executable subtasks; they do
-not replace or redefine the epic. Do not create parallel branches, a one-child
-epic, or a child with more than one blocker:
+Make `{ref}` an epic and keep it as the overarching ADR/specification record for
+the lifetime of the work. Add one child task per phase, including a single
+phase. The children are the independently executable subtasks; they do not
+replace or redefine the epic. Do not create parallel branches or a child with
+more than one blocker:
 
 1. Make the root task an epic and add a child per piece:
 
@@ -206,13 +196,13 @@ aven list --ready --project <key>
 aven epic list {ref}
 ```
 
-For a multi-phase root epic selected through `z s`, follow only the
+For a root epic selected through `z s`, follow only the
 dispatcher-supplied **Execution mode** guidance for this attempt. Do not infer
 or coordinate a different execution topology. Do not dispatch children
 separately, run phases in parallel, or release a successor before predecessor
 verification. Never use `aven edit {ref} --epic off`, convert the epic into a
 task, or move its ADR/specification onto a phase task.
-For each piece, and for the root task when it is not decomposed:
+For each child piece:
 
 1. Mark it active: `aven edit <ref> --status active`.
 2. Make the change.

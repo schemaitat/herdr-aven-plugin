@@ -1,6 +1,6 @@
 ---
 name: sdd-plan
-description: Turn a selected Aven task idea into a durable, ADR-style implementation plan. Keep single-phase plans on the task; make multi-phase plans an epic with ordered phase tasks.
+description: Turn a selected Aven task idea into a durable, ADR-style implementation plan with an epic root and ordered phase tasks.
 ---
 
 # Plan an Aven task
@@ -68,14 +68,13 @@ merges, forward references, or cycles.
 
 Count the implementation phases from the labelled plan:
 
-| Plan shape | Aven representation |
-| --- | --- |
-| One phase | Keep `{ref}` as one ordinary task. Its description is the concise spec; an ADR-style `## Plan` note holds the decision and ordered steps. |
-| Two or more phases | Make `{ref}` an epic. Its description is the concise feature spec; an ADR-style `## Plan` note is the index; create one ordered child task for each phase. |
+Make `{ref}` an epic for every plan. Its description is the concise feature
+spec; its ADR-style `## Plan` note is the permanent index; and every
+implementation phase is an ordered child task.
 
-Do not create a one-child epic. Do not create a separate "planning" task: the
-selected task is the plan root and remains the future implementation task or
-epic.
+Create exactly one child for a one-phase plan and one child per phase for a
+multi-phase plan. Do not create a separate "planning" task: the selected task
+is the permanent epic root, never the executable implementation task.
 
 ## 3. Write the root spec and ADR-style plan
 
@@ -115,13 +114,8 @@ assumptions.
 Unresolved assumptions, or `None.`
 ```
 
-For a single-phase plan, add `### Steps`, `### Trade-offs and risks`, and
-`### Done criteria` to that same note. Render every ordered task as
-`- [ ] TASK-NNN: <file> — <change>` and include an inline `Why:` explanation
-when it is not obvious. The done criteria are the applicable `TEST-NNN` items.
-
-For a multi-phase plan, wait to append the root note until the child tasks have
-been created; then add a `### Phases` table with their actual refs:
+Wait to append the root note until the child tasks have been created; then add
+a `### Phases` table with their actual refs. A one-phase plan has one row:
 
 ```markdown
 | # | Phase | Task | Status |
@@ -131,26 +125,11 @@ been created; then add a `### Phases` table with their actual refs:
 
 Never put a guessed child ref in the note.
 
-## 4. Persist a single-phase plan
+## 4. Persist every plan as an epic
 
-When there is exactly one phase, append the completed root plan note, then mark
-its planning state without marking implementation done:
-
-```sh
-aven edit {ref} --status todo \
-  --metadata sdd.plan-worked-out=true \
-  --metadata sdd.plan-kind=single-phase \
-  --metadata sdd.plan-schema=v1
-```
-
-The root task is now the implementation task. It remains `todo` until someone
-starts implementation; planning alone is not completion.
-
-## 5. Persist a multi-phase plan as an epic
-
-When there are two or more phases, make the root an epic and record its plan
-kind before creating the children. Do not set the worked-out marker yet: a
-partially-created epic is not a completed plan.
+Make the root an epic and record its plan kind before creating its one or more
+children. Do not set the worked-out marker yet: a partially-created epic is not
+a completed plan.
 
 ```sh
 aven edit {ref} --epic on --status todo \
@@ -158,7 +137,8 @@ aven edit {ref} --epic on --status todo \
   --metadata sdd.plan-schema=v1
 ```
 
-For every phase, in sequence, create exactly one child task. Its description
+For every phase, including the only phase of a one-phase plan, create exactly
+one child task. Its description
 must be an ADR-style vertical-slice record containing:
 
 - **Goal** — what the phase achieves and why it is the next slice.
@@ -182,8 +162,9 @@ EOF
 aven epic add <actual-phase-ref> {ref}
 ```
 
-Record execution order with a single dependency chain after every child ref is
-known. The second command means phase 02 is blocked by phase 01:
+For plans with multiple phases, record execution order with a single dependency
+chain after every child ref is known. The second command means phase 02 is
+blocked by phase 01. A one-phase plan has no dependency:
 
 ```sh
 aven dep add <phase-02-ref> <phase-01-ref>
@@ -213,10 +194,11 @@ Before writing the final metadata, inspect the content you assembled:
 3. The decision, alternatives, consequences, risks, affected files, open
    questions, and verification are all present in the root plan or applicable
    phase task.
-4. A one-phase plan has no epic children; a multi-phase plan has one child per
-   phase, each attached to `{ref}` and chained by `aven dep add`.
-5. `{ref}` has `sdd.plan-worked-out=true`, plus an accurate
-   `sdd.plan-kind=single-phase|multi-phase` value.
+4. Every plan root is an epic. A one-phase plan has exactly one child; a
+   multi-phase plan has one child per phase. Every child is attached to `{ref}`
+   and multiple phases are chained by `aven dep add`.
+5. `{ref}` has `sdd.plan-worked-out=true`, plus
+   `sdd.plan-kind=multi-phase`.
 
 Fix and re-check any failure before reporting completion. Do not set
 `sdd.plan-worked-out=true` until the plan is durable and all required tasks are

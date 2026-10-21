@@ -52,11 +52,11 @@
 
 # Turn a selected task idea into a durable Aven-only implementation plan. The
 # planning workflow detects its `sdd.plan-worked-out` metadata marker to avoid
-# recreating an existing plan. One phase stays on the task; multiple phases
-# become ordered children of an epic.
+# recreating an existing plan. Every plan root becomes an epic; implementation
+# phases, including a single phase, become its ordered children.
 - name: sdd-plan
   aliases: [aven-sdd-plan]
-  description: Turn the selected task idea into a single-task plan or phased epic
+  description: Turn the selected task idea into an epic-rooted implementation plan
   program: aven-dispatch
   args:
     - dispatch

@@ -28,6 +28,8 @@ case " $* " in
   *" context APP-2 --json "*) printf '%s\n' '{"task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"phase-two","ref":"APP-P2","title":"second phase"},{"id":"phase-one","ref":"APP-P1","title":"first phase"}]}' ;;
   *" context APP-P1 --json "*) printf '%s\n' '{"task":{"id":"phase-one","title":"first phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"1"},"dependencies":{"depends_on":[],"depends_on_open":0}}' ;;
   *" context APP-P2 --json "*) printf '%s\n' '{"task":{"id":"phase-two","title":"second phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"2"},"dependencies":{"depends_on":[{"task_id":"phase-one"}],"depends_on_open":1}}' ;;
+  *" context APP-3 --json "*) printf '%s\n' '{"task":{"id":"single-epic","title":"single-phase epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"only-phase","ref":"APP-ONLY","title":"only phase"}]}' ;;
+  *" context APP-ONLY --json "*) printf '%s\n' '{"task":{"id":"only-phase","title":"only phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"single-epic","sdd.plan-phase":"1"},"dependencies":{"depends_on":[],"depends_on_open":0}}' ;;
   *" add Dispatch log: "*) printf '%s\n' 'created DL-LOG ref=LOG' ;;
   *) printf 'aven %s\n' "$*" >> "$RUST_DISPATCH_LOG" ;;
 esac
@@ -229,6 +231,14 @@ assert_file_contains "$cumulative_state" '"task_ref": "APP-P2"' 'second phase is
 assert_file_contains "$cumulative_state" '"state": "provisioned"' 'blocked successor remains provisioned without a prompt'
 assert_file_contains "$cumulative_state" '"state": "running"' 'first phase is admitted to its worker session'
 assert_file_contains "$log" 'Pre-provisioned cumulative worktrees' 'worktree coordinator receives its topology instructions'
+
+# A one-phase plan has the same epic root/child structure. Worktree mode must
+# admit that single ordered child instead of requiring an arbitrary second one.
+single_epic_state=$work/single-epic-state.json
+single_epic_context='{"version":1,"invocation":{"origin_cwd":"/repo"},"targeting":{"targets":[{"id":"single-epic","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-3","task":{"id":"single-epic","title":"single-phase epic"},"project":{"key":"app"}}}}'
+printf '%s\n' "$single_epic_context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$single_epic_state" RUST_WORKTREE="$work/worktree-single-epic" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees >/dev/null
+assert_file_contains "$single_epic_state" '"task_ref": "APP-ONLY"' 'one-child epic phase is persisted'
+assert_file_contains "$single_epic_state" '"state": "running"' 'one-child epic phase is admitted'
 
 # A reset clears execution/planning state but never changes an epic root into
 # a task or detaches its phase subtasks. The root remains the durable ADR
