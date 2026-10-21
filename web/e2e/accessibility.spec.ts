@@ -27,6 +27,12 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   });
   expect(styles).toMatchObject({ epicFill: 'radial-gradient', blocksArrow: 'triangle', assignedPattern: 'dashed' });
   expect(styles.nodeLabel).toContain('active');
+  const motion = page.getByRole('button', { name: 'Pause motion', exact: true });
+  await motion.focus(); await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: 'Resume motion', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Enter');
+  await expect(motion).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe('0');
   await page.screenshot({ path: info.outputPath('cosmos-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   // Resize intentionally preserves the camera; explicitly fit the narrow view.

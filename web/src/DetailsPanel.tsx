@@ -3,7 +3,8 @@ import type { GraphEdge } from './graph/elements.js';
 import { stateDescription } from './graph/state.js';
 import { WindowedList } from './WindowedList.js';
 
-export function DetailsPanel({ entity, edge, relationships, snapshot, onSelect, missing }: {
+export function DetailsPanel({ entity, edge, relationships, snapshot, onSelect, missing, onFocus, focused, onClear }: {
+  onFocus?: (id: string) => void; focused?: boolean; onClear?: () => void;
   entity?: Entity; edge?: GraphEdge; relationships: GraphEdge[]; snapshot?: GraphSnapshot; onSelect: (id: string) => void; missing: boolean;
 }) {
   const relations = relationships.filter(relation => relation.source === entity?.id || relation.target === entity?.id);
@@ -16,6 +17,8 @@ export function DetailsPanel({ entity, edge, relationships, snapshot, onSelect, 
   </>;
   return <aside id="entity-details" tabIndex={-1} className="details" aria-label="Entity details"><p className="eyebrow">INSPECT / DETAILS</p>{entity ? <>
     <h2>{entity.label}</h2><p className="badge">{entity.kind} · {stateDescription(entity)}</p>
+    {onFocus && <button onClick={() => onFocus(entity.id)}>{focused ? 'Show all' : 'Focus component'}</button>}
+    {onClear && <button onClick={onClear}>Clear selection</button>}
     <dl><dt>Stable identity</dt><dd>{entity.id}</dd>{Object.entries(entity.details).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value) || '—'}</dd></div>)}</dl>
     <h3>Relationships <span className="muted">({relations.length})</span></h3>
     <p className="muted">Source relationships include filtered or collapsed neighbors.</p>

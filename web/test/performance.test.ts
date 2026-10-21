@@ -15,6 +15,10 @@ it('deterministic fixture and cap preserve full relationship/detail discovery', 
   expect(projected.cappedNodes).toBe(60); expect(projected.allEdges).toHaveLength(1060); expect(projected.omittedRelationships).toBe(60);
   expect(projected.eligibleGraph.nodes).toHaveLength(560);
   expect(projected.eligibleGraph.edges).toHaveLength(1060);
+  const component = projectGraph(largeGraph(560), filters, new Set(), now, 'task:559');
+  expect(component.componentAvailable).toBe(true);
+  expect(component.eligibleGraph.nodes.map(node => node.id)).toContain('task:559');
+  expect(component.discoveryNodes.length).toBeGreaterThan(500);
   const taskOnly = projectGraph(largeGraph(560), { ...defaultFilters(), kinds: new Set(['task']) }, new Set(), now);
   expect(taskOnly.cappedNodes).toBe(40); expect(taskOnly.omittedRelationships).toBe(40);
   const searched = projectGraph(largeGraph(560), { ...filters, query: 'Task 559' }, new Set(), now);

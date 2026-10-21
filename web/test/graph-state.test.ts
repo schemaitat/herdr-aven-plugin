@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import cytoscape from 'cytoscape';
 import { graphFixture as fixture } from './fixtures/graph-snapshot.js';
-import { ALL_TYPES, defaultFilters, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, type Filters } from '../src/graph/state.js';
+import { ALL_TYPES, componentMembers, componentResolver, defaultFilters, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, type Filters } from '../src/graph/state.js';
 import type { Entity, GraphSnapshot, Relationship } from '../shared/graph.js';
 import { effectiveTimes } from '../shared/scope.js';
 import { elements } from '../src/graph/elements.js';
@@ -11,6 +11,25 @@ import { highlight, syncElements } from '../src/graph/interactions.js';
 const filters: Filters = { ...defaultFilters(), kinds: new Set(ALL_TYPES) };
 const now = Date.parse('2026-10-20T12:00:00Z');
 describe('shared graph/list state', () => {
+  test('component uses undirected evidenced relationships before collapse and never traverses hidden kinds', () => {
+    const graph = projectGraph(fixture, filters, new Set(['epic:a']), now, 'task:b');
+    expect(graph.eligibleGraph.nodes.map(node => node.id)).toContain('task:a');
+    expect(graph.discoveryNodes.map(node => node.id)).not.toContain('task:a');
+    expect(graph.discoveryNodes.map(node => node.id)).not.toContain('pane:unused');
+    expect(graph.allEdges).toHaveLength(fixture.edges.length + 2);
+    const taskOnly = projectGraph(fixture, { ...filters, kinds: new Set(['task']) }, new Set(), now, 'task:b');
+    expect(taskOnly.nodes.every(node => node.kind === 'task')).toBe(true);
+    expect(taskOnly.nodes.map(node => node.id)).toContain('task:c');
+    expect(projectGraph(fixture, { ...filters, query: 'standalone' }, new Set(), now, 'task:b').componentAvailable).toBe(false);
+    const derived = graph.allEdges.filter(edge => edge.kind === 'agent-dependency');
+    expect(componentMembers(new Set(['agent:a', 'agent:b', 'agent:c']), derived, 'agent:c')).toEqual(new Set(['agent:a', 'agent:b', 'agent:c']));
+  });
+  test('stable anchor membership cache ignores heartbeat/labels but reacts to actual eligible topology', () => {
+    const resolve = componentResolver(), ids = new Set(fixture.nodes.map(node => node.id));
+    const first = resolve(ids, fixture.edges, 'task:b');
+    expect(resolve(new Set([...ids].reverse()), [...fixture.edges].reverse(), 'task:b')).toBe(first);
+    ids.delete('task:b'); expect(resolve(ids, fixture.edges, 'task:b')).toBeUndefined();
+  });
   test('collapse retains standalone/resources and directed cross-epic boundary evidence', () => {
     const graph = projectGraph(fixture, filters, new Set(['epic:a']), now);
     expect(graph.nodes.map(node => node.id)).not.toContain('task:a');

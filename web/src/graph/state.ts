@@ -10,7 +10,30 @@ export type TimePreset = 'all' | keyof typeof TIME_WINDOWS;
 export interface Filters { query: string; kinds: Set<NodeKind>; state: string; time: TimePreset; epic?: string }
 export function defaultFilters(): Filters { return { query: '', kinds: new Set(DEFAULT_TYPES), state: 'all', time: 'all' }; }
 export const VISIBLE_NODE_CAP = 500;
-export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapsed: Set<string>, now: number) {
+export function componentMembers(ids: Set<string>, edges: GraphEdge[], anchor?: string): Set<string> | undefined {
+  if (!anchor || !ids.has(anchor)) return undefined;
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!ids.has(edge.source) || !ids.has(edge.target)) continue;
+    for (const [a, b] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+      const neighbors = adjacency.get(a) ?? []; neighbors.push(b); adjacency.set(a, neighbors);
+    }
+  }
+  const result = new Set([anchor]);
+  for (const id of result) for (const other of adjacency.get(id) ?? []) result.add(other);
+  return result;
+}
+
+export function componentResolver() {
+  let key: string | undefined, members: Set<string> | undefined;
+  return (ids: Set<string>, edges: GraphEdge[], anchor?: string) => {
+    const next = JSON.stringify([anchor, [...ids].sort(), edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)).map(edge => [edge.source, edge.target]).sort()]);
+    if (key !== next) { key = next; members = componentMembers(ids, edges, anchor); }
+    return members;
+  };
+}
+
+export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapsed: Set<string>, now: number, anchor?: string, resolveComponent = componentMembers) {
   const allEdges = relationships(snapshot);
   const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
   const membership = filters.epic ? (byId.get(filters.epic)?.kind === 'epic' ? reachable(filters.epic, ownership(snapshot.nodes, snapshot.edges, true)) : new Set<string>()) : undefined;
@@ -22,12 +45,15 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
     return true;
   });
   const searched = filters.query.trim() ? searchEntities(candidates, filters.query) : [...candidates].sort((a, b) => ALL_TYPES.indexOf(a.kind) - ALL_TYPES.indexOf(b.kind) || a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
-  const eligible = searched.filter(node => {
+  const filtered = searched.filter(node => {
     if (cutoff === undefined) return true;
     const time = times.get(node.id);
     if (time === undefined) { unknownTimeExclusions++; return false; }
     return time >= cutoff;
   });
+  const filteredIds = new Set(filtered.map(node => node.id));
+  const component = resolveComponent(filteredIds, allEdges, anchor);
+  const eligible = component ? filtered.filter(node => component.has(node.id)) : filtered;
   const eligibleIds = new Set(eligible.map(node => node.id));
   const eligibleEdges = allEdges.filter(edge => eligibleIds.has(edge.source) && eligibleIds.has(edge.target));
   const parent = new Map<string, string>();
@@ -50,7 +76,7 @@ export function projectGraph(snapshot: GraphSnapshot, filters: Filters, collapse
       ...edge, id: JSON.stringify(['collapsed', edge.id, source, target]), source, target, summary: true, evidence: [edge.id, ...(edge.evidence ?? [])],
     });
   }
-  return { nodes: visibleNodes, discoveryNodes: nodes, eligibleGraph: { nodes: eligible, edges: eligibleEdges }, edges, allEdges, cappedNodes: nodes.length - visibleNodes.length, omittedRelationships, hiddenRelationships, hiddenTasks: parent.size, unknownTimeExclusions };
+  return { nodes: visibleNodes, discoveryNodes: nodes, eligibleGraph: { nodes: eligible, edges: eligibleEdges }, componentAvailable: !anchor || filteredIds.has(anchor), edges, allEdges, cappedNodes: nodes.length - visibleNodes.length, omittedRelationships, hiddenRelationships, hiddenTasks: parent.size, unknownTimeExclusions };
 }
 
 export function toggleEpic(previous: Set<string>, id: string): Set<string> {

@@ -2,7 +2,8 @@ import type { Entity } from '../shared/graph.js';
 import type { ProjectChoice } from '../shared/projects.js';
 import { ALL_TYPES, defaultFilters, type Filters, type TimePreset } from './graph/state.js';
 
-export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount, onSearch, matches, visible, unknownTimeExclusions, projects, project, onProject }: {
+export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount, onSearch, matches, visible, unknownTimeExclusions, projects, project, onProject, paused, onPause }: {
+  paused: boolean; onPause: () => void;
   projects: ProjectChoice[]; project?: string; onProject: (project: string) => void;
   nodes: Entity[]; filters: Filters; onChange: (filters: Filters) => void;
   onCommand: (kind: 'fit' | 'reset' | 'in' | 'out') => void; mounted: boolean; onMount: () => void;
@@ -39,6 +40,6 @@ export function Toolbar({ nodes, filters, onChange, onCommand, mounted, onMount,
       <button onClick={() => onChange(defaultFilters())}>Reset filters</button>
     </div>
     <div className="scope-chips" aria-label="Active scope"><span>{filters.kinds.size} of {ALL_TYPES.length} types</span><span>{filters.state === 'all' ? 'All states' : filters.state}</span><span>{filters.time === 'all' ? 'All time' : `Last ${filters.time} source changes`}</span>{filters.epic && <span>{epic?.label ?? 'Unavailable epic'} <button aria-label="Clear epic scope" onClick={() => onChange({ ...filters, epic: undefined })}>×</button></span>}{filters.query && <span>Search: {filters.query}</span>}<span>{matches} matches · {visible} on canvas</span>{filters.time !== 'all' && <span role="status">{unknownTimeExclusions} unknown/invalid/future-time exclusions</span>}</div>
-    <div className="graph-controls"><button disabled={!mounted} onClick={() => onCommand('in')}>Zoom in</button><button disabled={!mounted} onClick={() => onCommand('out')}>Zoom out</button><button disabled={!mounted} onClick={() => onCommand('fit')}>Fit graph</button><button disabled={!mounted} onClick={() => onCommand('reset')}>Reset positions</button><button onClick={onMount}>{mounted ? 'Hide graph' : 'Show graph'}</button></div>
+    <div className="graph-controls"><button disabled={!mounted} onClick={() => onCommand('in')}>Zoom in</button><button disabled={!mounted} onClick={() => onCommand('out')}>Zoom out</button><button disabled={!mounted} onClick={() => onCommand('fit')}>Fit graph</button><button disabled={!mounted} onClick={() => onCommand('reset')}>Reset positions</button><button aria-pressed={paused} onClick={onPause}>{paused ? 'Resume motion' : 'Pause motion'}</button><button onClick={onMount}>{mounted ? 'Hide graph' : 'Show graph'}</button></div>
   </section>;
 }

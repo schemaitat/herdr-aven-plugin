@@ -27,6 +27,32 @@ async function visual(page: Page) {
   });
 }
 
+test('project switch disposes active physics, clears component/pins and never writes through the old renderer', async ({ page }) => {
+  await fixtures(page); await page.goto('/'); await allTypes(page);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /alpha Build graph/ }).click();
+  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
+  await page.locator('.graph-canvas').evaluate(element => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    cy.getElementById('task:b').position({ x: 2345, y: 6789 }); cy.getElementById('task:b').emit('dragfree');
+    Object.assign(window, { oldPhysics: { host: element, cy } });
+  });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active');
+  await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption('beta');
+  await expect(page.locator('.scope-strip')).toContainText('default / beta');
+  await expect(page.locator('.graph-status')).toContainText('14 entities');
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'sleeping', { timeout: 1800 });
+  await expect(page.getByRole('button', { name: 'Show all', exact: true })).toHaveCount(0);
+  expect((await visual(page)).positions['task:b']).not.toEqual({ x: 2345, y: 6789 });
+  const disposed = () => page.evaluate(() => {
+    const old = (window as unknown as { oldPhysics: { host: HTMLElement; cy: Core } }).oldPhysics;
+    return { destroyed: old.cy.destroyed(), ticks: old.host.dataset.physicsTicks, active: old.host.dataset.motion };
+  });
+  const before = await disposed(); expect(before.destroyed).toBe(true); expect(before.active).toBe('sleeping');
+  await page.waitForTimeout(100); expect(await disposed()).toEqual(before);
+});
+
 test('A → B → A resets project memory/selection/query/epic but retains type/state/time preferences and scoped history', async ({ page }, info) => {
   await fixtures(page);
   let releaseBeta!: () => void;
@@ -86,7 +112,12 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption('alpha');
   await expect(page.locator('.scope-strip')).toContainText('default / alpha');
   await expect(page.locator('.graph-status')).toContainText('14 entities');
-  expect(await visual(page)).toEqual(reset);
+  const returned = await visual(page);
+  expect(returned.positions).toEqual(reset.positions); expect(returned.selected).toEqual([]);
+  // Beta's explicit unavailable-source health messages consume more viewport
+  // height. Fresh camera fits may therefore differ across projects, but neither
+  // may reuse Alpha's manually changed camera or pinned geometry.
+  expect(returned.zoom).not.toBe(arranged.zoom); expect(returned.pan).not.toEqual(arranged.pan);
   await expect(page.locator('.inspector')).toHaveCount(0);
   expect(logReads).toEqual(['alpha', 'beta']);
   for (const size of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {

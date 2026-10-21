@@ -4,6 +4,8 @@ import type { Position } from './layout.js';
 
 export interface GraphMemory {
   positions: Map<string, Position>;
+  pins?: Map<string, Position>;
+  visual?: Map<string, Position>;
   camera?: { zoom: number; pan: Position };
   commandSerial?: number;
 }

@@ -137,18 +137,53 @@ Click an edge for its direction, source identities and evidence. No connection
 or dependency is inferred from visual proximity.
 
 Drag bubbles or the background, wheel to zoom, or use Zoom/Fit/Reset controls.
-Double-click an epic or use its list button to collapse/expand. Collapsed
+Double-click **any node** to focus its connected component; double-click any
+node again, or choose **Show all**, to leave component focus without clearing
+other filters. **Focus component** in details is the keyboard equivalent.
+Connectivity uses actual source and evidenced derived relationships in the
+current type/state/time/epic/search scope, before collapse and the canvas cap;
+it never traverses hidden kinds. Entry fits the component; exit restores the
+previous camera. If its anchor leaves the eligible scope, focus clears with an
+announcement. Use an epic's explicit list button to collapse/expand. Collapsed
 external relationships are explicitly summarized at the hub, not invented;
-internal blockers remain in details. Selection highlights its neighborhood.
+internal blockers remain in details.
 Updates do not reset the camera, selection or manually positioned nodes. Window
 resizing also preserves the camera: use **Fit graph** after narrowing a window.
 **Hide graph** leaves the list/detail route usable without a canvas. A keyboard
 skip link bypasses the graph; list buttons and related-entity buttons share the
-same selection. Focus is outlined and reduced-motion preferences disable
-transitions; there are no particle/starfield or activity animations.
+same selection. Focus is outlined; there are no particle/starfield or activity
+animations.
+
+**Motion:** bounded, damped d3-force springs react to real relationships,
+with many-body repulsion, radius-aware collision avoidance and weak deterministic
+orbital anchors to preserve epic groups. Selection anchors a tighter immediate
+neighborhood while unrelated nodes stay at their settled overview positions.
+**Clear selection** and leaving component focus return to the saved overview
+without cumulative drift. Search Escape restores the pre-preview geometry and
+camera. Physical proximity never creates source relationships or changes state,
+direction, provenance, execution activity or task acceptance.
+
+Dragging fixes the grabbed node to the pointer while connected neighbors follow
+elastically. Release leaves a **manual pin until Reset positions**, surviving
+ordinary refreshes and filter hide/reveal. Pins take precedence over automatic
+forces; overlapping user pins intentionally remain fixed. **Reset positions**
+clears all saved positions/pins and restores the deterministic baseline.
+**Pause motion / Resume motion** is one keyboard-accessible toggle: Pause freezes
+the current geometry immediately; Resume allows another bounded relaxation.
+Reduced-motion preferences (including changes while the page is open) disable
+simulation and animated returns, applying stable non-overlapping geometry
+immediately instead. Fixed-pin conflicts cannot be resolved without moving pins.
+
+Physics runs on copied geometry with a seeded random source, never canonical
+records. One requestAnimationFrame scheduler manually ticks the stopped d3 timer
+at most twice per frame, batches only changed positions, cools to sleep and stops
+scheduling within 1,500ms of the latest interaction. Labels, status and heartbeat
+refreshes do not wake or extend it. Background visibility suspends ticks without
+catch-up; an expired activation settles on return. Project switching, preview
+rollback, Reset, hiding the canvas and unmounting cancel the old activation.
 
 The canvas has an explicit **500-visible-node budget**, applied after scoped
-search/type/state/time/epic filters and collapse. A warning gives additional matches and
+search/type/state/time/epic filters, component focus and collapse. A warning gives additional matches and
 off-canvas relationship counts; scope totals and source relationships are never
 silently reduced. **Entities** retains every matching entity supplied by the
 bounded source snapshot, including those beyond the canvas budget; select one
@@ -322,7 +357,8 @@ there is no second dashboard task store.
 `web/test/fixtures/large-graph.ts` deterministically supplies 500 nodes (20 epic
 hubs / 480 tasks) and 1,000 edges (480 containment / 520 directed blockers).
 `web/e2e/performance.spec.ts` asserts initial interactivity **≤3 seconds** and
-rendered pan/zoom **≥45 FPS**. Run the built production app through
+rendered pan/zoom **≥45 FPS**, separately with active physics and when settled.
+Select **All types** to exercise the complete fixture. Run the built production app through
 `UI_CHROME=/usr/bin/google-chrome just ui-test-e2e`; the performance case prints
 `PERFORMANCE_BASELINE` JSON and attaches it to Playwright results. There is no
 network throttle or simulated CPU speed; source reads are deterministic HTTP
@@ -330,7 +366,9 @@ fixtures, not real Aven hydration latency.
 
 Method: time navigation through canvas creation, a real entity selection and
 visible details plus two paint frames; then drive simultaneous pan/zoom over
-three seconds around zoom 0.35 with every element unmuted. Count Cytoscape
+three seconds around zoom 0.35 with every element unmuted, plus a separate active
+physics/pan/zoom sample (up to one second, ending when the solver sleeps).
+Count Cytoscape
 **render events**, not merely requestAnimationFrame callbacks; record rAF cadence,
 95th-percentile render gap, initial layout/sync and status-update sync costs.
 The viewport uses the same production texture cache. A status-only snapshot
@@ -339,7 +377,7 @@ Dense labels become readable on zoom-in rather than flooding the overview.
 This is a local canvas/interaction baseline, not a guarantee of 60 FPS for every
 GPU, huge label payload, graph topology, browser or upstream service.
 
-Recorded local baseline (2026-10-20): Ubuntu/Linux x86_64, Intel Core Ultra 5
+Historical pre-physics local baseline (2026-10-20): Ubuntu/Linux x86_64, Intel Core Ultra 5
 238V (8 CPUs), Node 24.22.0, npm 11.19.1, Google Chrome 155.0.8059.84 headless,
 Playwright 1.64.1, 1440×1000 viewport, device/canvas pixel ratio 1, one worker.
 A final deterministic production run measured **600 ms** initial interactivity

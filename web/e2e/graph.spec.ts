@@ -24,6 +24,8 @@ async function point(page: Page, id?: string) {
   }, id);
   return { x: box.x + position.x, y: box.y + position.y };
 }
+const sleep = (page: Page) => expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'sleeping', { timeout: 1800 });
+const distance = (positions: Record<string, { x: number; y: number }>, a: string, b: string) => Math.hypot(positions[a].x - positions[b].x, positions[a].y - positions[b].y);
 
 test.beforeEach(async ({ page }) => {
   await projectDiscovery(page, 'graph-fixture');
@@ -116,8 +118,10 @@ test('collapse/expand, cross-epic boundaries, search/type/status filters and key
   expect((await graph(page)).nodes).toContain('task:b');
   const p = await point(page, 'epic:a');
   await page.mouse.dblclick(p.x, p.y);
-  await expect(page.getByRole('button', { name: 'Expand Aurora epic', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Expand Aurora epic', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Collapse Aurora epic', exact: true })).toBeVisible();
+  await expect.poll(async () => (await graph(page)).nodes.includes('pane:unused')).toBe(false);
+  await page.getByRole('button', { name: 'Show all', exact: true }).first().click();
+  await expect.poll(async () => (await graph(page)).nodes.includes('pane:unused')).toBe(true);
   await page.getByText('Filters', { exact: true }).click();
   await onlyTypes(page, ['task']);
   await page.getByLabel('Source state').selectOption('active');
@@ -133,7 +137,7 @@ test('collapse/expand, cross-epic boundaries, search/type/status filters and key
   await expect(button).toHaveAttribute('aria-pressed', 'true');
   const details = page.getByRole('complementary', { name: 'Entity details' });
   await expect(details.getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
-  await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
+  await details.getByRole('button', { name: 'Review graph', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(details.getByRole('heading', { name: 'Review graph', exact: true })).toBeVisible();
   await page.getByLabel('Search entities').fill('');
   // Every visible entity can be selected from the keyboard list, matching graph scope.
@@ -311,4 +315,150 @@ test('recent source windows disclose unknowns, shared resources do not leak othe
   await page.getByRole('button', { name: 'Clear epic', exact: true }).click();
   await page.keyboard.press('Escape');
   expect((await graph(page)).nodes).toContain('task:c');
+});
+
+test('real drag reacts within 100ms, neighbors follow, pins survive filters, selection contracts and clear returns without drift', async ({ page }, info) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' }); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await sleep(page);
+  const overview = await graph(page);
+  const location = await point(page, 'task:b');
+  await page.mouse.move(location.x, location.y); await page.mouse.down();
+  const beforeDrag = await graph(page);
+  await page.mouse.move(location.x + 70, location.y + 20, { steps: 4 });
+  const reaction = await page.locator('.graph-canvas').evaluate(async element => {
+    const cy = (element as GraphContainer)._cyreg.cy;
+    const start = performance.now(), before = { ...cy.getElementById('task:a').position() };
+    return new Promise<number>(resolve => {
+      const frame = () => { const p = cy.getElementById('task:a').position(); if (Math.hypot(p.x - before.x, p.y - before.y) > .01 || performance.now() - start > 100) resolve(performance.now() - start); else requestAnimationFrame(frame); };
+      requestAnimationFrame(frame);
+    });
+  });
+  expect(reaction).toBeLessThanOrEqual(100);
+  expect((await graph(page)).positions['task:a']).not.toEqual(beforeDrag.positions['task:a']);
+  await page.mouse.up(); const released = performance.now(); await sleep(page);
+  const settleMs = performance.now() - released;
+  expect(settleMs).toBeLessThanOrEqual(1500);
+  const pinned = (await graph(page)).positions['task:b'];
+  await page.getByLabel('Search entities').fill('standalone'); await page.getByLabel('Search entities').fill(''); await sleep(page);
+  expect((await graph(page)).positions['task:b']).toEqual(pinned);
+  await page.getByRole('button', { name: 'Reset positions', exact: true }).click(); await sleep(page);
+  const baseline = await graph(page);
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task Build graph/ }).click(); await sleep(page);
+  const selected = await graph(page);
+  expect(distance(selected.positions, 'task:b', 'task:a')).toBeLessThan(distance(baseline.positions, 'task:b', 'task:a'));
+  expect(selected.positions['pane:unused']).toEqual(baseline.positions['pane:unused']);
+  const clearance = await page.locator('.graph-canvas').evaluate(element => {
+    const nodes = (element as GraphContainer)._cyreg.cy.nodes().map(node => ({ p: node.position(), radius: node.outerWidth() / 2 }));
+    let minimum = Infinity;
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) minimum = Math.min(minimum, Math.hypot(nodes[i].p.x - nodes[j].p.x, nodes[i].p.y - nodes[j].p.y) - nodes[i].radius - nodes[j].radius);
+    return minimum;
+  });
+  expect(clearance).toBeGreaterThanOrEqual(0);
+  await page.screenshot({ path: info.outputPath('physics-selected-settled.png') });
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click(); await sleep(page);
+  expect((await graph(page)).positions).toEqual(baseline.positions);
+  for (let i = 0; i < 3; i++) {
+    const target = await point(page, 'task:b'); await page.mouse.dblclick(target.x, target.y);
+    await page.getByRole('button', { name: 'Show all', exact: true }).first().click(); await sleep(page);
+    expect((await graph(page)).positions).toEqual(baseline.positions);
+    expect((await graph(page)).pan).toEqual(baseline.pan); expect((await graph(page)).zoom).toBe(baseline.zoom);
+  }
+  console.log('PHYSICS_TIMING', JSON.stringify({ reactionMs: reaction, settleMs, minimumClearance: clearance }));
+  await info.attach('physics-timing', { body: JSON.stringify({ reactionMs: reaction, settleMs, minimumClearance: clearance, overviewNodes: overview.nodes.length }), contentType: 'application/json' });
+});
+
+test('Pause freezes by next frame, runtime reduced motion runs no ticks, rapid selection/search rollback and disposal cancel work', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
+  const paused = await graph(page), count = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
+  await page.waitForTimeout(150);
+  expect((await graph(page)).positions).toEqual(paused.positions);
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(count);
+  await page.getByRole('button', { name: 'Resume motion', exact: true }).click();
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active');
+  await page.emulateMedia({ reducedMotion: 'reduce' }); await sleep(page);
+  const reducedCount = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
+  const list = page.getByRole('region', { name: 'Entities', exact: true });
+  for (const label of ['Build graph', 'Review graph', 'Build adapter']) await list.getByRole('button', { name: new RegExp(`task ${label}`) }).click();
+  await page.waitForTimeout(100);
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(reducedCount);
+  await page.emulateMedia({ reducedMotion: 'no-preference' }); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await sleep(page);
+  const baseline = await graph(page);
+  await page.getByRole('button', { name: 'Search /', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Preview query' }).fill('standalone');
+  await page.keyboard.press('ArrowDown'); await page.keyboard.press('Escape'); await sleep(page);
+  expect(await graph(page)).toEqual(baseline);
+  await list.getByRole('button', { name: /task Build graph/ }).click();
+  await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+  await expect(page.locator('.graph-canvas')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show graph', exact: true }).click(); await sleep(page);
+  await expect(page.locator('.graph-status')).toContainText('14 entities');
+  await page.getByRole('button', { name: 'Reset positions', exact: true }).click();
+  const overview = await graph(page);
+  await list.getByRole('button', { name: /task Review graph/ }).click(); await sleep(page);
+  await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
+  const frozen = await graph(page);
+  await page.getByRole('button', { name: 'Hide graph', exact: true }).click();
+  await page.getByRole('button', { name: 'Show graph', exact: true }).click(); await sleep(page);
+  expect((await graph(page)).positions).toEqual(frozen.positions);
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
+  expect((await graph(page)).positions).toEqual(frozen.positions);
+  await page.getByRole('button', { name: 'Resume motion', exact: true }).click(); await sleep(page);
+  expect((await graph(page)).positions).toEqual(overview.positions);
+});
+
+test('component keyboard entry, anchor removal and hidden-kind boundaries keep other filters intact', async ({ page }) => {
+  const list = page.getByRole('region', { name: 'Entities', exact: true });
+  await list.getByRole('button', { name: /task Build graph/ }).click();
+  await page.getByRole('button', { name: 'Focus component', exact: true }).focus(); await page.keyboard.press('Enter');
+  expect((await graph(page)).nodes).not.toContain('pane:unused');
+  await page.getByLabel('Search entities').fill('Unassigned pane');
+  await expect(page.getByText('Component anchor is unavailable', { exact: false })).toBeVisible();
+  expect((await graph(page)).nodes).toEqual(['pane:unused']);
+  await page.getByLabel('Search entities').fill('');
+  await page.getByText('Filters', { exact: true }).click();
+  await onlyTypes(page, ['task']);
+  await page.keyboard.press('Escape');
+  await list.getByRole('button', { name: /task Build graph/ }).click();
+  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
+  expect((await graph(page)).nodes.every(id => id.startsWith('task:'))).toBe(true);
+  await page.getByRole('button', { name: 'Show all', exact: true }).first().click();
+  expect((await graph(page)).nodes.every(id => id.startsWith('task:'))).toBe(true);
+});
+
+test('status-only stream updates do not extend active physics or wake a sleeping solver; visibility suspends without catch-up', async ({ page }) => {
+  let snapshot = graphFixture;
+  let send: (() => Promise<void>) | undefined;
+  await page.route('**/api/snapshot', route => route.fulfill({ json: snapshot }));
+  await page.route('**/api/stream', async route => {
+    await new Promise<void>(resolve => { send = async () => {
+      await route.fulfill({ contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify({ schema: 'live-graph/v1', version: 2, snapshot })}\n\n` }); resolve();
+    }; });
+  });
+  await page.reload(); await allTypes(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await sleep(page);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task Build graph/ }).click();
+  const began = performance.now(), activations = await page.locator('.graph-canvas').getAttribute('data-activations');
+  snapshot = { ...graphFixture, version: 2, nodes: graphFixture.nodes.map(node => ({ ...node, state: 'done' })) };
+  await expect.poll(() => Boolean(send)).toBe(true); await send!();
+  await expect(page.getByRole('complementary').getByText('task · Task status: done', { exact: true })).toBeVisible();
+  expect(await page.locator('.graph-canvas').getAttribute('data-activations')).toBe(activations);
+  await sleep(page); expect(performance.now() - began).toBeLessThanOrEqual(1500);
+  const settled = await graph(page), tickCount = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
+  await page.waitForTimeout(550);
+  expect(await graph(page)).toEqual(settled);
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(tickCount);
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task Build adapter/ }).click();
+  // Exercise the browser visibility handler with a controlled visibility signal;
+  // fixed-clock unit tests separately assert the exact two-step resume budget.
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  const hidden = await graph(page), hiddenTicks = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
+  await page.waitForTimeout(1600);
+  expect(await graph(page)).toEqual(hidden);
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(hiddenTicks);
+  await page.evaluate(() => { delete (document as unknown as { hidden?: boolean }).hidden; document.dispatchEvent(new Event('visibilitychange')); });
+  await sleep(page);
+  expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(hiddenTicks);
+  await page.unroute('**/api/stream');
 });
