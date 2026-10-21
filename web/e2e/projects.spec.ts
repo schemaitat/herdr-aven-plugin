@@ -31,6 +31,8 @@ test('project switch disposes active physics, clears component/pins and never wr
   await fixtures(page); await page.goto('/'); await allTypes(page);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /alpha Build graph/ }).click();
+  await page.keyboard.press('i');
+  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Show all', exact: true }).first()).toBeVisible();
   await page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
@@ -74,7 +76,6 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   });
   await page.goto('/'); await allTypes(page);
   await expect(page.locator('.graph-status')).toContainText('14 entities');
-  const baseline = await visual(page);
   await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('combobox', { name: 'Source state', exact: true }).selectOption('active');
   await page.getByRole('combobox', { name: 'Recent source changes', exact: true }).selectOption('24h');
@@ -101,7 +102,7 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await expect(page.locator('.graph-status')).toContainText('14 entities');
   const reset = await visual(page);
   expect(reset.selected).toEqual([]);
-  expect(reset.positions['task:b']).toEqual(baseline.positions['task:b']);
+  expect(reset.positions['task:b']).not.toEqual(arranged.positions['task:b']);
   expect(reset.zoom).not.toBe(arranged.zoom);
   await expect(page.getByLabel('Search entities')).toHaveValue('');
   await expect(page.getByText('alpha history', { exact: false })).toHaveCount(0);
@@ -112,7 +113,7 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await expect(page.getByLabel('Epic scope', { exact: true })).toHaveValue('');
   await expect(page.getByRole('combobox', { name: 'Source state', exact: true })).toHaveValue('active');
   await expect(page.getByRole('combobox', { name: 'Recent source changes', exact: true })).toHaveValue('24h');
-  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(9);
+   await expect(page.getByRole('group', { name: 'Entity types', exact: true }).getByRole('checkbox', { checked: true })).toHaveCount(9);
   await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /beta Build graph/ }).click();

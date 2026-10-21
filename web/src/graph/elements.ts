@@ -3,8 +3,12 @@ import type { Entity, GraphSnapshot, Relationship } from '../../shared/graph.js'
 import { graphLabel } from './labels.js';
 import { isCurrentWorking } from './activity.js';
 
+/** Client presentation kinds include the evidenced dependency derived locally. */
+export const RELATION_KINDS = ['contains', 'blocks', 'related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency'] as const;
+export type RelationKind = typeof RELATION_KINDS[number];
+
 export interface GraphEdge extends Omit<Relationship, 'kind'> {
-  kind: Relationship['kind'] | 'agent-dependency';
+  kind: RelationKind;
   evidence?: string[];
   summary?: boolean;
 }

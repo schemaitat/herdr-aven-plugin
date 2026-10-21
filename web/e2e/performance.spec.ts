@@ -10,15 +10,20 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: snapshot }));
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
-  const started = performance.now();
   await page.goto('/');
   await allTypes(page);
   await expect(page.locator('.graph-status')).toContainText('500 entities · 1000 connections');
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /epic Orbit 000/ }).click();
+  const interactiveMs = await page.locator('.graph-canvas').evaluate(async () => {
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    // Browser navigation-to-interaction time excludes Playwright's RPC latency.
+    return performance.now() - (performance.getEntriesByType('navigation').at(-1)?.startTime ?? 0);
+  });
+  // Selection is interactive without opening info. The separate i-only inspection
+  // action remains verified, but is not part of the navigation-to-interaction gate.
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Orbit 000', exact: true })).toBeVisible();
-  await page.locator('.graph-canvas').evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-  const interactiveMs = performance.now() - started;
   const initialCosts = await page.evaluate(() => Object.fromEntries(['graph.initial-layout', 'graph.initial-sync'].map(name => [name, performance.getEntriesByName(name).at(-1)?.duration])));
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   await page.getByRole('button', { name: 'Resume motion', exact: true }).click();
@@ -92,7 +97,7 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   expect(after.camera).toEqual(measurement.camera); expect(after.positions).toEqual(measurement.positions);
   expect(after.layoutComputed).toBe(false);
   const { positions: _, ...baseline } = measurement;
-  const result = { interactiveMs, initialCosts, activePhysics, settledMinimumClearance: after.minimumClearance, statusUpdateSyncMs: after.updateSyncMs, ...baseline, viewport: page.viewportSize(), node: process.version, platform: process.platform, mode: process.env.UI_TEST_DEV === '1' ? 'development middleware' : 'production build', method: 'navigation through graph render + real list selection/details + two paint frames; separate active-physics (up to 1s or sleep) and 3s settled rAF-driven simultaneous viewport pan/zoom at zoom 0.35, all elements unmuted; FPS counts Cytoscape render events (not just rAF); sync cost includes mutation/style/fit, not asynchronous paint' };
+  const result = { interactiveMs, initialCosts, activePhysics, settledMinimumClearance: after.minimumClearance, statusUpdateSyncMs: after.updateSyncMs, ...baseline, viewport: page.viewportSize(), node: process.version, platform: process.platform, mode: process.env.UI_TEST_DEV === '1' ? 'development middleware' : 'production build', method: 'browser navigationStart through graph render + real list selection + two paint frames; excludes Playwright RPC latency and separately verifies i-only details. Separate active-physics (up to 1s or sleep) and 3s settled rAF-driven simultaneous viewport pan/zoom at zoom 0.35, all elements unmuted; FPS counts Cytoscape render events (not just rAF); sync cost includes mutation/style/fit, not asynchronous paint' };
   console.log('PERFORMANCE_BASELINE', JSON.stringify(result));
   await info.attach('performance-baseline', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
   await page.screenshot({ path: info.outputPath('large-graph.png') });
@@ -114,6 +119,8 @@ test('component selection promotes its eligible anchor within the fixed canvas c
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   for (let i = 0; i < 13; i++) await page.getByRole('button', { name: 'Next entities', exact: true }).click();
   await page.getByRole('button', { name: /Task 559/ }).click();
+  await page.keyboard.press('i');
+  await page.getByRole('button', { name: 'Focus component', exact: true }).click();
   await page.waitForTimeout(100);
   const displayed = await page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().length);
   expect(displayed).toBeLessThanOrEqual(500);

@@ -13,8 +13,9 @@ test('real scoped sources render with keyboard list/details and protected API', 
   await first.focus();
   await page.keyboard.press('Enter');
   await expect(first).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('complementary', { name: 'Entity details' })).toHaveCount(0);
+  await page.keyboard.press('i');
   const details = page.getByRole('complementary', { name: 'Entity details' });
-  await details.locator('summary').click();
   await expect(details.getByText('Stable identity', { exact: true })).toBeVisible();
   await expect(details.getByRole('heading', { name: 'Provenance', exact: true })).toBeVisible();
   await page.getByLabel('Search entities').fill('no-such-entity-7c901');
@@ -50,8 +51,8 @@ test('untrusted labels are text and unavailable sources remain visible', async (
   await page.goto('/');
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('button', { name: new RegExp('img src=x') }).click();
+  await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: hostile, exact: true })).toBeVisible();
-  await page.getByRole('complementary').locator('summary').click();
   await expect(page.getByText('<script>alert(1)</script>', { exact: true })).toBeVisible();
   await page.getByText(/Sources ·/).click();
   await expect(page.locator('.sources')).toContainText('herdr · unavailable');
@@ -65,7 +66,7 @@ test('compact presentation preserves a canonical full-ID copy action', async ({ 
   await page.route('**/api/snapshot', route => route.fulfill({ json: { schema: 'local-explorer/v1', scope: { project: 'fixture', workspace: 'default' }, observedAt: '', nodes: [{ id: 'session:ses_abcdefghijk', kind: 'session', label: 'ses_abcdefghijk', state: 'idle', details: {}, provenance: [] }], edges: [], health: [] } }));
   await page.goto('/'); await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('button', { name: /ses_abcdefghijk/ }).click();
-  await page.getByText(/Inspect details/).click();
+  await page.keyboard.press('i');
   await expect(page.getByRole('button', { name: 'Copy full ID' })).toBeVisible();
   await expect(page.locator('#entity-details code')).toContainText('session:ses_abcdefghijk');
 });

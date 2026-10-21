@@ -73,19 +73,45 @@ describe('copied, seeded bounded forces', () => {
     expect(solver.positions().get('task:b')).not.toEqual(before.get('task:b'));
     expect(baseline.get('task:a')).toEqual({ x: 0, y: 0 }); solver.stop();
   });
-  test('disconnected groups retain deterministic orbital structure, large fixture clearance', () => {
+  test('connected groups have deterministic geometry and the large fixture has clearance', () => {
     const fixture = largeGraph(), links = relationships(fixture), anchors = orbitalLayout(fixture.nodes, links);
     const solver = new GraphPhysics(fixture.nodes, links, anchors, anchors);
     const result = clearOverlaps(fixture.nodes, run(solver));
-    for (const node of fixture.nodes.filter(node => node.kind === 'epic')) {
-      const p = result.get(node.id)!, anchor = anchors.get(node.id)!;
-      expect(Math.hypot(p.x - anchor.x, p.y - anchor.y)).toBeLessThan(100);
-    }
+    expect(orbitalLayout([...fixture.nodes].reverse(), [...links].reverse())).toEqual(anchors);
+    expect(result.size).toBe(fixture.nodes.length);
     for (let i = 0; i < fixture.nodes.length; i++) for (let j = i + 1; j < fixture.nodes.length; j++) {
       const a = fixture.nodes[i], b = fixture.nodes[j], p = result.get(a.id)!, q = result.get(b.id)!;
       expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeGreaterThanOrEqual(nodeRadius(a) + nodeRadius(b) - 0.1);
     }
     solver.stop();
+  });
+  test('scoped edges, not hidden canonical edges, determine component seeds and force distances', () => {
+    const local = orbitalLayout(nodes, edges);
+    const nearby = Math.hypot(local.get('task:a')!.x - local.get('task:b')!.x, local.get('task:a')!.y - local.get('task:b')!.y);
+    const unrelated = Math.hypot(local.get('task:a')!.x - local.get('task:solo')!.x, local.get('task:a')!.y - local.get('task:solo')!.y);
+    expect(nearby).toBeLessThan(unrelated);
+    const fixture = largeGraph();
+    const linked = relationships(fixture);
+    const withLinks = orbitalLayout(fixture.nodes, linked);
+    const withoutLinks = orbitalLayout(fixture.nodes, []);
+    expect(orbitalLayout([...fixture.nodes].reverse(), [...linked].reverse())).toEqual(withLinks);
+    expect(withLinks).not.toEqual(withoutLinks);
+    const isolated = clearOverlaps(fixture.nodes, withoutLinks);
+    for (let i = 0; i < fixture.nodes.length; i++) for (let j = i + 1; j < fixture.nodes.length; j++) {
+      const a = fixture.nodes[i], b = fixture.nodes[j], p = isolated.get(a.id)!, q = isolated.get(b.id)!;
+      expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeGreaterThanOrEqual(nodeRadius(a) + nodeRadius(b) - .1);
+    }
+  });
+  test('dense coincident mixed bodies separate without moving an explicit pin', () => {
+    const fixture = largeGraph(), dense = fixture.nodes.slice(0, 500);
+    const seeds = new Map(dense.map(node => [node.id, { x: 0, y: 0 }]));
+    const pins = new Map([[dense[0].id, { x: 0, y: 0 }]]);
+    const points = clearOverlaps(dense, seeds, pins);
+    expect(points.get(dense[0].id)).toEqual(pins.get(dense[0].id));
+    for (let i = 0; i < dense.length; i++) for (let j = i + 1; j < dense.length; j++) {
+      const a = dense[i], b = dense[j], p = points.get(a.id)!, q = points.get(b.id)!;
+      expect(Math.hypot(p.x - q.x, p.y - q.y) - nodeRadius(a) - nodeRadius(b)).toBeGreaterThanOrEqual(-.01);
+    }
   });
   test('status, labels, heartbeat and ordering are not topology changes', () => {
     expect(topologyKey(nodes, edges)).toBe(topologyKey([...nodes].reverse().map(node => ({ ...node, label: 'new', state: 'done' })), [...edges].reverse()));

@@ -1,14 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import cytoscape from 'cytoscape';
 import { graphFixture as fixture } from './fixtures/graph-snapshot.js';
-import { ALL_TYPES, componentMembers, componentResolver, defaultFilters, hopDistances, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, type Filters } from '../src/graph/state.js';
+import { RELATION_KINDS } from '../src/graph/elements.js';
+import { ALL_TYPES, componentMembers, componentResolver, copyFilters, defaultFilters, hopDistances, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, withRelationKind, type Filters } from '../src/graph/state.js';
 import type { Entity, GraphSnapshot, Relationship } from '../shared/graph.js';
 import { effectiveTimes } from '../shared/scope.js';
 import { elements } from '../src/graph/elements.js';
 import { orbitalLayout } from '../src/graph/layout.js';
 import { highlight, syncElements } from '../src/graph/interactions.js';
 
-const filters: Filters = { ...defaultFilters(), kinds: new Set(ALL_TYPES) };
+const filters: Filters = { ...defaultFilters(), kinds: new Set(ALL_TYPES), relationKinds: new Set(RELATION_KINDS) };
 const now = Date.parse('2026-10-20T12:00:00Z');
 describe('shared graph/list state', () => {
   test('component uses undirected evidenced relationships before collapse and never traverses hidden kinds', () => {
@@ -110,11 +111,47 @@ describe('composable source scope', () => {
   });
   test('defaults, multiple kinds, empty kinds, all kinds and filter intersections', () => {
     expect(defaultFilters().kinds).toEqual(new Set(['epic', 'task', 'attempt', 'agent', 'session']));
+    expect(defaultFilters().relationKinds).toEqual(new Set(['contains', 'blocks']));
     expect(projectGraph(fixture, defaultFilters(), new Set(), now).nodes.some(node => node.kind === 'pane')).toBe(false);
     expect(ids(fixture, { kinds: new Set() })).toEqual([]);
     expect(ids(fixture)).toHaveLength(fixture.nodes.length);
     expect(ids(fixture, { kinds: new Set(['task', 'agent']), query: 'bgr', state: 'active', epic: 'epic:a' })).toEqual(['task:b']);
     expect(ids(fixture, { epic: 'missing' })).toEqual([]);
+  });
+  test('relation scope controls all downstream topology while canonical evidence remains complete', () => {
+    const all = projectGraph(fixture, filters, new Set(), now, 'task:b');
+    expect(all.allEdges).toHaveLength(fixture.edges.length + 2);
+    for (const kind of RELATION_KINDS) {
+      const scoped = projectGraph(fixture, { ...filters, relationKinds: new Set([kind]) }, new Set(), now, 'task:b');
+      expect(scoped.edges.every(edge => edge.kind === kind)).toBe(true);
+      expect(scoped.eligibleGraph.edges.every(edge => edge.kind === kind)).toBe(true);
+      expect(scoped.allEdges).toEqual(all.allEdges);
+    }
+    const none = projectGraph(fixture, { ...filters, relationKinds: new Set() }, new Set(), now);
+    expect(none.nodes).toHaveLength(fixture.nodes.length);
+    expect(none.edges).toEqual([]);
+    expect(none.eligibleGraph.edges).toEqual([]);
+    expect(none.allEdges).toHaveLength(all.allEdges.length);
+  });
+  test('hidden kinds cannot bridge components and collapse keeps canonical containment', () => {
+    const bridge: GraphSnapshot = graph([
+      entity('a', 'task'), entity('b', 'task'), entity('c', 'task'), entity('epic', 'epic'),
+    ], [link('blocks', 'a', 'b'), link('related', 'b', 'c'), link('contains', 'epic', 'a')]);
+    const blocks = projectGraph(bridge, { ...filters, relationKinds: new Set(['blocks']) }, new Set(), now, 'a');
+    expect(blocks.eligibleGraph.nodes.map(node => node.id)).toEqual(['a', 'b']);
+    expect(blocks.distances.get('c')).toBeUndefined();
+    const collapsed = projectGraph(bridge, { ...filters, relationKinds: new Set(['blocks']) }, new Set(['epic']), now);
+    expect(collapsed.nodes.map(node => node.id)).not.toContain('a');
+    expect(collapsed.edges).toContainEqual(expect.objectContaining({ source: 'epic', target: 'b', kind: 'blocks', summary: true }));
+  });
+  test('relation updates and copied search baselines are immutable', () => {
+    const before = defaultFilters();
+    const after = withRelationKind(before, 'related', true);
+    expect(before.relationKinds.has('related')).toBe(false);
+    expect(after.relationKinds.has('related')).toBe(true);
+    const copied = copyFilters(after); copied.relationKinds.delete('related'); copied.kinds.clear();
+    expect(after.relationKinds.has('related')).toBe(true);
+    expect(after.kinds).not.toEqual(new Set());
   });
   test('nested/cyclic containment and shared topology never walk back to other owners', () => {
     const snapshot = graph([

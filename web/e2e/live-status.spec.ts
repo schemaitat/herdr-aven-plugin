@@ -5,6 +5,7 @@ import { applyActivity } from '../server/activity.js';
 import { apiEvent, liveFixture } from '../test/fixtures/opencode-api.js';
 import { summarizeEvent } from '../server/logs.js';
 import { projectDiscovery } from './project-fixture.js';
+import { allTypes } from './filter-controls.js';
 
 function live(state: Activity['state'], version?: number): GraphSnapshot {
   const now = Date.now();
@@ -34,6 +35,7 @@ test('API activity transitions within five seconds without task-status/camera/se
     return route.fulfill({ json: live(state) });
   });
   await page.goto('/');
+  await allTypes(page);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   const task = entities.getByRole('button', { name: /task task:one/ });
@@ -66,6 +68,7 @@ test('disconnected browser hard-expires Working and recovers authoritative state
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => available ? route.fulfill({ json: live('working') }) : route.fulfill({ status: 503 }));
   await page.goto('/');
+  await allTypes(page);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const task = page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task task:one/ });
   await expect(task).toContainText('Working'); await task.click();
@@ -88,6 +91,7 @@ test('current working and selected direct neighbors expose visible CSS cues with
   await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
   await page.route('**/api/snapshot', route => route.fulfill({ json: live('working') }));
   await page.goto('/');
+  await allTypes(page);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task task:one/ }).click();
   await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).toHaveCount(2);
@@ -117,6 +121,7 @@ test('authenticated stream reconnects/resnapshots version gaps, ignores duplicat
     return route.fulfill({ json: { entries: [{ id: `log-${logReads}`, source: 'opencode', sessionId: 'ses_one', cursor: String(logReads), observedAt: new Date().toISOString(), text: hostile, durable: true }], next: logReads === 1 ? 'fixture-cursor' : undefined, message: 'Durable summaries; payloads omitted', gap: true } });
   });
   await page.goto('/');
+  await allTypes(page);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const entities = page.getByRole('region', { name: 'Entities', exact: true });
   await expect(entities.getByRole('button', { name: /task task:one/ })).toContainText('Working');
