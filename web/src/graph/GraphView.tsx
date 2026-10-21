@@ -24,7 +24,7 @@ function readableLabels(cy: Core) {
     cy.edges().style('font-size', Math.max(9, 8 / zoom));
   });
 }
-type Command = { kind: 'fit' | 'reset' | 'in' | 'out' | 'restore' | 'rollback'; serial: number; camera?: GraphMemory['camera']; positions?: Map<string, Position> };
+type Command = { kind: 'fit' | 'reset' | 'restore' | 'rollback'; serial: number; camera?: GraphMemory['camera']; positions?: Map<string, Position> };
 interface Props {
   nodes: Entity[]; edges: GraphEdge[]; selected?: string; component?: string; distances?: Map<string, number>; paused?: boolean;
   onSelect: (id: string) => void; onToggle: (id: string) => void; command: Command; memory: GraphMemory;
@@ -206,7 +206,6 @@ export function GraphView(props: Props) {
           paint(); cy.fit(undefined, 50);
         } else if (command.kind === 'restore' || command.kind === 'rollback') { restore(command.kind === 'rollback' ? command.positions ?? memory.visual ?? memory.positions : memory.positions); if (command.camera) cy.viewport(command.camera); }
         else if (command.kind === 'fit') cy.fit(undefined, 50);
-        else cy.zoom({ level: cy.zoom() * (command.kind === 'in' ? 1.25 : 0.8), renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
       },
     };
     cy.on('tap', 'node, edge', select); cy.on('dbltap', 'node', toggle);

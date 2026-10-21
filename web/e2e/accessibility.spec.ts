@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { graphFixture } from '../test/fixtures/graph-snapshot.js';
 import { projectDiscovery } from './project-fixture.js';
-import { allTypes } from './filter-controls.js';
+import { allTypes, graphTools } from './filter-controls.js';
 
 test.beforeEach(async ({ page }) => { await projectDiscovery(page, 'graph-fixture'); });
 
@@ -33,6 +33,7 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   expect(styles).toMatchObject({ epicFill: 'radial-gradient', blocksArrow: 'triangle', assignedPattern: 'dashed' });
   expect(styles.nodeLabel).toContain('Build graph');
   const motion = page.getByRole('button', { name: 'Pause motion', exact: true });
+  await graphTools(page);
   await motion.focus(); await page.keyboard.press('Enter');
   await expect(page.getByRole('button', { name: 'Resume motion', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Enter');
@@ -42,7 +43,7 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await page.setViewportSize({ width: 390, height: 844 });
   // Resize intentionally preserves the camera; explicitly fit the narrow view.
   await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.width())).toBeLessThan(390);
-  await page.getByText('Graph tools', { exact: true }).click();
+  await graphTools(page);
   await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
   await expect.poll(() => page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
@@ -101,7 +102,7 @@ test('viewport shell has no overflow; drawers return focus, leave background con
     await page.screenshot({ path: info.outputPath(`filters-${size.width}.png`) });
     await page.keyboard.press('Escape');
     await expect(page.getByText('Filters', { exact: true })).toBeFocused();
-    if (size.width < 650) await page.getByText('Graph tools', { exact: true }).click();
+    await graphTools(page);
     await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
     await expect.poll(() => page.locator('.graph-canvas').evaluate(element => {
       const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
@@ -122,15 +123,14 @@ test('viewport shell has no overflow; drawers return focus, leave background con
       const inspector = (await page.locator('.inspector').boundingBox())!;
       expect(information.y + information.height).toBeLessThanOrEqual(inspector.y);
     }
+    await graphTools(page);
     await page.getByRole('button', { name: 'Fit graph', exact: true }).focus();
     await expect(page.getByRole('button', { name: 'Fit graph', exact: true })).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
     await page.keyboard.press('Escape');
-    if (size.width < 650) {
-      await expect(page.getByText('Graph tools', { exact: true })).toBeFocused();
-      await page.keyboard.press('Escape');
-      await expect(page.getByText('Panels', { exact: true })).toBeFocused();
-    }
+    await expect(page.getByText('Graph tools', { exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    if (size.width < 650) await expect(page.getByText('Panels', { exact: true })).toBeFocused();
     else await expect(entities).toBeFocused();
   }
   await page.getByText('Graph tools', { exact: true }).click();
@@ -141,6 +141,39 @@ test('viewport shell has no overflow; drawers return focus, leave background con
   expect(infoBounds.y + infoBounds.height).toBeLessThanOrEqual(listPanel.y);
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
+});
+
+test('? toggles the keybindings help panel and returns focus; / and i are unchanged', async ({ page }) => {
+  await page.route('**/bootstrap', route => route.fulfill({ json: { token: 'fixture-token' } }));
+  await page.route('**/api/stream', route => route.fulfill({ status: 404 }));
+  await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
+  await page.goto('/');
+  await expect(page.locator('.graph-status')).toContainText('10 entities');
+  const inspector = page.getByRole('region', { name: 'Inspector' });
+  const help = page.getByRole('button', { name: 'Keyboard shortcuts', exact: true });
+  // Inert inside editable controls.
+  await page.getByLabel('Search entities').fill('');
+  await page.getByLabel('Search entities').focus();
+  await page.keyboard.press('?');
+  await expect(inspector).toHaveCount(0);
+  // The visible ? button opens the keybindings surface.
+  await help.click();
+  await expect(inspector.getByRole('heading', { name: 'Help & legend', exact: true })).toBeVisible();
+  await expect(inspector.getByRole('region', { name: 'Keybindings' })).toContainText('toggle this Help');
+  await expect(help).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(inspector).toHaveCount(0);
+  await expect(help).toBeFocused();
+  // ? opens and closes the same surface, returning focus.
+  await help.focus(); await page.keyboard.press('?');
+  await expect(page.getByRole('region', { name: 'Keybindings' })).toBeVisible();
+  await page.keyboard.press('?');
+  await expect(inspector).toHaveCount(0);
+  await expect(help).toBeFocused();
+  // / and i behavior is unchanged.
+  await page.keyboard.press('/');
+  await expect(page.getByRole('dialog', { name: 'Search entities' })).toBeVisible();
+  await page.keyboard.press('Escape');
 });
 
 test('failed lazy canvas exposes the list/details fallback', async ({ page }) => {

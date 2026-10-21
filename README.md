@@ -76,20 +76,29 @@ facets and may coexist with Working. Herdr observations remain inspectable even
 when they contradict the API. Missing/unsupported API data is unknown, not idle
 or done; observations expire after 4.5 seconds, including in disconnected browsers.
 
-The graph canvas occupies the remaining browser viewport below a compact,
-top-pinned header. **Filters** and **Search /** are always discoverable;
-**Graph tools** on narrow screens, **Panels**, and **Sources** disclose secondary
-controls on demand. Selecting an entity does not open information. Press the
-visible **i** shortcut outside editable controls to toggle a bounded, scrollable
-entity-info surface containing canonical identity, provenance, relationships
-and **Copy full ID**. The shortcut is inert without a selection and never opens
-information during search. **Entities** opens the complete paged list, while
-**Live activity**, **Event history** and **Help & legend** open other inspection
-surfaces on demand. Escape or
+The graph canvas occupies the remaining browser viewport below a single compact,
+top-pinned header row: the project selector, **Search /**, the inline search
+field, **Filters**, one condensed status item (matching and on-canvas counts plus
+a nonzero unknown/invalid/future-time exclusion indicator), the **Graph tools**
+disclosure, a visible **?** shortcut, the four panel buttons (**Panels** on
+narrow viewports) and a compact connection indicator. **Filters** and
+**Search /** stay one click away; **Graph tools**, **Panels** and **Sources**
+disclose secondary controls on demand. Selecting an entity does not open
+information. Press the visible **i** shortcut outside editable controls to toggle
+a bounded, scrollable entity-info surface containing canonical identity,
+provenance, relationships and **Copy full ID**. The shortcut is inert without a
+selection and never opens information during search. **Entities** opens the
+complete paged list, while **Live activity**, **Event history** and
+**Help & legend** open other inspection surfaces on demand. Escape or
 **Close panel** closes the inspector and returns focus to its opener; background
 graph controls remain reachable. The skip link opens and focuses Entities.
 **List only** and a failed optional canvas load both preserve the list route;
 select an entry, then press **i** to inspect it without the canvas.
+
+Press **?** outside editable controls, or choose the visible **?** button, to
+toggle **Help & legend**, which documents every keybinding (/, i, ?, Escape and
+the canvas gestures) and returns focus to its opener when closed. **/** and **i**
+behavior is unchanged.
 
 Press **/** outside editable controls, with or without Shift when that is how
 the keyboard produces `/`, or choose **Search /**, for transactional
@@ -106,11 +115,12 @@ The inline Search entities field also filters directly, without a transaction.
 
 **Filters** opens a compact keyboard-accessible scope popover (Tab to controls;
 Escape closes it and returns focus). Entity types are independent checkboxes:
-**epic, task, attempt, agent and session** are initially selected. **All types**
-also includes workspace, pane, worktree and boundary entities. Unchecking every
-type means no matches, not All. Independent relationship checkboxes initially
-show **contains** and **blocks**; **All relationships** exposes every source
-kind plus evidenced agent dependencies, and **No relationships** leaves eligible
+**epic, task, attempt, agent and session** are initially selected. **Select all
+types** also includes workspace, pane, worktree and boundary entities;
+**Deselect all types** clears them, and an empty selection means no matches, not
+All. Independent relationship checkboxes initially show **contains** and
+**blocks**; **Select all relationships** exposes every source kind plus
+evidenced agent dependencies, and **Deselect all relationships** leaves eligible
 nodes isolated. Hidden relations never connect or attract visible entities, but
 remain in canonical info evidence. Source state initially includes all states.
 Epic choices always come from the loaded snapshot, independent of other filters.
@@ -118,9 +128,10 @@ Epic scope follows nested containment and explicit execution ownership only;
 blockers/related links and shared sessions, panes or workspaces never pull in
 unrelated owners. **Clear epic** removes only that scope. A vanished epic remains
 explicitly unavailable with an empty result until cleared; refresh never silently
-broadens the scope. Chips show the current scope, matching count and canvas count.
-**Reset filters** restores epic/task types, contains/blocks relations, all
-states/time and no epic/query;
+broadens the scope. The popover lists the current scope facts; the header's
+condensed status item shows the matching and on-canvas counts plus a nonzero
+exclusion count. **Reset filters** restores epic/task types, contains/blocks
+relations, all states/time and no epic/query;
 it does not erase selection or saved node positions. Selected off-canvas entities
 retain their information and all source relationships when opened with **i**.
 
@@ -384,7 +395,7 @@ there is no second dashboard task store.
 hubs / 480 tasks) and 1,000 edges (480 containment / 520 directed blockers).
 `web/e2e/performance.spec.ts` asserts initial interactivity **≤3 seconds** and
 rendered pan/zoom **≥45 FPS**, separately with active physics and when settled.
-Select **All types** to exercise the complete fixture. Run the built production app through
+Choose **Select all types** to exercise the complete fixture. Run the built production app through
 `UI_CHROME=/usr/bin/google-chrome just ui-test-e2e`; the performance case prints
 `PERFORMANCE_BASELINE` JSON and attaches it to Playwright results. There is no
 network throttle or simulated CPU speed; source reads are deterministic HTTP

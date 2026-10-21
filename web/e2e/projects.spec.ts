@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import type { GraphSnapshot } from '../shared/graph.js';
 import { graphFixture } from '../test/fixtures/graph-snapshot.js';
-import { allTypes } from './filter-controls.js';
+import { allTypes, graphTools } from './filter-controls.js';
 
 const listing = { workspace: 'default', startup: 'alpha', status: 'ok', message: 'Configured workspace only', projects: [{ key: 'alpha', name: 'Alpha' }, { key: 'beta', name: 'Beta' }] };
 function snapshot(project: string, version = 1): GraphSnapshot {
@@ -84,7 +84,11 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await page.getByLabel('Search entities').fill('Build');
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /alpha Build graph/ }).click();
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const box = (await page.locator('.graph-canvas').boundingBox())!;
+  const zoomBefore = await page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.zoom());
+  await page.waitForTimeout(300);
+  await page.mouse.move(box.x + box.width - 30, box.y + 30); await page.mouse.wheel(0, -180);
+  await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.zoom())).toBeGreaterThan(zoomBefore);
   await page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
     cy.getElementById('task:b').position({ x: 2345, y: 6789 }); cy.getElementById('task:b').emit('dragfree');
@@ -107,6 +111,7 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await expect(page.getByLabel('Search entities')).toHaveValue('');
   await expect(page.getByText('alpha history', { exact: false })).toHaveCount(0);
   await expect(page.locator('.health.unavailable')).toHaveCount(2);
+  await graphTools(page);
   await page.getByText(/Sources ·/).click();
   await expect(page.getByText(/startup repository topology is not reused/)).toBeVisible();
   await page.getByText('Filters', { exact: true }).click();
