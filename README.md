@@ -220,6 +220,7 @@ Startup settings are trusted environment variables, never browser parameters:
 | `UI_PORT` | `4318` (unprivileged ports only) |
 | `UI_HOST` | Only `127.0.0.1` is accepted |
 | `AVEN_DISPATCH_STORE` | Existing configured store; relative paths resolve from the repository checkout. Otherwise reads the primary checkout's `.aven-dispatch/state.json` |
+| `UI_PROJECT_CHECKOUTS` | Optional JSON object mapping Aven project keys to absolute, server-local checkout paths, for example `{"rofm-argo-apps":"/work/rofm-argo-apps"}`. Paths are canonicalized at startup; selected projects without a mapping retain scoped Aven recovery only. This mapping is never exposed to the browser. |
 | `UI_OPENCODE_URL` | Explicit existing OpenCode server origin; takes precedence over `OPENCODE_SERVER_URL` and local discovery. No fallback to a different service when this server fails |
 | `UI_OPENCODE_AUTHORIZATION` | Server-only Authorization header for that explicit server; otherwise `OPENCODE_TOKEN` (Bearer) or `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` (Basic, username defaults to `opencode`) |
 | `UI_OPENCODE_SERVICE_FILE` | Optional trusted registration file for local discovery; otherwise `$XDG_STATE_HOME/opencode/service.json` or `~/.local/state/opencode/service.json`. Its origin is checked for loopback before the client's authenticated health probe |
