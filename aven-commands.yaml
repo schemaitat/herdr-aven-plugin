@@ -148,11 +148,12 @@
   execution: terminal
   on_success: quit
 
-# Discard only dispatcher/planning state for the focused task. This deliberately
-# has no --yes flag: the terminal prompt is the final destructive-action guard.
+# Invalidate only dispatcher execution state for the focused task while retaining
+# its approved Aven plan. This deliberately has no --yes flag: the terminal
+# prompt is the final mutation guard.
 - name: dispatch-reset
   aliases: [aven-dispatch-reset]
-  description: Reset dispatch and plan state for the focused task
+  description: Reset dispatch execution while preserving the focused task plan
   program: aven-dispatch
   args: [reset]
   keys: [z r]

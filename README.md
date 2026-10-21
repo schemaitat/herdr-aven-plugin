@@ -426,7 +426,7 @@ aven project create "My app" --path "$PWD"
 | `z s` in Aven | Plan then implement the selected task |
 | `z p` in Aven | Turn the selected task idea into a durable implementation plan |
 | `z i` in Aven | Implement an already worked-out plan |
-| `z r` in Aven | Reset dispatch and planning state for the focused task |
+| `z r` in Aven | Reset dispatch execution while preserving the focused task plan |
 | `z S` in Aven | Plan then implement with an adjacent babysitter |
 | `z b` in Aven | Implement an existing plan with an adjacent babysitter |
 
@@ -562,16 +562,23 @@ cleanup. It refuses reset if session activity cannot be inspected. Use
 `--dry-run` to inspect the target and preserved artifacts; scripts must pass
 `--yes` deliberately.
 
-On success reset removes local/Aven dispatch attempts and the three SDD plan
-markers, returns the root to `todo` without changing its task type, and writes
-a superseding audit note. An epic therefore remains the overarching ADR even
-after reset, with its generated phase subtasks still attached. Ambiguous
-children cause a refusal rather than being changed.
-Task identity, spec, notes, attachments, unrelated task metadata and links,
+On success reset removes only local/Aven dispatch attempts and writes a
+superseding audit note. It preserves the root status and type, all `sdd.plan-*`
+metadata, epic membership and order, phase dependencies, task descriptions,
+priorities, schedules, and unrelated task metadata and links. An epic remains
+the overarching ADR with its existing phase subtasks attached; current phase
+membership is recorded only as audit inventory.
+
+Legacy reset records can contain `detached_children` from the former
+implementation. Recovery treats that field as historical audit data only: it
+never attaches, detaches, or otherwise overrides the current Aven graph. A
+future explicit replanning workflow must be separate from reset and preserve
+task history.
+
 OpenCode sessions, Git branches, worktrees, and source files are retained.
-Reset never deletes sessions or cleans a checkout. Plan the task again before
-implementation; a generation fence prevents old snapshots from being
-reconciled into the new plan.
+Reset never deletes sessions or cleans a checkout. The generation fence
+prevents old snapshots from being reconciled into a fresh dispatch, while the
+retained approved plan can be dispatched again without duplicate planning.
 
 ## Development
 
