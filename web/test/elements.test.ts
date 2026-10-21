@@ -3,6 +3,7 @@ import cytoscape from 'cytoscape';
 import { createRequire } from 'node:module';
 import { elements, relationships } from '../src/graph/elements.js';
 import { orbitalLayout } from '../src/graph/layout.js';
+import { nodeRadius } from '../src/graph/physics.js';
 import { graphFixture as fixture } from './fixtures/graph-snapshot.js';
 import { isCurrentWorking } from '../src/graph/activity.js';
 
@@ -33,14 +34,15 @@ describe('graph identity, direction and evidence', () => {
     expect(relationships({ ...fixture, edges: fixture.edges.filter(edge => edge.kind !== 'blocks') }).some(edge => edge.kind === 'agent-dependency')).toBe(false);
     expect(relationships({ ...fixture, nodes: [...fixture.nodes].reverse(), edges: [...fixture.edges].reverse() }).map(edge => edge.id).sort()).toEqual(relationships(fixture).map(edge => edge.id).sort());
   });
-  test('circular hub fallback is deterministic and places child circles around epic, standalone outside', () => {
+  test('evidenced components are deterministic and keep epic children near their hub', () => {
     const edges = relationships(fixture);
     const layout = orbitalLayout(fixture.nodes, edges);
     expect(orbitalLayout([...fixture.nodes].reverse(), [...edges].reverse())).toEqual(layout);
     const epic = layout.get('epic:a')!;
     for (const id of ['task:a', 'task:b']) {
       const child = layout.get(id)!;
-      expect(Math.hypot(child.x - epic.x, child.y - epic.y)).toBeCloseTo(205);
+      expect(Math.hypot(child.x - epic.x, child.y - epic.y)).toBeGreaterThan(nodeRadius(fixture.nodes.find(node => node.id === id)!) + nodeRadius(fixture.nodes.find(node => node.id === 'epic:a')!));
+      expect(Math.hypot(child.x - epic.x, child.y - epic.y)).toBeLessThan(250);
     }
     expect(layout.has('task:solo')).toBe(true);
     expect(layout.has('worktree:unused')).toBe(true);

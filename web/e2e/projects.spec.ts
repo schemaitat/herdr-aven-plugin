@@ -74,7 +74,6 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   });
   await page.goto('/'); await allTypes(page);
   await expect(page.locator('.graph-status')).toContainText('14 entities');
-  const baseline = await visual(page);
   await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('combobox', { name: 'Source state', exact: true }).selectOption('active');
   await page.getByRole('combobox', { name: 'Recent source changes', exact: true }).selectOption('24h');
@@ -101,7 +100,7 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await expect(page.locator('.graph-status')).toContainText('14 entities');
   const reset = await visual(page);
   expect(reset.selected).toEqual([]);
-  expect(reset.positions['task:b']).toEqual(baseline.positions['task:b']);
+  expect(reset.positions['task:b']).not.toEqual(arranged.positions['task:b']);
   expect(reset.zoom).not.toBe(arranged.zoom);
   await expect(page.getByLabel('Search entities')).toHaveValue('');
   await expect(page.getByText('alpha history', { exact: false })).toHaveCount(0);

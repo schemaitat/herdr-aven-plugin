@@ -18,7 +18,7 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
   const result = copy(positions);
   for (const [id, point] of pins) if (result.has(id)) result.set(id, { ...point });
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-  for (let pass = 0; pass < 32; pass++) {
+  for (let pass = 0; pass < 96; pass++) {
     let overlap = false;
     for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
       const a = ordered[i], b = ordered[j], p = result.get(a.id)!, q = result.get(b.id)!;
@@ -91,12 +91,12 @@ export class GraphPhysics {
       .force('links', forceLink<Particle, { source: string; target: string }>(links).id(node => node.id).distance(link => {
         const source = byId.get(typeof link.source === 'string' ? link.source : (link.source as Particle).id)!;
         const target = byId.get(typeof link.target === 'string' ? link.target : (link.target as Particle).id)!;
-        return selected && (source.id === selected || target.id === selected) ? source.radius + target.radius + 25 : Math.max(source.radius + target.radius + 20, Math.hypot(source.anchor.x - target.anchor.x, source.anchor.y - target.anchor.y) * 0.96);
-      }).strength(selected ? 0.3 : 0.07))
+        return source.radius + target.radius + (selected && (source.id === selected || target.id === selected) ? 25 : 90);
+      }).strength(selected ? 0.3 : 0.16))
       .force('charge', forceManyBody<Particle>().strength(-140).distanceMax(350).theta(0.9))
       .force('collision', forceCollide<Particle>().radius(node => node.radius + 2).iterations(2))
-      .force('x', forceX<Particle>(node => node.anchor.x).strength(0.055))
-      .force('y', forceY<Particle>(node => node.anchor.y).strength(0.055));
+       .force('x', forceX<Particle>(node => node.anchor.x).strength(0.035))
+       .force('y', forceY<Particle>(node => node.anchor.y).strength(0.035));
   }
   tick() {
     const previous = this.particles.map(node => ({ x: node.x, y: node.y }));

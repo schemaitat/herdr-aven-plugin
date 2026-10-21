@@ -147,11 +147,10 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 .compact-details summary { cursor: pointer; color: #b6c9e6; }
 .graph-panel { position: relative; border: 0; border-radius: 0; background: #080d1b; }
 .graph-cues { position: absolute; inset: 0 0 34px; pointer-events: none; overflow: hidden; }
-.graph-cue { position: absolute; width: 56px; height: 56px; margin: -28px; border-radius: 50%; border: 2px solid transparent; }
+.graph-cue { position: absolute; box-sizing: border-box; transform: translate(-50%, -50%); border-radius: 50%; border: 2px solid transparent; }
 .graph-cue.working { border-color: #67efb8; box-shadow: 0 0 0 3px #67efb830; }
 .graph-cue.neighbor { border-color: #55dff7; box-shadow: 0 0 0 5px #55dff720; animation: neighbor-pulse 1.8s ease-in-out infinite; }
 .graph-cue.working.neighbor { box-shadow: 0 0 0 3px #67efb840, 0 0 0 7px #55dff71f; }
-.graph-cues.paused .graph-cue, .graph-cues:has(.graph-cue) { animation-play-state: running; }
 .graph-cues.paused .graph-cue, .graph-cues.hidden .graph-cue { animation-play-state: paused; }
 @keyframes neighbor-pulse { 50% { box-shadow: 0 0 0 10px #55dff700; } }
 .sources { margin-left: auto; position: relative; }

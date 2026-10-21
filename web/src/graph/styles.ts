@@ -24,5 +24,6 @@ export const styles: StylesheetJson = [
   { selector: '.muted', style: { opacity: 0.65 } },
   { selector: 'node.selected', style: { 'border-width': 5, 'border-color': '#fff0a8', 'underlay-color': '#a48bff', 'underlay-opacity': 0.12, 'underlay-padding': 10, 'underlay-shape': 'ellipse' } },
   { selector: 'edge.selected', style: { width: 5, 'line-color': '#fff0a8', 'target-arrow-color': '#fff0a8' } },
-  { selector: 'edge.direct-edge', style: { width: 3.5, opacity: 1 } },
+  // Keep kind-specific color, dash and arrow rules; only amplify the incident stroke.
+  { selector: 'edge.direct-edge', style: { width: 4.5, opacity: 1 } },
 ];

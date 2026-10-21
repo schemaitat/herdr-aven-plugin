@@ -50,8 +50,11 @@ test('bubble shapes, typed directed relationships, derived provenance and graph/
   expect(sourceShape.agent).toBe('diamond');
   expect(sourceShape.derived).toEqual([['agent:a', 'agent:b', 'derived dependency'], ['agent:b', 'agent:c', 'derived dependency']]);
   await page.screenshot({ path: info.outputPath('graph-overview.png'), fullPage: true });
+  // The inspector floats above the lower-right canvas in this layout.
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const taskPoint = await point(page, 'task:b');
   await page.mouse.click(taskPoint.x, taskPoint.y);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const details = page.getByRole('complementary', { name: 'Entity details' });
   await expect(details.getByRole('heading', { name: 'Build graph', exact: true })).toBeVisible();
   const list = page.getByRole('region', { name: 'Entities', exact: true });
@@ -87,6 +90,42 @@ test('single-click entity focus exposes visible one-hop pulse markers and direct
   await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).toHaveCount(0);
 });
 
+test('cue bounds track rendered geometry after pan, zoom and static selection', async ({ page }) => {
+  await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task Build graph/ }).click();
+  const check = async () => {
+    await expect.poll(async () => page.locator('.graph-canvas').evaluate(element => {
+      const cy = (element as GraphContainer)._cyreg.cy;
+      const canvas = element.getBoundingClientRect();
+      return Math.max(...['epic:a', 'task:a', 'agent:b'].map(id => {
+        const node = cy.getElementById(id);
+        const cue = [...document.querySelectorAll<HTMLElement>('.graph-cue[data-cue~="one-hop"]')].find(item => item.dataset.key?.includes(`neighbor:${id}`));
+        if (!cue) return Infinity;
+        const bounds = cue.getBoundingClientRect(), point = node.renderedPosition();
+        const x = canvas.left + point.x, y = canvas.top + point.y;
+        const error = Math.hypot((bounds.left + bounds.right) / 2 - x, (bounds.top + bounds.bottom) / 2 - y);
+        return bounds.left <= x - node.renderedOuterWidth() / 2 && bounds.right >= x + node.renderedOuterWidth() / 2 && bounds.top <= y - node.renderedOuterHeight() / 2 && bounds.bottom >= y + node.renderedOuterHeight() / 2 ? error : Infinity;
+      }));
+    })).toBeLessThanOrEqual(2);
+  };
+  await check();
+  await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.panBy({ x: 35, y: -20 }));
+  await check();
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await check();
+  await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
+  await check();
+  await page.locator('.graph-canvas').evaluate(element => {
+    const node = (element as GraphContainer)._cyreg.cy.getElementById('task:a');
+    node.position({ x: node.position().x + 60, y: node.position().y + 25 });
+  });
+  await check();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await check();
+  await page.getByRole('button', { name: 'List only', exact: true }).click();
+  await page.getByRole('button', { name: 'Show graph', exact: true }).click();
+  await check();
+});
+
 test('actual pan, wheel zoom, drag, fit/reset and ordinary snapshot refresh retain context', async ({ page }) => {
   const before = await graph(page);
   let location = await point(page);
@@ -117,7 +156,10 @@ test('actual pan, wheel zoom, drag, fit/reset and ordinary snapshot refresh reta
   expect((await graph(page)).zoom).toBeGreaterThan(dragged.zoom);
   await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
   await page.getByRole('button', { name: 'Reset positions', exact: true }).click();
-  expect((await graph(page)).positions['task:b']).toEqual(before.positions['task:b']);
+  const reset = (await graph(page)).positions['task:b'];
+  expect(reset).not.toEqual(dragged.positions['task:b']);
+  await page.getByRole('button', { name: 'Reset positions', exact: true }).click();
+  expect((await graph(page)).positions['task:b']).toEqual(reset);
 });
 
 test('collapse/expand, cross-epic boundaries, search/type/status filters and keyboard discovery', async ({ page }) => {
@@ -190,7 +232,7 @@ test('ordinary renders retain one instance; disposal/remount destroys old core a
     })).toBe(0);
     await expect(page.locator('.graph-canvas canvas')).toHaveCount(0);
     await page.getByRole('button', { name: 'Show graph', exact: true }).click();
-    await expect(page.locator('.graph-status')).toContainText('14 entities');
+    await expect(page.locator('.graph-status')).toContainText(`${retained.nodes.length} entities`);
     const remounted = await graph(page);
     expect(remounted.positions).toEqual(retained.positions);
     expect(remounted.zoom).toBe(retained.zoom); expect(remounted.pan).toEqual(retained.pan);
@@ -356,21 +398,23 @@ test('recent source windows disclose unknowns, shared resources do not leak othe
 test('real drag reacts within 100ms, neighbors follow, pins survive filters, selection contracts and clear returns without drift', async ({ page }, info) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' }); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await sleep(page);
   const overview = await graph(page);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const location = await point(page, 'task:b');
   await page.mouse.move(location.x, location.y); await page.mouse.down();
   const beforeDrag = await graph(page);
+  const start = await page.locator('.graph-canvas').evaluate(() => performance.now());
   await page.mouse.move(location.x + 70, location.y + 20, { steps: 4 });
-  const reaction = await page.locator('.graph-canvas').evaluate(async element => {
+  const reaction = await page.locator('.graph-canvas').evaluate(async (element, { start, before }) => {
     const cy = (element as GraphContainer)._cyreg.cy;
-    const start = performance.now(), before = { ...cy.getElementById('task:a').position() };
     return new Promise<number>(resolve => {
       const frame = () => { const p = cy.getElementById('task:a').position(); if (Math.hypot(p.x - before.x, p.y - before.y) > .01 || performance.now() - start > 100) resolve(performance.now() - start); else requestAnimationFrame(frame); };
       requestAnimationFrame(frame);
     });
-  });
+  }, { start, before: beforeDrag.positions['task:a'] });
   expect(reaction).toBeLessThanOrEqual(100);
   expect((await graph(page)).positions['task:a']).not.toEqual(beforeDrag.positions['task:a']);
   await page.mouse.up(); const released = performance.now(); await sleep(page);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const settleMs = performance.now() - released;
   expect(settleMs).toBeLessThanOrEqual(1500);
   const pinned = (await graph(page)).positions['task:b'];

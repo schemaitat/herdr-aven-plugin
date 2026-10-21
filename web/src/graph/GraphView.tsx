@@ -45,8 +45,37 @@ export function GraphView(props: Props) {
     let pendingReturn: Map<string, Position> | undefined;
     let activationPins = new Map<string, Position>();
     let ticks = 0, activations = 0, zoomTimer: ReturnType<typeof setTimeout>;
+    let cueFrame: number | undefined;
+    const cues = new Map<string, HTMLSpanElement>();
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const positions = () => new Map(cy.nodes().map(node => [node.id(), { ...node.position() }]));
+    const syncCues = () => {
+      const layer = markers.current;
+      if (!layer) return;
+      const selected = latest.current.selected;
+      const neighbors = new Set(latest.current.edges.flatMap(edge => edge.source === selected && edge.target !== selected ? [edge.target] : edge.target === selected && edge.source !== selected ? [edge.source] : []));
+      const working = new Set(latest.current.nodes.filter(isCurrentWorking).map(node => node.id));
+      const visible = new Set([...neighbors, ...working]);
+      for (const [id, cue] of cues) if (!visible.has(id) || !cy.getElementById(id).length) { cue.remove(); cues.delete(id); }
+      for (const id of visible) {
+        const node = cy.getElementById(id);
+        if (!node.length) continue;
+        let cue = cues.get(id);
+        if (!cue) { cue = document.createElement('span'); cues.set(id, cue); layer.append(cue); }
+        cue.className = `graph-cue${working.has(id) ? ' working' : ''}${neighbors.has(id) ? ' neighbor' : ''}`;
+        cue.setAttribute('data-cue', `${working.has(id) ? 'working ' : ''}${neighbors.has(id) ? 'one-hop' : ''}`.trim());
+        cue.dataset.key = `${working.has(id) ? `working:${id}` : ''}${neighbors.has(id) ? ` neighbor:${id}` : ''}`;
+        const point = node.renderedPosition();
+        cue.style.left = `${point.x}px`;
+        cue.style.top = `${point.y}px`;
+        cue.style.width = `${node.renderedOuterWidth() + 8}px`;
+        cue.style.height = `${node.renderedOuterHeight() + 8}px`;
+      }
+    };
+    const invalidateCues = () => {
+      if (cueFrame !== undefined) return;
+      cueFrame = requestAnimationFrame(() => { cueFrame = undefined; syncCues(); });
+    };
     const paint = () => {
       // Fixed/unrelated nodes must not invalidate all 1,000 edge paths on every
       // frame. Cytoscape position setters dirty renderer caches even at rest.
@@ -57,17 +86,7 @@ export function GraphView(props: Props) {
       host.dataset.motion = scheduler.active ? 'active' : 'sleeping';
       host.dataset.physicsTicks = String(ticks);
       memory.visual = positions();
-      const selected = latest.current.selected;
-      const neighbors = new Set(latest.current.edges.flatMap(edge => edge.source === selected ? [edge.target] : edge.target === selected ? [edge.source] : []));
-      const working = new Set(latest.current.nodes.filter(isCurrentWorking).map(node => node.id));
-      if (markers.current) markers.current.replaceChildren(...[...new Set([...neighbors, ...working])].flatMap(id => {
-        const node = cy.getElementById(id); if (!node.length) return [];
-        const point = node.renderedPosition(), marker = document.createElement('span');
-        marker.className = `graph-cue${working.has(id) ? ' working' : ''}${neighbors.has(id) ? ' neighbor' : ''}`;
-        marker.setAttribute('data-cue', `${working.has(id) ? 'working ' : ''}${neighbors.has(id) ? 'one-hop' : ''}`.trim());
-        marker.dataset.key = `${working.has(id) ? `working:${id}` : ''}${neighbors.has(id) ? ` neighbor:${id}` : ''}`;
-        marker.style.transform = `translate(${point.x}px, ${point.y}px)`; return [marker];
-      }));
+      syncCues();
     };
     const scheduler = new MotionScheduler({ now: () => performance.now(), request: callback => requestAnimationFrame(callback), cancel: frame => cancelAnimationFrame(frame) }, paint);
     scheduler.visibility(document.hidden);
@@ -125,7 +144,7 @@ export function GraphView(props: Props) {
       }, nodes.length > 100 ? 1 : 2);
     };
     const rememberCamera = () => { if (fitted) memory.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } }; };
-    const viewport = () => { rememberCamera(); clearTimeout(zoomTimer); zoomTimer = setTimeout(() => { readableLabels(cy); setZoom(cy.zoom()); }, 100); };
+    const viewport = () => { rememberCamera(); invalidateCues(); clearTimeout(zoomTimer); zoomTimer = setTimeout(() => { readableLabels(cy); setZoom(cy.zoom()); }, 100); };
     const select = (event: cytoscape.EventObject) => latest.current.onSelect(event.target.id());
     const toggle = (event: cytoscape.EventObject) => latest.current.onToggle(event.target.id());
     const grab = (event: cytoscape.EventObject) => { cancel(); dragging = event.target.id(); };
@@ -140,7 +159,7 @@ export function GraphView(props: Props) {
       const id = event.target.id(), point = { ...event.target.position() };
       pins().set(id, point); memory.positions.set(id, point); dragging = undefined; activate(id);
     };
-    const visibility = () => { scheduler.visibility(document.hidden); markers.current?.classList.toggle('hidden', document.hidden); };
+    const visibility = () => { scheduler.visibility(document.hidden); markers.current?.classList.toggle('hidden', document.hidden); if (!document.hidden) invalidateCues(); };
     const preference = () => { if (media.matches) { cancel(); activate(); } else activate(); };
     control.current = {
       sync() {
@@ -174,7 +193,7 @@ export function GraphView(props: Props) {
           performance.measure('graph.initial-sync', { start: syncStart, end: performance.now() });
         }
       },
-      selection() { highlight(cy, latest.current.selected); if (latest.current.selected) activate(); else restore(); },
+      selection() { highlight(cy, latest.current.selected); invalidateCues(); if (latest.current.selected) activate(); else restore(); },
       pause() { if (latest.current.paused) cancel(); else if (pendingReturn) restore(pendingReturn); else activate(); },
       command() {
         const { command, nodes, edges } = latest.current;
@@ -191,15 +210,17 @@ export function GraphView(props: Props) {
       },
     };
     cy.on('tap', 'node, edge', select); cy.on('dbltap', 'node', toggle);
-    cy.on('zoom', viewport); cy.on('pan', rememberCamera);
+    cy.on('zoom pan', viewport); cy.on('position', 'node', invalidateCues);
     cy.on('grab', 'node', grab); cy.on('drag', 'node', drag); cy.on('dragfree', 'node', release);
     document.addEventListener('visibilitychange', visibility); media.addEventListener('change', preference);
-    const resize = new ResizeObserver(() => cy.resize()); resize.observe(host);
+    const resize = new ResizeObserver(() => { cy.resize(); invalidateCues(); }); resize.observe(host);
     return () => {
       rememberCamera(); cancel(); resize.disconnect(); clearTimeout(zoomTimer);
+      if (cueFrame !== undefined) cancelAnimationFrame(cueFrame);
+      cues.clear();
       document.removeEventListener('visibilitychange', visibility); media.removeEventListener('change', preference);
       cy.off('tap', 'node, edge', select); cy.off('dbltap', 'node', toggle);
-      cy.off('zoom', viewport); cy.off('pan', rememberCamera);
+      cy.off('zoom pan', viewport); cy.off('position', 'node', invalidateCues);
       cy.off('grab', 'node', grab); cy.off('drag', 'node', drag); cy.off('dragfree', 'node', release);
       cy.destroy(); control.current = undefined;
     };

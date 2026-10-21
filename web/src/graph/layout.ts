@@ -1,38 +1,72 @@
 import type { Entity } from '../../shared/graph.js';
 import type { GraphEdge } from './elements.js';
+import { nodeRadius } from './physics.js';
 
 export type Position = { x: number; y: number };
 
-// CiSE compatibility is tested, but it places the epic on the perimeter too.
-// Constrained radial placement keeps a real circular hub and explicit child edges.
+/** Seed each evidenced connected component locally, then pack components without overlap. */
 export function orbitalLayout(nodes: Entity[], edges: GraphEdge[]): Map<string, Position> {
-  const positions = new Map<string, Position>();
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-  const epics = ordered.filter(node => node.kind === 'epic');
-  const tasks = new Set(ordered.filter(node => node.kind === 'task').map(node => node.id));
-  const childrenByEpic = new Map(epics.map(epic => [epic.id, new Set<string>()]));
-  for (const edge of edges) if (edge.kind === 'contains' && tasks.has(edge.target)) childrenByEpic.get(edge.source)?.add(edge.target);
-  const groups = epics.map(epic => ({ epic, children: [...childrenByEpic.get(epic.id)!].sort() }));
-  const radiusFor = (count: number) => 205 + Math.max(0, Math.ceil(count / 10) - 1) * 145;
-  const spacing = Math.max(570, ...groups.map(group => 2 * radiusFor(group.children.length) + 220));
-  const columns = Math.max(1, Math.ceil(Math.sqrt(groups.length)));
-  groups.forEach(({ epic, children }, index) => {
-    const center = { x: (index % columns) * spacing, y: Math.floor(index / columns) * spacing };
-    positions.set(epic.id, center);
-    children.forEach((id, child) => {
-      if (positions.has(id)) return;
-      const ring = Math.floor(child / 10);
-      const count = Math.min(10, children.length - ring * 10);
-      const angle = (child % 10) * 2 * Math.PI / count - Math.PI / 2;
-      const radius = 205 + ring * 145;
-      positions.set(id, { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius });
-    });
-  });
-  const resourceY = Math.max(0, ...[...positions.values()].map(position => position.y)) + 220;
-  const remaining = ordered.filter(node => !positions.has(node.id));
-  const resourceColumns = Math.max(5, Math.ceil(Math.sqrt(remaining.length)));
-  remaining.forEach((node, index) => {
-    positions.set(node.id, { x: (index % resourceColumns) * 255, y: resourceY + Math.floor(index / resourceColumns) * 210 });
-  });
-  return positions;
+  const byId = new Map(ordered.map(node => [node.id, node]));
+  const adjacent = new Map(ordered.map(node => [node.id, new Set<string>()]));
+  for (const edge of edges) {
+    if (edge.source === edge.target || !adjacent.has(edge.source) || !adjacent.has(edge.target)) continue;
+    adjacent.get(edge.source)!.add(edge.target);
+    adjacent.get(edge.target)!.add(edge.source);
+  }
+  const seen = new Set<string>();
+  const components: { points: Map<string, Position>; width: number; height: number }[] = [];
+  for (const first of ordered) {
+    if (seen.has(first.id)) continue;
+    const members: string[] = [], queue = [first.id];
+    seen.add(first.id);
+    for (let index = 0; index < queue.length; index++) {
+      const id = queue[index]; members.push(id);
+      for (const neighbor of [...adjacent.get(id)!].sort()) if (!seen.has(neighbor)) {
+        seen.add(neighbor); queue.push(neighbor);
+      }
+    }
+    // An epic is the ownership-aware root when one belongs to this component.
+    const root = members.filter(id => byId.get(id)!.kind === 'epic').sort()[0] ?? members.sort()[0];
+    const distances = new Map([[root, 0]]), frontier = [root];
+    for (let index = 0; index < frontier.length; index++) {
+      const id = frontier[index];
+      for (const neighbor of [...adjacent.get(id)!].sort()) if (!distances.has(neighbor)) {
+        distances.set(neighbor, distances.get(id)! + 1); frontier.push(neighbor);
+      }
+    }
+    const rings = new Map<number, string[]>();
+    for (const id of members) {
+      const distance = distances.get(id)!;
+      rings.set(distance, [...(rings.get(distance) ?? []), id]);
+    }
+    const points = new Map<string, Position>([[root, { x: 0, y: 0 }]]);
+    let radius = nodeRadius(byId.get(root)!);
+    for (const distance of [...rings.keys()].filter(value => value > 0).sort((a, b) => a - b)) {
+      const ring = rings.get(distance)!.sort();
+      const largest = Math.max(...ring.map(id => nodeRadius(byId.get(id)!)));
+      radius = Math.max(radius + largest * 2 + 48, ring.length * (largest * 2 + 20) / (2 * Math.PI));
+      ring.forEach((id, index) => {
+        const angle = index * Math.PI * 2 / ring.length - Math.PI / 2;
+        points.set(id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+      });
+    }
+    const left = Math.min(...members.map(id => points.get(id)!.x - nodeRadius(byId.get(id)!)));
+    const right = Math.max(...members.map(id => points.get(id)!.x + nodeRadius(byId.get(id)!)));
+    const top = Math.min(...members.map(id => points.get(id)!.y - nodeRadius(byId.get(id)!)));
+    const bottom = Math.max(...members.map(id => points.get(id)!.y + nodeRadius(byId.get(id)!)));
+    for (const point of points.values()) { point.x -= left; point.y -= top; }
+    components.push({ points, width: right - left, height: bottom - top });
+  }
+  const result = new Map<string, Position>();
+  const area = components.reduce((total, group) => total + (group.width + 90) * (group.height + 90), 0);
+  const rowLimit = Math.max(400, Math.sqrt(area) * 1.5);
+  let x = 0, y = 0, rowHeight = 0;
+  for (const group of components) {
+    if (x > 0 && x + group.width > rowLimit) { x = 0; y += rowHeight + 90; rowHeight = 0; }
+    for (const [id, point] of group.points) result.set(id, { x: point.x + x, y: point.y + y });
+    x += group.width + 90;
+    rowHeight = Math.max(rowHeight, group.height);
+  }
+  return result;
 }
