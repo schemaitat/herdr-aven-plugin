@@ -21,8 +21,8 @@ const nonce = randomBytes(24).toString('base64');
 secure(app, address.origin, undefined, process.argv.includes('--dev') ? nonce : undefined);
 const lifetime = new AbortController();
 const run = createRunner(config.scope, undefined, lifetime.signal);
-const manager = projectManager(projectRegistry(config.scope, run), project => {
-  const scoped = projectConfig(config, project);
+const manager = projectManager(projectRegistry(config.scope, run), async project => {
+  const scoped = await projectConfig(config, project);
   const controller = new AbortController();
   const reader = createRunner(scoped.scope, undefined, controller.signal);
   // Each collector owns its own event connection. Closing one cannot cancel another's stream.

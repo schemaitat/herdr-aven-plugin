@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { avenSource, taskSchema } from '../server/sources/aven.js';
 import { readDispatcher, boundedJsonFile } from '../server/sources/dispatcher.js';
 import { readHerdr } from '../server/sources/herdr.js';
-import { primaryCheckout, startupConfig } from '../server/config.js';
+import { configuredProjectCheckouts, primaryCheckout, startupConfig } from '../server/config.js';
 import { fixture, scope, avenFixture, scratchRoot } from './fixtures.js';
 import { LIST_LIMIT, type ReadCommand, type Runner } from '../server/commands.js';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -135,11 +135,21 @@ it('resolves linked primary checkout and explicit relative store without opening
     await writeFile(join(linked, '.git'), `gitdir: ${primary}/.git/worktrees/phase\n`);
     await writeFile(join(primary, '.git/worktrees/phase/commondir'), '../..\n');
     expect(await primaryCheckout(linked)).toBe(primary);
-    const config = await startupConfig({ AVEN_DISPATCH_STORE: 'custom/state.json' }, linked);
+    const config = await startupConfig({ AVEN_DISPATCH_STORE: 'custom/state.json', UI_PROJECT_CHECKOUTS: JSON.stringify({ other: primary }) }, linked);
     expect(config.storePath).toBe(join(linked, 'custom/state.json'));
+    expect(config.projectCheckouts.get('other')).toBe(primary);
     expect((await startupConfig({}, linked)).storePath).toBe(join(primary, '.aven-dispatch/state.json'));
     await writeFile(join(temp, 'data.json'), JSON.stringify({ valid: true }));
     expect(await boundedJsonFile(join(temp, 'data.json'))).toEqual({ valid: true });
     await expect(boundedJsonFile(join(temp, 'data.json'), 2)).rejects.toThrow('bounds');
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});
+it('accepts only bounded absolute server-configured project checkout mappings', async () => {
+  const temp = await mkdtemp(join(scratchRoot, 'explorer-config-'));
+  try {
+    await expect(configuredProjectCheckouts(JSON.stringify({ demo: temp }))).resolves.toEqual(new Map([['demo', temp]]));
+    await expect(configuredProjectCheckouts(JSON.stringify({ '../escape': temp }))).rejects.toThrow('Invalid');
+    await expect(configuredProjectCheckouts(JSON.stringify({ demo: 'relative/path' }))).rejects.toThrow('Invalid');
+    await expect(configuredProjectCheckouts('{not json')).rejects.toThrow();
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
