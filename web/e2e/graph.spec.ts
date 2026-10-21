@@ -112,6 +112,14 @@ test('cue bounds track rendered geometry after pan, zoom and static selection', 
   await check();
   await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   await check();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  const dragPoint = await point(page, 'task:a');
+  await page.mouse.move(dragPoint.x, dragPoint.y); await page.mouse.down();
+  await page.mouse.move(dragPoint.x + 50, dragPoint.y + 30, { steps: 4 });
+  await check();
+  await page.mouse.up();
+  await check();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   await check();
   await page.locator('.graph-canvas').evaluate(element => {

@@ -102,6 +102,17 @@ describe('copied, seeded bounded forces', () => {
       expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeGreaterThanOrEqual(nodeRadius(a) + nodeRadius(b) - .1);
     }
   });
+  test('dense coincident mixed bodies separate without moving an explicit pin', () => {
+    const fixture = largeGraph(), dense = fixture.nodes.slice(0, 500);
+    const seeds = new Map(dense.map(node => [node.id, { x: 0, y: 0 }]));
+    const pins = new Map([[dense[0].id, { x: 0, y: 0 }]]);
+    const points = clearOverlaps(dense, seeds, pins);
+    expect(points.get(dense[0].id)).toEqual(pins.get(dense[0].id));
+    for (let i = 0; i < dense.length; i++) for (let j = i + 1; j < dense.length; j++) {
+      const a = dense[i], b = dense[j], p = points.get(a.id)!, q = points.get(b.id)!;
+      expect(Math.hypot(p.x - q.x, p.y - q.y) - nodeRadius(a) - nodeRadius(b)).toBeGreaterThanOrEqual(-.01);
+    }
+  });
   test('status, labels, heartbeat and ordering are not topology changes', () => {
     expect(topologyKey(nodes, edges)).toBe(topologyKey([...nodes].reverse().map(node => ({ ...node, label: 'new', state: 'done' })), [...edges].reverse()));
     expect(topologyKey(nodes, edges)).not.toBe(topologyKey(nodes.slice(1), edges));

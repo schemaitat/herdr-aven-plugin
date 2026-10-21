@@ -18,6 +18,27 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
   const result = copy(positions);
   for (const [id, point] of pins) if (result.has(id)) result.set(id, { ...point });
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+  // Dense identical seeds cannot be separated by pairwise relaxation within
+  // the bounded frame budget. Give only those degeneracies a deterministic,
+  // radius-aware grid; leave ordinary geometry and manual pins untouched.
+  const coincident = new Map<string, Entity[]>();
+  for (const node of ordered) {
+    const point = result.get(node.id)!;
+    const key = `${point.x}:${point.y}`;
+    if (!coincident.has(key)) coincident.set(key, []);
+    coincident.get(key)!.push(node);
+  }
+  for (const group of coincident.values()) {
+    const movable = group.filter(node => !pins.has(node.id));
+    if (movable.length < 8) continue;
+    const center = result.get(group[0].id)!;
+    const spacing = Math.max(...group.map(nodeRadius)) * 2 + 4;
+    const columns = Math.ceil(Math.sqrt(movable.length));
+    movable.forEach((node, index) => result.set(node.id, {
+      x: center.x + (index % columns + 1) * spacing,
+      y: center.y + Math.floor(index / columns) * spacing,
+    }));
+  }
   for (let pass = 0; pass < 96; pass++) {
     let overlap = false;
     for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
@@ -26,7 +47,12 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
       let dx = q.x - p.x, dy = q.y - p.y, distance = Math.hypot(dx, dy);
       if (distance >= minimum - 0.01 || pins.has(a.id) && pins.has(b.id)) continue;
       overlap = true;
-      if (distance < 0.0001) { dx = 1; dy = 0; distance = 1; }
+      if (distance < 0.0001) {
+        // A common x-axis for coincident seeds creates an unresolvable pile
+        // in dense graphs. Spread exact ties by stable pair order instead.
+        const angle = (i * ordered.length + j) * 2.399963229728653;
+        dx = Math.cos(angle); dy = Math.sin(angle); distance = 1;
+      }
       const move = (minimum - distance + 0.02) / (pins.has(a.id) || pins.has(b.id) ? 1 : 2);
       if (!pins.has(a.id)) { p.x -= dx / distance * move; p.y -= dy / distance * move; }
       if (!pins.has(b.id)) { q.x += dx / distance * move; q.y += dy / distance * move; }
