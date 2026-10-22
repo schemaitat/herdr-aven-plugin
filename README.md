@@ -139,7 +139,14 @@ expands source collection.
 
 **Graph guide.** Large violet circular epic hubs and smaller blue task bubbles
 seed deterministic evidenced connected groups, packed apart from unrelated
-components. Shapes
+components. The overview is radial by kind: epic hubs at the centre, then tasks,
+attempts, agents, sessions, panes/worktrees, and finally workspace or boundary
+resources on successive rings. Nodes of one kind share a ring; an epic's children
+stay grouped in one arc facing it, and sibling tasks are ordered around the ring
+by recorded **blocks** relationships so blocker direction is readable and
+crossings stay low. A same-kind blocker cycle is ordered deterministically
+without changing the direction drawn by any edge.
+Shapes
 distinguish agents, attempts, sessions, panes and worktrees; labels include the
 entity kind and source state, so color is never the only cue. The expandable
 legend explains each relationship: containment ends in a circle; **blocks**
@@ -162,9 +169,10 @@ previous camera. If its anchor leaves the eligible scope, focus clears with an
 announcement. Use an epic's explicit list button to collapse/expand. Collapsed
 external relationships are explicitly summarized at the hub, not invented;
 internal blockers remain in details.
-Focused components arrange by deterministic undirected shortest-hop shells around
-the explicit focus anchor (computed before collapse/cap); selecting a different
-entity while focused does not reanchor it. An explicit focus action does.
+Focused components re-apply the kind-ranked radial placement to the component and
+fit the camera, so double-clicking an entity shows the ranking instead of shortest-hop
+shells. Pins still win. Selecting a different entity while focused does not
+reanchor or re-rank it; an explicit focus action does.
 The 500-node cap can promote an eligible anchor
 without changing the cap. Updates do not reset the camera, selection or manually positioned nodes. Window
 resizing also preserves the camera: use **Fit graph** after narrowing a window.
@@ -175,15 +183,20 @@ animations.
 
 **Motion:** bounded, damped d3-force springs react to real relationships,
 with many-body repulsion, radius-aware collision avoidance and weak deterministic
-orbital anchors to preserve epic groups. Selection anchors a tighter immediate
+kind-ranked radial anchors (epic → task → attempt → agent → session → pane/worktree →
+workspace/boundary) that preserve epic groups. Selection anchors a tighter immediate
 neighborhood while unrelated nodes stay at their settled overview positions.
 Clearing selection changes highlights only; leaving component focus returns to the saved overview
 without cumulative drift. Search Escape restores the pre-preview geometry and
 camera. Physical proximity never creates source relationships or changes state,
 direction, provenance, execution activity or task acceptance.
 
-Dragging fixes the grabbed node to the pointer while connected neighbors follow
-elastically. Release leaves a **manual pin until Reset positions**, surviving
+Dragging fixes the grabbed node to the pointer and its direct neighbours follow
+elastically. On release the node stays pinned and those neighbours settle close
+on radius-aware arcs around it — same kinds flanking, each lower kind on a
+successive arc above and each higher kind on an arc below — while every
+unconnected node stays exactly where it was. Release leaves
+a **manual pin until Reset positions**, surviving
 ordinary refreshes and filter hide/reveal. Pins take precedence over automatic
 forces; overlapping user pins intentionally remain fixed. **Reset positions**
 clears all saved positions/pins and restores the deterministic baseline.

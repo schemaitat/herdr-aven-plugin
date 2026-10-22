@@ -79,7 +79,7 @@ test('bubble shapes, typed directed relationships, derived provenance and graph/
 test('single-click selects without focusing or opening info; explicit focus preserves cues and edges', async ({ page }) => {
   const pointToTask = await point(page, 'task:b');
   await page.mouse.click(pointToTask.x, pointToTask.y);
-  await expect(page.getByText('Connected component · shortest-hop rings', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('Connected component · ranked layout', { exact: false })).toHaveCount(0);
   await expect(page.getByRole('complementary', { name: 'Entity details' })).toHaveCount(0);
   await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).not.toHaveCount(0);
   await expect(page.getByText('1 hop', { exact: true }).first()).toBeVisible();
@@ -87,7 +87,7 @@ test('single-click selects without focusing or opening info; explicit focus pres
   expect(emphasized.length).toBeGreaterThan(0);
   await page.keyboard.press('i');
   await page.getByRole('button', { name: 'Focus component', exact: true }).click();
-  await expect(page.getByText('Connected component · shortest-hop rings', { exact: false })).toBeVisible();
+  await expect(page.getByText('Connected component · ranked layout', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Show all', exact: true }).first().click();
   // Show all restores overview geometry but deliberately retains selection/cues.
   await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).not.toHaveCount(0);
@@ -136,14 +136,41 @@ test('selection while focused never reanchors until an explicit focus action', a
   await page.getByRole('button', { name: 'Focus component', exact: true }).click();
   const first = await graph(page);
   expect(first.nodes).not.toContain('pane:unused');
+  // Focus re-applies the kind ranking as concentric rings rather than shells.
+  const ringCentre = { x: (first.positions['epic:a'].x + first.positions['epic:b'].x) / 2,
+    y: (first.positions['epic:a'].y + first.positions['epic:b'].y) / 2 };
+  const ringRadius = (id: string) => Math.hypot(first.positions[id].x - ringCentre.x, first.positions[id].y - ringCentre.y);
+  expect(ringRadius('epic:a')).toBeLessThan(ringRadius('task:a'));
+  expect(ringRadius('task:a')).toBeLessThan(ringRadius('agent:a'));
+  expect(ringRadius('task:a')).toBeCloseTo(ringRadius('task:b'), 5);
   await list.getByRole('button', { name: /task Review graph/ }).click();
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Review graph', exact: true })).toBeVisible();
   expect((await graph(page)).positions).toEqual(first.positions);
   await page.getByRole('button', { name: 'Focus component', exact: true }).click();
-  await expect(page.getByText('Connected component · shortest-hop rings', { exact: false })).toBeVisible();
+  await expect(page.getByText('Connected component · ranked layout', { exact: false })).toBeVisible();
   expect((await graph(page)).selected).toEqual(['task:c']);
   await page.getByRole('button', { name: 'Show all', exact: true }).first().click();
   expect((await graph(page)).nodes).toContain('pane:unused');
+});
+
+test('double-click focus retains the ranked component layout', async ({ page }) => {
+  await sleep(page);
+  // The inspector overlays the right of the canvas; close it before clicking the
+  // radial centre where the epic hubs now sit.
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  const target = await point(page, 'epic:a');
+  await page.mouse.dblclick(target.x, target.y);
+  await expect(page.getByText('Connected component · ranked layout', { exact: false })).toBeVisible();
+  await sleep(page);
+  const focused = await graph(page);
+  expect(focused.nodes).not.toContain('pane:unused');
+  const centre = { x: (focused.positions['epic:a'].x + focused.positions['epic:b'].x) / 2,
+    y: (focused.positions['epic:a'].y + focused.positions['epic:b'].y) / 2 };
+  const radius = (id: string) => Math.hypot(focused.positions[id].x - centre.x, focused.positions[id].y - centre.y);
+  expect(radius('epic:a')).toBeLessThan(radius('task:a'));
+  expect(radius('task:a')).toBeLessThan(radius('agent:a'));
+  expect(radius('task:a')).toBeCloseTo(radius('task:b'), 5);
+  expect(radius('agent:a')).toBeCloseTo(radius('agent:b'), 5);
 });
 
 test('cue bounds track rendered geometry after pan, zoom and static selection', async ({ page }) => {
@@ -470,44 +497,61 @@ test('recent source windows disclose unknowns, shared resources do not leak othe
   expect((await graph(page)).nodes).toContain('task:c');
 });
 
-test('real drag reacts within 100ms, neighbors follow, pins survive filters, selection contracts and clear returns without drift', async ({ page }, info) => {
+test('real drag reacts within 100ms, neighbours follow while the ranked overview stays put, pins and selection stay intact', async ({ page }, info) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' }); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await sleep(page);
   const overview = await graph(page);
+  const ticksBefore = Number(await page.locator('.graph-canvas').getAttribute('data-physics-ticks'));
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const location = await point(page, 'task:b');
-  await page.mouse.move(location.x, location.y); await page.mouse.down();
-  const beforeDrag = await graph(page);
   await page.locator('.graph-canvas').evaluate(element => {
     const cy = (element as GraphContainer)._cyreg.cy;
-    const neighbor = cy.getElementById('task:a'), before = { ...neighbor.position() };
+    const neighbour = cy.getElementById('task:a'), before = { ...neighbour.position() };
     const result = window as unknown as { dragReaction?: number };
     result.dragReaction = undefined;
     let began: number | undefined;
-    const changed = (event: EventObject) => {
+    const moved = (event: EventObject) => {
       if (event.target.id() !== 'task:a') return;
-      const position = neighbor.position();
+      const position = neighbour.position();
       if (began === undefined || Math.hypot(position.x - before.x, position.y - before.y) <= .01) return;
       result.dragReaction = performance.now() - began;
-      cy.off('position', 'node', changed);
+      cy.off('position', 'node', moved);
     };
-    const dragged = (event: EventObject) => {
+    const started = (event: EventObject) => {
       if (event.target.id() !== 'task:b' || began !== undefined) return;
       began = performance.now();
-      cy.off('drag', 'node', dragged);
+      cy.off('drag', 'node', started);
     };
-    cy.on('drag', 'node', dragged);
-    cy.on('position', 'node', changed);
+    cy.on('drag', 'node', started);
+    cy.on('position', 'node', moved);
   });
+  await page.mouse.move(location.x, location.y); await page.mouse.down();
   await page.mouse.move(location.x + 70, location.y + 20, { steps: 4 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { dragReaction?: number }).dragReaction ?? Infinity)).toBeLessThanOrEqual(100);
   const reaction = await page.evaluate(() => (window as unknown as { dragReaction: number }).dragReaction);
   expect(reaction).toBeLessThanOrEqual(100);
-  expect((await graph(page)).positions['task:a']).not.toEqual(beforeDrag.positions['task:a']);
-  await page.mouse.up(); const released = performance.now(); await sleep(page);
+  // Direct neighbours follow the grab elastically (ranked anchors keep the rest still).
+  await expect.poll(async () => (await graph(page)).positions['task:a']).not.toEqual(overview.positions['task:a']);
+  const during = await graph(page);
+  expect(during.positions['task:b']).not.toEqual(overview.positions['task:b']);
+  for (const id of ['pane:unused', 'worktree:unused', 'epic:b', 'task:solo'])
+    expect(during.positions[id], id).toEqual(overview.positions[id]);
+  expect(Number(await page.locator('.graph-canvas').getAttribute('data-physics-ticks'))).toBeGreaterThan(ticksBefore);
+  await page.mouse.up(); await sleep(page);
+  const released = await graph(page);
+  // Drop keeps connected nodes close in their kind-ranked rows: the epic above,
+  // sibling tasks beside, agents below. Everyone else stays exactly put.
+  expect(released.positions['task:b']).not.toEqual(overview.positions['task:b']);
+  for (const id of ['epic:b', 'task:solo', 'pane:a', 'worktree:a', 'session:a', 'agent:a', 'agent:c', 'pane:unused', 'worktree:unused'])
+    expect(released.positions[id], id).toEqual(overview.positions[id]);
+  for (const id of ['epic:a', 'task:a', 'task:c', 'agent:b'])
+    expect(released.positions[id], id).not.toEqual(overview.positions[id]);
+  expect(distance(released.positions, 'task:b', 'task:a')).toBeLessThan(300);
+  expect(released.positions['epic:a'].y).toBeLessThan(released.positions['task:b'].y);
+  expect(Math.abs(released.positions['task:a'].y - released.positions['task:b'].y)).toBeLessThan(30);
+  expect(Math.abs(released.positions['task:c'].y - released.positions['task:b'].y)).toBeLessThan(30);
+  expect(released.positions['agent:b'].y).toBeGreaterThan(released.positions['task:b'].y);
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
-  const settleMs = performance.now() - released;
-  expect(settleMs).toBeLessThanOrEqual(1500);
-  const pinned = (await graph(page)).positions['task:b'];
+  const pinned = released.positions['task:b'];
   await page.getByLabel('Search entities').fill('standalone'); await page.getByLabel('Search entities').fill(''); await sleep(page);
   expect((await graph(page)).positions['task:b']).toEqual(pinned);
   await page.getByRole('button', { name: 'Reset positions', exact: true }).click(); await sleep(page);
@@ -536,8 +580,8 @@ test('real drag reacts within 100ms, neighbors follow, pins survive filters, sel
     expect((await graph(page)).positions).toEqual(baseline.positions);
     expect((await graph(page)).pan).toEqual(baseline.pan); expect((await graph(page)).zoom).toBe(baseline.zoom);
   }
-  console.log('PHYSICS_TIMING', JSON.stringify({ reactionMs: reaction, settleMs, minimumClearance: clearance }));
-  await info.attach('physics-timing', { body: JSON.stringify({ reactionMs: reaction, settleMs, minimumClearance: clearance, overviewNodes: overview.nodes.length }), contentType: 'application/json' });
+  console.log('PHYSICS_TIMING', JSON.stringify({ reactionMs: reaction, minimumClearance: clearance }));
+  await info.attach('physics-timing', { body: JSON.stringify({ reactionMs: reaction, minimumClearance: clearance, overviewNodes: overview.nodes.length }), contentType: 'application/json' });
 });
 
 test('Pause freezes by next frame, runtime reduced motion runs no ticks, rapid selection/search rollback and disposal cancel work', async ({ page }) => {

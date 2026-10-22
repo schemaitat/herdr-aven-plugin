@@ -85,7 +85,14 @@ test('same-turn dense projection and reset controls use the latest identities/po
   await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().length)).toBe(480);
   const projected = projectGraph(fixture, { ...defaultFilters(), kinds: new Set(['task']) }, new Set(), Date.parse(fixture.observedAt));
   const expected = Object.fromEntries(orbitalLayout(projected.nodes, projected.edges));
-  expect(await page.locator('.graph-canvas').evaluate(element => Object.fromEntries((element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().map(node => [node.id(), node.position()])))).toEqual(expected);
+  const actual = await page.locator('.graph-canvas').evaluate(element => Object.fromEntries((element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().map(node => [node.id(), node.position()])));
+  expect(Object.keys(actual).sort()).toEqual(Object.keys(expected).sort());
+  // Radial trigonometry can differ in the last bits between Node's and the
+  // browser's V8; geometry identity is asserted to six decimals.
+  for (const [id, position] of Object.entries(expected)) {
+    expect(actual[id].x, id).toBeCloseTo(position.x, 6);
+    expect(actual[id].y, id).toBeCloseTo(position.y, 6);
+  }
   expect(errors).toEqual([]);
 });
 

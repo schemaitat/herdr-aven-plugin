@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import cytoscape, { type Core } from 'cytoscape';
 import type { Entity } from '../../shared/graph.js';
 import { elements, type GraphEdge } from './elements.js';
-import { orbitalLayout, type Position } from './layout.js';
+import { orbitalLayout, settleNeighbourhood, type Position } from './layout.js';
 import { highlight, syncElements, type GraphMemory } from './interactions.js';
 import { clearOverlaps, GraphPhysics, MotionScheduler, selectionTargets, topologyKey } from './physics.js';
 import { styles } from './styles.js';
-import { hopRingTargets } from './physics.js';
 import { nonOverlappingLabels } from './labels.js';
 import { isCurrentWorking } from './activity.js';
 
@@ -26,7 +25,7 @@ function readableLabels(cy: Core) {
 }
 type Command = { kind: 'fit' | 'reset' | 'in' | 'out' | 'restore' | 'rollback'; serial: number; camera?: GraphMemory['camera']; positions?: Map<string, Position> };
 interface Props {
-  nodes: Entity[]; edges: GraphEdge[]; selected?: string; component?: string; distances?: Map<string, number>; paused?: boolean;
+  nodes: Entity[]; edges: GraphEdge[]; selected?: string; component?: string; paused?: boolean;
   onSelect: (id: string) => void; onToggle: (id: string) => void; command: Command; memory: GraphMemory;
 }
 
@@ -43,7 +42,9 @@ export function GraphView(props: Props) {
     let fitted = Boolean(memory.camera), key = '', previousComponent = latest.current.component;
     let solver: GraphPhysics | undefined, geometry = new Map<string, Position>(), dragging: string | undefined;
     let pendingReturn: Map<string, Position> | undefined;
-    let activationPins = new Map<string, Position>();
+    // Pre-drag geometry: neighbours may react elastically, but release restores
+    // every non-dragged node to exactly where it was.
+    let dragReturn: Map<string, Position> | undefined;
     let ticks = 0, activations = 0, zoomTimer: ReturnType<typeof setTimeout>;
     let cueFrame: number | undefined;
     const cues = new Map<string, HTMLSpanElement>();
@@ -121,18 +122,30 @@ export function GraphView(props: Props) {
       }, () => { geometry = targets; pendingReturn = undefined; });
       host.dataset.motion = 'active';
     };
-    const activate = (dragAnchor?: string) => {
+    const activate = (dragAnchor?: string, override?: { targets: Map<string, Position>; fixed: Map<string, Position> }) => {
       cancel();
       pendingReturn = undefined;
       const { nodes, edges, selected, paused } = latest.current;
-      const anchor = dragAnchor ?? (latest.current.component && nodes.some(node => node.id === latest.current.component) ? latest.current.component : nodes.some(node => node.id === selected) ? selected : undefined);
-       const targets = anchor && latest.current.component && latest.current.distances?.size
-         ? hopRingTargets(nodes, latest.current.distances, anchor, memory.positions)
-         : selectionTargets(nodes, edges, memory.positions, anchor);
-      const fixedPositions = fixed(anchor);
-      activationPins = fixedPositions;
+      // Component focus re-applies the kind-ranked layout to the component (kept
+      // near the anchor's current point) instead of rotating shortest-hop shells,
+      // so double-clicking an entity retains the ranking. A drag activation keeps
+      // the pre-drag geometry as anchors and must not re-target a selection ring.
+      const focused = Boolean(latest.current.component);
+      const anchor = override || focused ? undefined : dragAnchor ?? (latest.current.component && nodes.some(node => node.id === latest.current.component) ? latest.current.component : nodes.some(node => node.id === selected) ? selected : undefined);
+      let targets: Map<string, Position> | undefined = override?.targets;
+      if (!targets) {
+        if (!focused) targets = selectionTargets(nodes, edges, memory.positions, anchor);
+        else {
+          const seeds = orbitalLayout(nodes, edges);
+          const from = latest.current.component ? seeds.get(latest.current.component) : undefined;
+          const to = latest.current.component ? memory.positions.get(latest.current.component) : undefined;
+          const dx = from && to ? to.x - from.x : 0, dy = from && to ? to.y - from.y : 0;
+          targets = new Map([...seeds].map(([id, seed]) => [id, { x: seed.x + dx, y: seed.y + dy }] as const));
+        }
+      }
+      const fixedPositions = override?.fixed ?? (focused ? new Map(pins()) : fixed(anchor));
       if (media.matches) {
-        geometry = clearOverlaps(nodes, targets, fixedPositions); saveOverview(); paint(); return;
+        geometry = clearOverlaps(nodes, targets, fixedPositions); if (!override) saveOverview(); paint(); return;
       }
       if (paused || !nodes.length) return;
       solver = new GraphPhysics(nodes, edges, positions(), targets, fixedPositions, anchor, dragging);
@@ -140,24 +153,51 @@ export function GraphView(props: Props) {
       scheduler.start(() => { const settled = solver!.tick(); ticks++; geometry = solver!.positions(); return settled; }, () => {
         solver?.stop();
         geometry = clearOverlaps(latest.current.nodes, geometry, fixedPositions);
-        saveOverview();
+        // A drag may settle while the pointer is still down; the overview must
+        // stay the ranked pre-drag geometry until release.
+        if (!override) saveOverview();
       }, nodes.length > 100 ? 1 : 2);
     };
     const rememberCamera = () => { if (fitted) memory.camera = { zoom: cy.zoom(), pan: { ...cy.pan() } }; };
     const viewport = () => { rememberCamera(); invalidateCues(); clearTimeout(zoomTimer); zoomTimer = setTimeout(() => { readableLabels(cy); setZoom(cy.zoom()); }, 100); };
     const select = (event: cytoscape.EventObject) => latest.current.onSelect(event.target.id());
     const toggle = (event: cytoscape.EventObject) => latest.current.onToggle(event.target.id());
-    const grab = (event: cytoscape.EventObject) => { cancel(); dragging = event.target.id(); };
+    const grab = (event: cytoscape.EventObject) => { cancel(); dragging = event.target.id(); dragReturn = positions(); };
+    const neighborsOf = (id: string) => new Set(latest.current.edges.flatMap(edge => edge.source === id ? [edge.target] : edge.target === id ? [edge.source] : []));
+    // Only the grabbed node and its direct neighbours may react; every other node
+    // stays pinned to the ranked pre-drag geometry. Release restores that geometry.
+    const dragFixed = () => {
+      const result = new Map(pins());
+      if (!dragging || !dragReturn) return result;
+      const neighbours = neighborsOf(dragging);
+      result.set(dragging, { ...cy.getElementById(dragging).position() });
+      for (const node of latest.current.nodes) {
+        const point = dragReturn.get(node.id);
+        if (point && node.id !== dragging && !neighbours.has(node.id) && !result.has(node.id)) result.set(node.id, { ...point });
+      }
+      return result;
+    };
     const drag = () => {
-      if (!dragging) return;
-      if (!solver || !scheduler.active) { activate(dragging); return; }
+      if (!dragging || !dragReturn) return;
+      if (!solver || !scheduler.active) {
+        activate(undefined, { targets: new Map(dragReturn), fixed: dragFixed() });
+        return;
+      }
       const point = { ...cy.getElementById(dragging).position() };
-      activationPins.set(dragging, point);
       solver.drag(dragging, point); scheduler.interact();
     };
     const release = (event: cytoscape.EventObject) => {
       const id = event.target.id(), point = { ...event.target.position() };
-      pins().set(id, point); memory.positions.set(id, point); dragging = undefined; activate(id);
+      pins().set(id, point); memory.positions.set(id, point); geometry.set(id, { ...point });
+      dragging = undefined;
+      const returnTo = dragReturn; dragReturn = undefined;
+      if (returnTo) {
+        // Dropped neighbours stay close in their kind-ranked rows; every other
+        // node returns to its pre-drag position.
+        const settled = settleNeighbourhood(latest.current.nodes, latest.current.edges, id, point, returnTo);
+        if (!latest.current.selected && !latest.current.component) for (const [nodeId, saved] of settled) memory.positions.set(nodeId, { ...saved });
+        restore(settled);
+      } else paint();
     };
     const visibility = () => { scheduler.visibility(document.hidden); markers.current?.classList.toggle('hidden', document.hidden); if (!document.hidden) invalidateCues(); };
     const preference = () => { if (media.matches) { cancel(); activate(); } else activate(); };
@@ -166,6 +206,10 @@ export function GraphView(props: Props) {
         const { nodes, edges, component } = latest.current;
         const nextKey = topologyKey(nodes, edges), changedMemory = memory !== latest.current.memory;
         const changed = nextKey !== key, componentExit = Boolean(previousComponent && !component), componentEntry = Boolean(component && component !== previousComponent);
+        // A remount after List only/Show graph has no canvas nodes but keeps the
+        // remembered visual geometry; restore it exactly instead of reheating the
+        // seed anchors (which would drift unpinned nodes between mounts).
+        const remount = changed && !cy.nodes().length && Boolean(memory.visual);
         const initial = !fitted && nodes.length > 0;
         const layoutStart = performance.now();
         if (changed || changedMemory) cancel();
@@ -180,6 +224,7 @@ export function GraphView(props: Props) {
         highlight(cy, latest.current.selected);
         if (changedMemory) restore(memory.visual ?? memory.positions);
         else if (componentExit) restore();
+        else if (remount) restore(memory.visual ?? memory.positions);
         else if (changed || componentEntry) activate();
         key = nextKey; previousComponent = component;
         if (!fitted && nodes.length) { cy.resize(); cy.fit(undefined, 50); fitted = true; }
@@ -225,7 +270,7 @@ export function GraphView(props: Props) {
       cy.destroy(); control.current = undefined;
     };
   }, []);
-  useEffect(() => control.current?.sync(), [props.nodes, props.edges, props.memory, props.component, props.distances]);
+  useEffect(() => control.current?.sync(), [props.nodes, props.edges, props.memory, props.component]);
   const firstSelection = useRef(true), firstPause = useRef(true);
   useEffect(() => { if (firstSelection.current) { firstSelection.current = false; return; } control.current?.selection(); }, [props.selected]);
   useEffect(() => { if (firstPause.current) { firstPause.current = false; return; } control.current?.pause(); }, [props.paused]);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { ACTIVATION_MS, clearOverlaps, GraphPhysics, hopRingTargets, MotionScheduler, nodeRadius, selectionTargets, topologyKey, type FrameClock } from '../src/graph/physics.js';
+import { ACTIVATION_MS, clearOverlaps, GraphPhysics, MotionScheduler, nodeRadius, selectionTargets, topologyKey, type FrameClock } from '../src/graph/physics.js';
 import { orbitalLayout } from '../src/graph/layout.js';
 import { relationships } from '../src/graph/elements.js';
 import { graphFixture } from './fixtures/graph-snapshot.js';
@@ -11,13 +11,6 @@ const baseline = new Map([['task:a', { x: 0, y: 0 }], ['task:b', { x: 400, y: 0 
 function run(solver: GraphPhysics, count = 120) { for (let i = 0; i < count; i++) solver.tick(); return solver.positions(); }
 
 describe('copied, seeded bounded forces', () => {
-  test('shortest-hop shells are deterministic and preserve the anchor', () => {
-    const distances = new Map([['task:a', 0], ['task:b', 1], ['task:solo', 2]]);
-    const targets = hopRingTargets(nodes, distances, 'task:a', baseline);
-    expect(targets.get('task:a')).toEqual(baseline.get('task:a'));
-    expect(Math.hypot(targets.get('task:b')!.x, targets.get('task:b')!.y)).toBeGreaterThan(150);
-    expect(hopRingTargets([...nodes].reverse(), distances, 'task:a', baseline)).toEqual(targets);
-  });
   test('relationship springs contract the selected neighborhood, unrelated positions remain exact, no source mutation', () => {
     const before = structuredClone({ nodes, edges });
     const solver = new GraphPhysics(nodes, edges, baseline, selectionTargets(nodes, edges, baseline, 'task:a'), new Map(), 'task:a');
