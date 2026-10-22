@@ -156,7 +156,11 @@ entity kind and source state, so color is never the only cue. The expandable
 legend explains each relationship: containment ends in a circle; **blocks**
 points **from blocker to blocked task**, not the reverse. Dashed derived-agent
 dependencies come only from recorded task blockers plus assignments; dashed
-assignment, dotted placement and diamond worktree endpoints stay distinct.
+assignment, fine-dot placement and diamond worktree endpoints stay distinct.
+Every directed edge carries a slow source→target dash flow while motion is
+allowed; arrowheads remain the primary, static direction cue and the flow is
+presentation only. Surfaces and unrelated elements are translucent, with larger
+radius-aware gutters between bubbles.
 Select an edge, then press **i**, for direction, source identities and evidence. No connection
 or dependency is inferred from visual proximity.
 
@@ -181,8 +185,9 @@ without changing the cap. Updates do not reset the camera, selection or manually
 resizing also preserves the camera: use **Fit graph** after narrowing a window.
 **List only** leaves the list/info route usable without a canvas. A keyboard
 skip link bypasses the graph; list buttons and related-entity buttons share the
-same selection. Focus is outlined; there are no particle/starfield or activity
-animations.
+same selection. Focus is outlined; there are no particle/starfield effects.
+Directional edge flow and selection pulses are restrained presentation cues,
+not activity claims.
 
 **Motion:** bounded, damped d3-force springs react to real relationships,
 with many-body repulsion, radius-aware collision avoidance and weak deterministic
@@ -193,16 +198,25 @@ without cumulative drift. Search Escape restores the pre-preview geometry and
 camera. Physical proximity never creates source relationships or changes state,
 direction, provenance, execution activity or task acceptance.
 
+Edge flow uses a separate throttled requestAnimationFrame overlay canvas that
+draws a short moving segment along each directed edge's rendered bezier; it never
+restyles the styled edges, ticks physics, changes positions/camera or extends the
+1,500ms activation deadline. Pause, reduced motion, hidden tabs and unmounting
+cancel that loop as well as the spring simulation. Selected entities and their
+degree-1 neighbours pulse in the DOM cue layer; the pulse is a stable static glow
+under reduced motion.
+
 Dragging fixes the grabbed node to the pointer while connected neighbors follow
 elastically. Release leaves a **manual pin until Reset positions**, surviving
 ordinary refreshes and filter hide/reveal. Pins take precedence over automatic
 forces; overlapping user pins intentionally remain fixed. **Reset positions**
 clears all saved positions/pins and restores the deterministic baseline.
 **Pause motion / Resume motion** is one keyboard-accessible toggle: Pause freezes
-the current geometry immediately; Resume allows another bounded relaxation.
-Reduced-motion preferences (including changes while the page is open) disable
-simulation and animated returns, applying stable non-overlapping geometry
-immediately instead. Fixed-pin conflicts cannot be resolved without moving pins.
+the current geometry, edge flow and cue pulse immediately; Resume allows another
+bounded relaxation. Reduced-motion preferences (including changes while the page
+is open) disable simulation, animated returns, edge flow and pulses, applying
+stable non-overlapping geometry instead. Fixed-pin conflicts cannot be resolved
+without moving pins.
 
 Physics runs on copied geometry with a seeded random source, never canonical
 records. One requestAnimationFrame scheduler manually ticks the stopped d3 timer
@@ -228,12 +242,13 @@ size; concise captions use collision suppression and full facts remain in the
 list/i-opened info surface. Opaque session, attempt and UUID-style tokens show a
 recognizable prefix plus four payload characters only; canonical identities stay
 distinct for search, evidence, requests and copying. Viewport texture caching
-and pixel ratio 1 bound canvas cost. Current linked API worker/session activity
-has a green CSS ring; direct one-hop neighbors of a selection have a static cyan
-glow plus restrained CSS pulse, a visible **1 hop** list badge, and their actual
-incident source/evidenced edges are emphasized without changing arrows/dashes.
-These CSS cues freeze for Pause, reduced motion and hidden tabs, do not wake
-physics, and may coexist without implying task acceptance.
+and pixel ratio 1 bound canvas cost; edge-flow overlay redraws are throttled well
+below the render cadence. Current linked API worker/session activity
+has a green CSS ring; the selected entity has a pulsing amber ring, and direct
+one-hop neighbors have a pulsing cyan ring, a visible **1 hop** list badge, and
+their actual incident source/evidenced edges are emphasized without changing
+arrows/dashes. These CSS cues freeze for Pause, reduced motion and hidden tabs,
+do not wake physics, and may coexist without implying task acceptance.
 
 Startup settings are trusted environment variables, never browser parameters:
 

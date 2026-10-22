@@ -7,6 +7,7 @@ import { highlight, syncElements, type GraphMemory } from './interactions.js';
 import { clearOverlaps, GraphPhysics, MotionScheduler, selectionTargets, topologyKey } from './physics.js';
 import { styles } from './styles.js';
 import { hopRingTargets } from './physics.js';
+import { cueTargets, FLOW_COLORS, FLOW_SEGMENT, FLOW_UPDATE_MS, flowPhase, motionEnabled } from './motion.js';
 import { nonOverlappingLabels } from './labels.js';
 import { isCurrentWorking } from './activity.js';
 
@@ -15,13 +16,13 @@ function readableLabels(cy: Core) {
   const zoom = cy.zoom();
   const labels = cy.nodes().map(node => {
     const point = node.renderedPosition(), text = String(node.data('label') ?? '');
-    return { id: node.id(), x: point.x, y: point.y + node.renderedOuterHeight() / 2 + 12, width: Math.max(36, text.length * 7), height: 14, priority: node.hasClass('selected') ? 2 : node.hasClass('neighbor') ? 1 : 0 };
+    return { id: node.id(), x: point.x, y: point.y + node.renderedOuterHeight() / 2 + 12, width: Math.max(36, text.length * 7.2), height: 14, priority: node.hasClass('selected') ? 2 : node.hasClass('neighbor') ? 1 : 0 };
   });
   const visible = nonOverlappingLabels(labels);
   cy.batch(() => {
-    cy.nodes().style({ 'font-size': Math.max(12, 10 / zoom), 'text-max-width': `${Math.max(120, 130 / zoom)}px` });
+    cy.nodes().style({ 'font-size': Math.max(12, 10.5 / zoom), 'text-max-width': `${Math.max(140, 150 / zoom)}px` });
     cy.nodes().forEach(node => { node.style('label', visible.has(node.id()) ? 'data(label)' : ''); });
-    cy.edges().style('font-size', Math.max(9, 8 / zoom));
+    cy.edges().style('font-size', Math.max(9, 8.5 / zoom));
   });
 }
 type Command = { kind: 'fit' | 'reset' | 'restore' | 'rollback'; serial: number; camera?: GraphMemory['camera']; positions?: Map<string, Position> };
@@ -33,6 +34,7 @@ interface Props {
 export function GraphView(props: Props) {
   const container = useRef<HTMLDivElement>(null);
   const markers = useRef<HTMLDivElement>(null);
+  const flow = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props); latest.current = props;
   const control = useRef<{ sync: () => void; selection: () => void; pause: () => void; command: () => void }>(undefined);
   const [zoom, setZoom] = useState(1);
@@ -48,23 +50,82 @@ export function GraphView(props: Props) {
     let cueFrame: number | undefined;
     const cues = new Map<string, HTMLSpanElement>();
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const flowHost = flow.current!;
+    const flowContext = flowHost.getContext('2d');
+    if (flowContext) flowContext.lineCap = 'round';
+    let flowFrame: number | undefined, flowOrigin = 0, flowPainted = -Infinity, flowWidth = 0, flowHeight = 0;
+    const flowAllowed = () => motionEnabled({ mounted: true, visible: !document.hidden, paused: Boolean(latest.current.paused), reducedMotion: media.matches });
+    const sizeFlow = () => {
+      const width = Math.max(1, Math.round(flowHost.clientWidth)), height = Math.max(1, Math.round(flowHost.clientHeight));
+      if (flowWidth === width && flowHeight === height) return;
+      flowWidth = width; flowHeight = height; flowHost.width = width; flowHost.height = height;
+    };
+    const clearFlow = () => { flowContext?.clearRect(0, 0, flowHost.width, flowHost.height); };
+    const stopFlow = () => {
+      if (flowFrame !== undefined) cancelAnimationFrame(flowFrame);
+      flowFrame = undefined; clearFlow();
+      host.dataset.edgeFlow = 'static';
+    };
+    // The overlay carries the directional drift so Cytoscape's styled edges stay
+    // static. Restyling 1,000 edges per frame would force a full canvas redraw.
+    const drawFlow = (now: number) => {
+      flowFrame = undefined;
+      if (!flowAllowed()) { stopFlow(); return; }
+      if (now - flowPainted >= FLOW_UPDATE_MS) {
+        flowPainted = now; sizeFlow();
+        const context = flowContext;
+        if (context) {
+          context.clearRect(0, 0, flowWidth, flowHeight);
+          const elapsed = now - flowOrigin;
+          let index = 0;
+          cy.edges().forEach(edge => {
+            const kind = String(edge.data('kind')), seed = index++ * 0.618033988749895;
+            if (kind === 'related') return;
+            const source = edge.renderedSourceEndpoint(), target = edge.renderedTargetEndpoint(), midpoint = edge.renderedMidpoint();
+            if (!source || !target || !midpoint) return;
+            if ((source.x < -80 && target.x < -80) || (source.x > flowWidth + 80 && target.x > flowWidth + 80)
+              || (source.y < -80 && target.y < -80) || (source.y > flowHeight + 80 && target.y > flowHeight + 80)) return;
+            // Recover the quadratic control point from the rendered midpoint so
+            // the moving dash follows the same bezier Cytoscape drew.
+            const controlX = 2 * midpoint.x - (source.x + target.x) / 2, controlY = 2 * midpoint.y - (source.y + target.y) / 2;
+            const start = 0.03 + flowPhase(elapsed, seed) * (1 - FLOW_SEGMENT - 0.09), end = start + FLOW_SEGMENT;
+            const from = 1 - start, to = 1 - end;
+            const x1 = from * from * source.x + 2 * from * start * controlX + start * start * target.x;
+            const y1 = from * from * source.y + 2 * from * start * controlY + start * start * target.y;
+            const x2 = to * to * source.x + 2 * to * end * controlX + end * end * target.x;
+            const y2 = to * to * source.y + 2 * to * end * controlY + end * end * target.y;
+            context.strokeStyle = FLOW_COLORS[kind] ?? '#8699bc';
+            context.lineWidth = 1.5; context.globalAlpha = 0.65;
+            context.beginPath(); context.moveTo(x1, y1); context.lineTo(x2, y2); context.stroke();
+          });
+          context.globalAlpha = 1;
+        }
+      }
+      flowFrame = requestAnimationFrame(drawFlow);
+    };
+    const startFlow = () => {
+      if (flowFrame !== undefined) return;
+      if (!flowAllowed()) { stopFlow(); return; }
+      sizeFlow(); flowOrigin = performance.now(); flowPainted = -Infinity;
+      host.dataset.edgeFlow = 'active';
+      flowFrame = requestAnimationFrame(drawFlow);
+    };
     const positions = () => new Map(cy.nodes().map(node => [node.id(), { ...node.position() }]));
     const syncCues = () => {
       const layer = markers.current;
       if (!layer) return;
-      const selected = latest.current.selected;
-      const neighbors = new Set(latest.current.edges.flatMap(edge => edge.source === selected && edge.target !== selected ? [edge.target] : edge.target === selected && edge.source !== selected ? [edge.source] : []));
-      const working = new Set(latest.current.nodes.filter(isCurrentWorking).map(node => node.id));
-      const visible = new Set([...neighbors, ...working]);
+      const targets = cueTargets(latest.current.nodes, latest.current.edges, latest.current.selected, latest.current.nodes.filter(isCurrentWorking).map(node => node.id));
+      const { neighbors, working, visible } = targets;
       for (const [id, cue] of cues) if (!visible.has(id) || !cy.getElementById(id).length) { cue.remove(); cues.delete(id); }
       for (const id of visible) {
         const node = cy.getElementById(id);
         if (!node.length) continue;
         let cue = cues.get(id);
         if (!cue) { cue = document.createElement('span'); cues.set(id, cue); layer.append(cue); }
-        cue.className = `graph-cue${working.has(id) ? ' working' : ''}${neighbors.has(id) ? ' neighbor' : ''}`;
-        cue.setAttribute('data-cue', `${working.has(id) ? 'working ' : ''}${neighbors.has(id) ? 'one-hop' : ''}`.trim());
-        cue.dataset.key = `${working.has(id) ? `working:${id}` : ''}${neighbors.has(id) ? ` neighbor:${id}` : ''}`;
+        const selected = targets.selected === id;
+        cue.className = `graph-cue${working.has(id) ? ' working' : ''}${neighbors.has(id) ? ' neighbor' : ''}${selected ? ' selected' : ''}`;
+        cue.setAttribute('data-cue', `${working.has(id) ? 'working ' : ''}${selected ? 'selected ' : ''}${neighbors.has(id) ? 'one-hop' : ''}`.trim());
+        cue.dataset.key = `${working.has(id) ? `working:${id}` : ''}${selected ? ` selected:${id}` : ''}${neighbors.has(id) ? ` neighbor:${id}` : ''}`;
         const point = node.renderedPosition();
         cue.style.left = `${point.x}px`;
         cue.style.top = `${point.y}px`;
@@ -90,6 +151,7 @@ export function GraphView(props: Props) {
     };
     const scheduler = new MotionScheduler({ now: () => performance.now(), request: callback => requestAnimationFrame(callback), cancel: frame => cancelAnimationFrame(frame) }, paint);
     scheduler.visibility(document.hidden);
+    startFlow();
     const cancel = () => { scheduler.cancel(); solver?.stop(); solver = undefined; host.dataset.motion = 'sleeping'; };
     const pins = () => memory.pins ??= new Map();
     const fixed = (selected?: string) => {
@@ -159,8 +221,8 @@ export function GraphView(props: Props) {
       const id = event.target.id(), point = { ...event.target.position() };
       pins().set(id, point); memory.positions.set(id, point); dragging = undefined; activate(id);
     };
-    const visibility = () => { scheduler.visibility(document.hidden); markers.current?.classList.toggle('hidden', document.hidden); if (!document.hidden) invalidateCues(); };
-    const preference = () => { if (media.matches) { cancel(); activate(); } else activate(); };
+    const visibility = () => { scheduler.visibility(document.hidden); markers.current?.classList.toggle('hidden', document.hidden); if (document.hidden) stopFlow(); else { startFlow(); invalidateCues(); } };
+    const preference = () => { if (media.matches) { stopFlow(); cancel(); activate(); } else { startFlow(); activate(); } };
     control.current = {
       sync() {
         const { nodes, edges, component } = latest.current;
@@ -194,7 +256,7 @@ export function GraphView(props: Props) {
         }
       },
       selection() { highlight(cy, latest.current.selected); invalidateCues(); if (latest.current.component) return; if (latest.current.selected) activate(); else restore(); },
-      pause() { if (latest.current.paused) cancel(); else if (pendingReturn) restore(pendingReturn); else activate(); },
+      pause() { if (latest.current.paused) { cancel(); stopFlow(); } else { startFlow(); if (pendingReturn) restore(pendingReturn); else activate(); } },
       command() {
         const { command, nodes, edges } = latest.current;
         if (!command.serial || command.serial === memory.commandSerial) return;
@@ -212,9 +274,9 @@ export function GraphView(props: Props) {
     cy.on('zoom pan', viewport); cy.on('position', 'node', invalidateCues);
     cy.on('grab', 'node', grab); cy.on('drag', 'node', drag); cy.on('dragfree', 'node', release);
     document.addEventListener('visibilitychange', visibility); media.addEventListener('change', preference);
-    const resize = new ResizeObserver(() => { cy.resize(); invalidateCues(); }); resize.observe(host);
+    const resize = new ResizeObserver(() => { cy.resize(); sizeFlow(); invalidateCues(); }); resize.observe(host);
     return () => {
-      rememberCamera(); cancel(); resize.disconnect(); clearTimeout(zoomTimer);
+      rememberCamera(); cancel(); stopFlow(); resize.disconnect(); clearTimeout(zoomTimer);
       if (cueFrame !== undefined) cancelAnimationFrame(cueFrame);
       cues.clear();
       document.removeEventListener('visibilitychange', visibility); media.removeEventListener('change', preference);
@@ -231,6 +293,7 @@ export function GraphView(props: Props) {
   useEffect(() => control.current?.command(), [props.command]);
   return <section className="graph-panel" aria-label="Relationship graph">
     <div ref={container} className="graph-canvas" aria-hidden="true" />
+    <canvas ref={flow} className="graph-flow" aria-hidden="true" />
     <div ref={markers} className={`graph-cues${props.paused ? ' paused' : ''}`} aria-hidden="true" />
     <p className="graph-status" role="status">{props.nodes.length} entities · {props.edges.length} connections · Zoom {Math.round(zoom * 100)}%</p>
   </section>;
