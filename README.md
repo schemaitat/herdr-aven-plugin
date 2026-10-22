@@ -118,11 +118,12 @@ Escape closes it and returns focus). Entity types are independent checkboxes:
 **epic, task, attempt, agent and session** are initially selected. **Select all
 types** also includes workspace, pane, worktree and boundary entities;
 **Deselect all types** clears them, and an empty selection means no matches, not
-All. Independent relationship checkboxes initially show **contains** and
-**blocks**; **Select all relationships** exposes every source kind plus
-evidenced agent dependencies, and **Deselect all relationships** leaves eligible
-nodes isolated. Hidden relations never connect or attract visible entities, but
-remain in canonical info evidence. Source state initially includes all states.
+All. Independent relationship checkboxes initially show every source kind plus
+evidenced agent dependencies (contains, blocks, related, assigned, session,
+placed-in, worktree and agent-dependency); **Deselect all relationships** leaves
+eligible nodes isolated. Hidden relations never connect or attract visible
+entities, but remain in canonical info evidence. Source state initially includes
+all states.
 Epic choices always come from the loaded snapshot, independent of other filters.
 Epic scope follows nested containment and explicit execution ownership only;
 blockers/related links and shared sessions, panes or workspaces never pull in
@@ -130,8 +131,8 @@ unrelated owners. **Clear epic** removes only that scope. A vanished epic remain
 explicitly unavailable with an empty result until cleared; refresh never silently
 broadens the scope. The popover lists the current scope facts; the header's
 condensed status item shows the matching and on-canvas counts plus a nonzero
-exclusion count. **Reset filters** restores epic/task types, contains/blocks
-relations, all states/time and no epic/query;
+exclusion count. **Reset filters** restores epic/task types, all relationship
+kinds, all states/time and no epic/query;
 it does not erase selection or saved node positions. Selected off-canvas entities
 retain their information and all source relationships when opened with **i**.
 

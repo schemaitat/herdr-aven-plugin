@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import cytoscape from 'cytoscape';
 import { graphFixture as fixture } from './fixtures/graph-snapshot.js';
 import { RELATION_KINDS } from '../src/graph/elements.js';
-import { ALL_TYPES, componentMembers, componentResolver, copyFilters, defaultFilters, hopDistances, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, withRelationKind, type Filters } from '../src/graph/state.js';
+import { ALL_TYPES, componentMembers, componentResolver, copyFilters, defaultFilters, hopDistances, TIME_WINDOWS, canonicalSelection, projectGraph, stateDescription, toggleEpic, withRelationKind, withRelationKinds, type Filters } from '../src/graph/state.js';
 import type { Entity, GraphSnapshot, Relationship } from '../shared/graph.js';
 import { effectiveTimes } from '../shared/scope.js';
 import { elements } from '../src/graph/elements.js';
@@ -111,7 +111,7 @@ describe('composable source scope', () => {
   });
   test('defaults, multiple kinds, empty kinds, all kinds and filter intersections', () => {
     expect(defaultFilters().kinds).toEqual(new Set(['epic', 'task', 'attempt', 'agent', 'session']));
-    expect(defaultFilters().relationKinds).toEqual(new Set(['contains', 'blocks']));
+    expect(defaultFilters().relationKinds).toEqual(new Set(RELATION_KINDS));
     expect(projectGraph(fixture, defaultFilters(), new Set(), now).nodes.some(node => node.kind === 'pane')).toBe(false);
     expect(ids(fixture, { kinds: new Set() })).toEqual([]);
     expect(ids(fixture)).toHaveLength(fixture.nodes.length);
@@ -145,7 +145,7 @@ describe('composable source scope', () => {
     expect(collapsed.edges).toContainEqual(expect.objectContaining({ source: 'epic', target: 'b', kind: 'blocks', summary: true }));
   });
   test('relation updates and copied search baselines are immutable', () => {
-    const before = defaultFilters();
+    const before = withRelationKinds(defaultFilters(), []);
     const after = withRelationKind(before, 'related', true);
     expect(before.relationKinds.has('related')).toBe(false);
     expect(after.relationKinds.has('related')).toBe(true);
