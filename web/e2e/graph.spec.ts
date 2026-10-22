@@ -404,8 +404,7 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   const relations = page.getByRole('group', { name: 'Relationship kinds', exact: true });
   for (const kind of ['epic', 'task', 'attempt', 'agent', 'session']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
   for (const kind of ['workspace', 'pane', 'worktree', 'boundary']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
-  for (const kind of ['contains', 'blocks']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
-  for (const kind of ['related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
+  for (const kind of ['contains', 'blocks', 'related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
    await expect(page.getByLabel('Recent source changes')).toHaveValue('all');
   await onlyTypes(page, []);
   await expect(page.getByText('No matching entities in this scope.', { exact: false })).toBeVisible();
@@ -453,7 +452,7 @@ test('relationship presets scope edges and connectivity without removing eligibl
   expect(blockKinds).toEqual(['blocks', 'blocks', 'blocks']);
   await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
-  await expect(page.locator('.scope-facts')).toContainText('2 of 8 relationships');
+  await expect(page.locator('.scope-facts')).toContainText('8 of 8 relationships');
   await page.keyboard.press('Escape');
 });
 
