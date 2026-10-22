@@ -5,7 +5,7 @@ import { applyActivity } from '../server/activity.js';
 import { apiEvent, liveFixture } from '../test/fixtures/opencode-api.js';
 import { summarizeEvent } from '../server/logs.js';
 import { projectDiscovery } from './project-fixture.js';
-import { allTypes } from './filter-controls.js';
+import { allTypes, graphTools } from './filter-controls.js';
 
 function live(state: Activity['state'], version?: number): GraphSnapshot {
   const now = Date.now();
@@ -41,7 +41,11 @@ test('API activity transitions within five seconds without task-status/camera/se
   const task = entities.getByRole('button', { name: /task task:one/ });
   await expect(task).toContainText('Task status: todo · Working');
   await task.click();
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const zoomAt = await page.locator('.graph-canvas').boundingBox();
+  const zoomBefore = await page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.zoom());
+  await page.waitForTimeout(300);
+  await page.mouse.move(zoomAt!.x + zoomAt!.width - 30, zoomAt!.y + 30); await page.mouse.wheel(0, -180);
+  await expect.poll(() => page.locator('.graph-canvas').evaluate(element => (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.zoom())).toBeGreaterThan(zoomBefore);
   const before = await visualState(page);
   const activity = page.getByRole('region', { name: 'Live activity' });
   await page.getByRole('button', { name: 'Live activity', exact: true }).click();
@@ -101,6 +105,7 @@ test('current working and selected direct neighbors expose visible CSS cues with
   const ticks = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
   await page.waitForTimeout(120);
   expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(ticks);
+  await graphTools(page);
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   await expect(page.locator('.graph-cues')).toHaveClass(/paused/);
   await page.getByRole('button', { name: 'Close panel', exact: true }).click();

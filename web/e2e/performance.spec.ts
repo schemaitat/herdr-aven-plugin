@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { Core } from 'cytoscape';
 import { largeGraph } from '../test/fixtures/large-graph.js';
-import { allTypes } from './filter-controls.js';
+import { allTypes, graphTools } from './filter-controls.js';
 import { projectDiscovery } from './project-fixture.js';
 
 test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-update stability', async ({ page }, info) => {
@@ -25,6 +25,7 @@ test('500 nodes / 1,000 edges: interactivity, rendered pan/zoom FPS and status-u
   await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: 'Orbit 000', exact: true })).toBeVisible();
   const initialCosts = await page.evaluate(() => Object.fromEntries(['graph.initial-layout', 'graph.initial-sync'].map(name => [name, performance.getEntriesByName(name).at(-1)?.duration])));
+  await graphTools(page);
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   await page.getByRole('button', { name: 'Resume motion', exact: true }).click();
   const activePhysics = await page.locator('.graph-canvas').evaluate(async element => {

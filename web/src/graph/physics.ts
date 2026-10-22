@@ -4,7 +4,11 @@ import type { GraphEdge } from './elements.js';
 import type { Position } from './layout.js';
 
 export const ACTIVATION_MS = 1500;
-export const nodeRadius = (node: Pick<Entity, 'kind'>) => node.kind === 'epic' ? 58 : 31;
+/** Physics envelopes are intentionally larger than rendered diameters to create calm gutters. */
+export const NODE_RADIUS = { epic: 64, default: 36 } as const;
+/** Extra radius-aware clearance in deterministic layouts and force collision. */
+export const CLEARANCE_GAP = 14;
+export const nodeRadius = (node: Pick<Entity, 'kind'>) => node.kind === 'epic' ? NODE_RADIUS.epic : NODE_RADIUS.default;
 export function topologyKey(nodes: Entity[], edges: GraphEdge[]) {
   return JSON.stringify([nodes.map(node => [node.id, node.kind]).sort(), edges.map(edge => [edge.id, edge.source, edge.target, edge.kind]).sort()]);
 }
@@ -32,7 +36,7 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
     const movable = group.filter(node => !pins.has(node.id));
     if (movable.length < 8) continue;
     const center = result.get(group[0].id)!;
-    const spacing = Math.max(...group.map(nodeRadius)) * 2 + 4;
+    const spacing = Math.max(...group.map(nodeRadius)) * 2 + CLEARANCE_GAP + 2;
     const columns = Math.ceil(Math.sqrt(movable.length));
     movable.forEach((node, index) => result.set(node.id, {
       x: center.x + (index % columns + 1) * spacing,
@@ -43,9 +47,9 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
     let overlap = false;
     for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
       const a = ordered[i], b = ordered[j], p = result.get(a.id)!, q = result.get(b.id)!;
-      const minimum = nodeRadius(a) + nodeRadius(b) + 2;
+      const minimum = nodeRadius(a) + nodeRadius(b) + CLEARANCE_GAP;
       let dx = q.x - p.x, dy = q.y - p.y, distance = Math.hypot(dx, dy);
-      if (distance >= minimum - 0.01 || pins.has(a.id) && pins.has(b.id)) continue;
+      if (distance >= minimum - 1e-6 || pins.has(a.id) && pins.has(b.id)) continue;
       overlap = true;
       if (distance < 0.0001) {
         // A common x-axis for coincident seeds creates an unresolvable pile
@@ -71,7 +75,7 @@ export function selectionTargets(nodes: Entity[], edges: GraphEdge[], overview: 
   const selectedRadius = nodeRadius(nodes.find(node => node.id === selected)!);
   ordered.forEach((id, index) => {
     const angle = index * Math.PI * 2 / ordered.length - Math.PI / 2;
-    const radius = Math.max(selectedRadius + 55, ordered.length * 72 / (2 * Math.PI));
+    const radius = Math.max(selectedRadius + 72, ordered.length * 88 / (2 * Math.PI));
     result.set(id, { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius });
   });
   return result;
@@ -87,7 +91,7 @@ export class GraphPhysics {
     const neighbors = new Set(edges.flatMap(edge => edge.source === selected ? [edge.target] : edge.target === selected ? [edge.source] : []));
     this.particles = [...nodes].sort((a, b) => a.id.localeCompare(b.id)).map((node, index) => {
       const storedAnchor = anchors.get(node.id), storedPoint = positions.get(node.id), pin = pins.get(node.id);
-      const anchor = finitePoint(storedAnchor) ? storedAnchor : { x: index * 140, y: 0 };
+      const anchor = finitePoint(storedAnchor) ? storedAnchor : { x: index * 160, y: 0 };
       const point = finitePoint(storedPoint) ? storedPoint : anchor;
       const fixed = (finitePoint(pin) ? pin : undefined) ?? (node.id === selected || selected && !neighbors.has(node.id) && node.id !== dragging ? point : undefined);
       return { id: node.id, x: point.x, y: point.y, radius: nodeRadius(node), anchor: { ...anchor }, fx: fixed?.x, fy: fixed?.y };
@@ -100,7 +104,7 @@ export class GraphPhysics {
       .force('links', forceLink<Particle, { source: string; target: string }>(links).id(node => node.id).distance(link => {
         const source = byId.get(typeof link.source === 'string' ? link.source : (link.source as Particle).id)!;
         const target = byId.get(typeof link.target === 'string' ? link.target : (link.target as Particle).id)!;
-        return source.radius + target.radius + (selected && (source.id === selected || target.id === selected) ? 25 : 90);
+        return source.radius + target.radius + (selected && (source.id === selected || target.id === selected) ? 34 : 124);
       }).strength(link => {
         const source = byId.get(typeof link.source === 'string' ? link.source : (link.source as Particle).id)!;
         const target = byId.get(typeof link.target === 'string' ? link.target : (link.target as Particle).id)!;
@@ -110,8 +114,8 @@ export class GraphPhysics {
         const base = selected && (source.id === selected || target.id === selected) ? 0.3 : 0.16;
         return base * Math.min(1, 240 / Math.max(240, span));
       }))
-      .force('charge', forceManyBody<Particle>().strength(-140).distanceMax(350).theta(0.9))
-      .force('collision', forceCollide<Particle>().radius(node => node.radius + 2).iterations(2))
+      .force('charge', forceManyBody<Particle>().strength(-170).distanceMax(430).theta(0.9))
+      .force('collision', forceCollide<Particle>().radius(node => node.radius + CLEARANCE_GAP).iterations(2))
        .force('x', forceX<Particle>(node => node.anchor.x).strength(0.035))
        .force('y', forceY<Particle>(node => node.anchor.y).strength(0.035));
   }

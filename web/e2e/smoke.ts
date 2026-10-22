@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { graphTools } from './filter-controls.js';
 
 test('real scoped sources render with keyboard list/details and protected API', async ({ page, request }, info) => {
   const errors: string[] = [];
@@ -54,6 +55,7 @@ test('untrusted labels are text and unavailable sources remain visible', async (
   await page.keyboard.press('i');
   await expect(page.getByRole('complementary').getByRole('heading', { name: hostile, exact: true })).toBeVisible();
   await expect(page.getByText('<script>alert(1)</script>', { exact: true })).toBeVisible();
+  await graphTools(page);
   await page.getByText(/Sources ·/).click();
   await expect(page.locator('.sources')).toContainText('herdr · unavailable');
   expect(await page.locator('img').count()).toBe(0);

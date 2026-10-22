@@ -4,7 +4,7 @@ import { clearOverlaps, nodeRadius } from './physics.js';
 
 export type Position = { x: number; y: number };
 
-/** Top-down readability order: ownership above execution, resources at the bottom. */
+/** Radial readability order: ownership at the centre, resources on the outer rings. */
 export const KIND_RANK = {
   epic: 0, task: 1, attempt: 2, agent: 3, session: 4, pane: 5, worktree: 5, workspace: 6, boundary: 6,
 } as const satisfies Record<NodeKind, number>;

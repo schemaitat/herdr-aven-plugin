@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { Entity } from '../shared/graph.js';
-import { infoShortcut, searchEntities, searchScore, slashShortcut } from '../src/graph/search.js';
+import { helpShortcut, infoShortcut, searchEntities, searchScore, slashShortcut } from '../src/graph/search.js';
 import { ALL_TYPES, defaultFilters, projectGraph } from '../src/graph/state.js';
 import { RELATION_KINDS } from '../src/graph/elements.js';
 import { graphFixture } from './fixtures/graph-snapshot.js';
@@ -40,5 +40,14 @@ describe('semantic keyboard shortcuts', () => {
     expect(infoShortcut(key('i'))).toBe(true);
     for (const candidate of [key('I', { shiftKey: true }), key('i', { repeat: true }), key('i', { ctrlKey: true }), key('i', { defaultPrevented: true }), key('i', { isComposing: true })]) expect(infoShortcut(candidate)).toBe(false);
     for (const candidate of [key('/', { repeat: true }), key('/', { altKey: true }), key('/', { defaultPrevented: true }), key('/', { isComposing: true })]) expect(slashShortcut(candidate)).toBe(false);
+  });
+  test('accepts the produced ? with Shift, but not other shifted characters or handled input', () => {
+    expect(helpShortcut(key('?'))).toBe(true);
+    expect(helpShortcut(key('?', { shiftKey: true }))).toBe(true);
+    expect(helpShortcut(key('/', { shiftKey: true }))).toBe(false);
+    expect(helpShortcut(key('?', { repeat: true }))).toBe(false);
+    expect(helpShortcut(key('?', { ctrlKey: true }))).toBe(false);
+    expect(helpShortcut(key('?', { defaultPrevented: true }))).toBe(false);
+    expect(helpShortcut(key('?', { isComposing: true }))).toBe(false);
   });
 });

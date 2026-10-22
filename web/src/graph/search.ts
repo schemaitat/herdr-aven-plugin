@@ -45,3 +45,8 @@ export function slashShortcut(event: KeyboardEvent): boolean {
 export function infoShortcut(event: KeyboardEvent): boolean {
   return event.key === 'i' && !event.shiftKey && shortcutAvailable(event);
 }
+
+export function helpShortcut(event: KeyboardEvent): boolean {
+  // Test the produced character, not Shift: most layouts produce ? with Shift.
+  return event.key === '?' && shortcutAvailable(event);
+}

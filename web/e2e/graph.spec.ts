@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { Core, EventObject } from 'cytoscape';
 import { graphFixture, scopeFixture, scopeClock } from '../test/fixtures/graph-snapshot.js';
-import { allTypes, onlyRelationships, onlyTypes } from './filter-controls.js';
+import { allTypes, graphTools, onlyRelationships, onlyTypes } from './filter-controls.js';
 import { projectDiscovery } from './project-fixture.js';
 
 // Read-only test instrumentation: Cytoscape registers its core on its container.
@@ -71,6 +71,7 @@ test('bubble shapes, typed directed relationships, derived provenance and graph/
   });
   await expect(details.getByRole('heading', { name: 'Derived agent dependency', exact: true })).toBeVisible();
   expect((await graph(page)).selected).toContain(edgeId);
+  await graphTools(page);
   await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
   await page.screenshot({ path: info.outputPath('graph-fixture.png'), fullPage: true });
   expect(errors).toEqual([]);
@@ -193,7 +194,10 @@ test('cue bounds track rendered geometry after pan, zoom and static selection', 
   await check();
   await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.panBy({ x: 35, y: -20 }));
   await check();
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const zoomPoint = await point(page);
+  const zoomBefore = await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.zoom());
+  await page.mouse.move(zoomPoint.x, zoomPoint.y); await page.mouse.wheel(0, -180);
+  await expect.poll(async () => page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.zoom())).toBeGreaterThan(zoomBefore);
   await check();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const dragPoint = await point(page, 'task:a');
@@ -203,6 +207,7 @@ test('cue bounds track rendered geometry after pan, zoom and static selection', 
   await page.mouse.up();
   await check();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
+  await graphTools(page);
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   await check();
   await page.locator('.graph-canvas').evaluate(element => {
@@ -212,7 +217,7 @@ test('cue bounds track rendered geometry after pan, zoom and static selection', 
   await check();
   await page.setViewportSize({ width: 390, height: 844 });
   await check();
-  await page.getByText('Graph tools', { exact: true }).click();
+  await graphTools(page);
   await page.getByRole('button', { name: 'List only', exact: true }).click();
   await page.getByRole('button', { name: 'Show graph', exact: true }).click();
   await check();
@@ -227,6 +232,7 @@ test('actual pan, wheel zoom, drag, fit/reset and ordinary snapshot refresh reta
   location = await point(page);
   await page.mouse.move(location.x, location.y); await page.mouse.wheel(0, -180);
   await expect.poll(async () => (await graph(page)).zoom).toBeGreaterThan(before.zoom);
+  await graphTools(page);
   await page.getByRole('button', { name: 'Fit graph', exact: true }).click();
   location = await point(page, 'task:b');
   await page.mouse.move(location.x, location.y); await page.mouse.down();
@@ -244,9 +250,12 @@ test('actual pan, wheel zoom, drag, fit/reset and ordinary snapshot refresh reta
   expect((await graph(page)).nodes).toEqual(['task:solo']);
   await page.getByLabel('Search entities').fill('');
   expect((await graph(page)).positions['task:b']).toEqual(dragged.positions['task:b']);
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
-  expect((await graph(page)).zoom).toBeGreaterThan(dragged.zoom);
-  await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
+  const zoomBefore = (await graph(page)).zoom;
+  // Real wheel zoom is verified above; nudge the camera deterministically here
+  // because a recent search-field scroll suppresses Cytoscape wheel zoom.
+  await page.locator('.graph-canvas').evaluate(element => { const cy = (element as GraphContainer)._cyreg.cy; cy.zoom({ level: cy.zoom() * 1.25, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
+  await expect.poll(async () => (await graph(page)).zoom).toBeGreaterThan(zoomBefore);
+  await graphTools(page);
   await page.getByRole('button', { name: 'Reset positions', exact: true }).click();
   const reset = (await graph(page)).positions['task:b'];
   expect(reset).not.toEqual(dragged.positions['task:b']);
@@ -281,7 +290,7 @@ test('collapse/expand, cross-epic boundaries, search/type/status filters and key
   await onlyTypes(page, ['task']);
   await page.getByLabel('Source state').selectOption('active');
   expect((await graph(page)).nodes).toEqual(['task:b']);
-  await page.getByRole('button', { name: 'All types', exact: true }).click(); await page.getByLabel('Source state').selectOption('all');
+  await page.getByRole('button', { name: 'Select all types', exact: true }).click(); await page.getByLabel('Source state').selectOption('all');
   await page.keyboard.press('Escape');
   await page.getByLabel('Search entities').fill('Standalone');
   const button = page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ });
@@ -314,7 +323,11 @@ test('ordinary renders retain one instance; disposal/remount destroys old core a
   });
   await page.getByLabel('Search entities').fill('adapter'); await page.getByLabel('Search entities').fill('');
   expect(await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy === (window as unknown as { prior: Core }).prior)).toBe(true);
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const zoomBefore = await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.zoom());
+  // A recent search-field scroll suppresses Cytoscape wheel zoom; nudge directly.
+  await page.locator('.graph-canvas').evaluate(element => { const cy = (element as GraphContainer)._cyreg.cy; cy.zoom({ level: cy.zoom() * 1.25, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
+  await expect.poll(async () => page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.zoom())).toBeGreaterThan(zoomBefore);
+  await graphTools(page);
   const location = await point(page, 'task:b');
   await page.mouse.move(location.x, location.y); await page.mouse.down();
   await page.mouse.move(location.x + 60, location.y + 25, { steps: 8 }); await page.mouse.up();
@@ -349,7 +362,6 @@ test('slash and visible search preview matching scope, arrows select, Escape res
   const trigger = page.getByRole('button', { name: 'Search /', exact: true });
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
   await page.getByLabel('Search entities', { exact: true }).fill('standalone');
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   const baseline = await graph(page);
   await trigger.focus(); await page.keyboard.press('/');
   const dialog = page.getByRole('dialog', { name: 'Search entities' });
@@ -419,15 +431,16 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   const relations = page.getByRole('group', { name: 'Relationship kinds', exact: true });
   for (const kind of ['epic', 'task', 'attempt', 'agent', 'session']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
   for (const kind of ['workspace', 'pane', 'worktree', 'boundary']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
-  for (const kind of ['contains', 'blocks']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
-  for (const kind of ['related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
+  for (const kind of ['contains', 'blocks', 'related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
    await expect(page.getByLabel('Recent source changes')).toHaveValue('all');
   await onlyTypes(page, []);
   await expect(page.getByText('No matching entities in this scope.', { exact: false })).toBeVisible();
   expect((await graph(page)).nodes).toEqual([]);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Reset empty scope', exact: true }).click();
-  await expect(page.locator('.scope-chips')).toContainText('5 of 9 types');
+  await page.getByText('Filters', { exact: true }).click();
+  await expect(page.locator('.scope-facts')).toContainText('5 of 9 types');
+  await page.keyboard.press('Escape');
   const details = page.getByRole('complementary', { name: 'Entity details' });
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
   await page.keyboard.press('i');
@@ -447,6 +460,7 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   await expect(details.getByRole('heading', { name: 'Standalone investigation', exact: true })).toBeVisible();
   await expect(page.getByText('Selected entity is off-canvas', { exact: false })).toBeVisible();
   expect((await graph(page)).nodes).toEqual(['task:b']);
+  await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
   await expect(page.getByLabel('Search entities')).toHaveValue('');
    expect((await graph(page)).nodes).not.toContain('pane:a');
@@ -454,7 +468,7 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
 
 test('relationship presets scope edges and connectivity without removing eligible isolated entities', async ({ page }) => {
   await page.getByText('Filters', { exact: true }).click();
-  await page.getByRole('button', { name: 'No relationships', exact: true }).click();
+  await page.getByRole('button', { name: 'Deselect all relationships', exact: true }).click();
   await page.keyboard.press('Escape');
   expect((await graph(page)).nodes).toHaveLength(14);
   expect(await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.edges().length)).toBe(0);
@@ -463,8 +477,30 @@ test('relationship presets scope edges and connectivity without removing eligibl
   await page.keyboard.press('Escape');
   const blockKinds = await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.edges().map(edge => edge.data('kind')));
   expect(blockKinds).toEqual(['blocks', 'blocks', 'blocks']);
+  await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
-  await expect(page.locator('.scope-chips')).toContainText('2 of 8 relationships');
+  await expect(page.locator('.scope-facts')).toContainText('8 of 8 relationships');
+  await page.keyboard.press('Escape');
+});
+
+test('entity and relationship select/deselect-all actions drive scope without hidden gestures', async ({ page }) => {
+  await page.getByText('Filters', { exact: true }).click();
+  const types = page.getByRole('group', { name: 'Entity types', exact: true });
+  await page.getByRole('button', { name: 'Select all types', exact: true }).click();
+  await expect(types.getByRole('checkbox', { checked: true })).toHaveCount(9);
+  await page.getByRole('button', { name: 'Deselect all types', exact: true }).click();
+  await expect(types.getByRole('checkbox', { checked: true })).toHaveCount(0);
+  await expect(page.getByText('An empty selection means no matches.', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('No matching entities in this scope.', { exact: false })).toBeVisible();
+  expect((await graph(page)).nodes).toEqual([]);
+  await page.getByText('Filters', { exact: true }).click();
+  await page.getByRole('button', { name: 'Select all types', exact: true }).click();
+  await page.getByRole('button', { name: 'Deselect all relationships', exact: true }).click();
+  await expect(page.locator('.scope-facts')).toContainText('No relationships');
+  await page.getByRole('button', { name: 'Select all relationships', exact: true }).click();
+  await expect(page.locator('.scope-facts')).toContainText('8 of 8 relationships');
+  await page.keyboard.press('Escape');
 });
 
 test('recent source windows disclose unknowns, shared resources do not leak other epic owners, and disappearing epic stays explicit', async ({ page }) => {
@@ -476,7 +512,8 @@ test('recent source windows disclose unknowns, shared resources do not leak othe
   await page.getByText('Filters', { exact: true }).click();
   await page.getByLabel('Recent source changes').selectOption('24h');
   await page.keyboard.press('Escape');
-  await expect(page.locator('.scope-chips')).toContainText('5 unknown/invalid/future-time exclusions');
+  await expect(page.locator('.scope-status')).toContainText('5 excluded');
+  await expect(page.locator('.scope-exclusions')).toHaveAttribute('title', '5 unknown/invalid/future-time exclusions');
   expect((await graph(page)).nodes).not.toContain('task:c');
   expect((await graph(page)).nodes).toContain('session:a');
   await page.getByText('Filters', { exact: true }).click();
@@ -554,6 +591,7 @@ test('real drag reacts within 100ms, neighbours follow while the ranked overview
   const pinned = released.positions['task:b'];
   await page.getByLabel('Search entities').fill('standalone'); await page.getByLabel('Search entities').fill(''); await sleep(page);
   expect((await graph(page)).positions['task:b']).toEqual(pinned);
+  await graphTools(page);
   await page.getByRole('button', { name: 'Reset positions', exact: true }).click(); await sleep(page);
   const baseline = await graph(page);
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /task Build graph/ }).click(); await sleep(page);
@@ -586,20 +624,24 @@ test('real drag reacts within 100ms, neighbours follow while the ranked overview
 
 test('Pause freezes by next frame, runtime reduced motion runs no ticks, rapid selection/search rollback and disposal cancel work', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await graphTools(page);
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-edge-flow', 'static');
   const paused = await graph(page), count = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
   await page.waitForTimeout(150);
   expect((await graph(page)).positions).toEqual(paused.positions);
   expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(count);
   await page.getByRole('button', { name: 'Resume motion', exact: true }).click();
   await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active');
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-edge-flow', 'active');
   await page.emulateMedia({ reducedMotion: 'reduce' }); await sleep(page);
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-edge-flow', 'static');
   const reducedCount = await page.locator('.graph-canvas').getAttribute('data-physics-ticks');
   const list = page.getByRole('region', { name: 'Entities', exact: true });
   for (const label of ['Build graph', 'Review graph', 'Build adapter']) await list.getByRole('button', { name: new RegExp(`task ${label}`) }).click();
   await page.waitForTimeout(100);
   expect(await page.locator('.graph-canvas').getAttribute('data-physics-ticks')).toBe(reducedCount);
-  await page.emulateMedia({ reducedMotion: 'no-preference' }); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await sleep(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' }); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-motion', 'active'); await expect(page.locator('.graph-canvas')).toHaveAttribute('data-edge-flow', 'active'); await sleep(page);
   const baseline = await graph(page);
   await page.getByRole('button', { name: 'Search /', exact: true }).click();
   await page.getByRole('combobox', { name: 'Preview query' }).fill('standalone');
@@ -619,6 +661,7 @@ test('Pause freezes by next frame, runtime reduced motion runs no ticks, rapid s
   await list.getByRole('button', { name: /task Review graph/ }).click(); await sleep(page);
   await page.keyboard.press('i');
   await page.getByRole('button', { name: 'Focus component', exact: true }).click(); await sleep(page);
+  await graphTools(page);
   await page.getByRole('button', { name: 'Pause motion', exact: true }).click();
   const frozen = await graph(page);
   await page.getByRole('button', { name: 'List only', exact: true }).click();

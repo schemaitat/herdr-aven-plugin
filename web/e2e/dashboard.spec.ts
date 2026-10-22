@@ -4,7 +4,7 @@ import { largeGraph } from '../test/fixtures/large-graph.js';
 import type { Core } from 'cytoscape';
 import { orbitalLayout } from '../src/graph/layout.js';
 import { defaultFilters, projectGraph } from '../src/graph/state.js';
-import { allTypes } from './filter-controls.js';
+import { allTypes, graphTools } from './filter-controls.js';
 import { projectDiscovery } from './project-fixture.js';
 
 test('loading, empty, offline/retry, stale and optional-source outage states recover without breaking inspection', async ({ page }) => {
@@ -103,6 +103,7 @@ test('source health is available through the compact disclosure rather than pers
   await page.route('**/api/snapshot', route => route.fulfill({ json: graphFixture }));
   await page.goto('/');
   const sources = page.getByText(/Sources ·/);
+  await graphTools(page);
   await sources.click();
   await expect(page.locator('.sources')).toContainText('aven');
   await expect(page.locator('.scope-strip')).toHaveCount(0);
