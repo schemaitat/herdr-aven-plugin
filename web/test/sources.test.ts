@@ -4,6 +4,7 @@ import { readDispatcher, boundedJsonFile } from '../server/sources/dispatcher.js
 import { readHerdr } from '../server/sources/herdr.js';
 import { configuredProjectCheckouts, primaryCheckout, startupConfig } from '../server/config.js';
 import { fixture, scope, avenFixture, scratchRoot } from './fixtures.js';
+import { dispatcherAttempts, dispatcherFixture } from './fixtures/dispatcher.js';
 import { LIST_LIMIT, type ReadCommand, type Runner } from '../server/commands.js';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -64,41 +65,41 @@ describe('Aven scoped bounded source', () => {
 
 describe('dispatcher immutable snapshots', () => {
   it('strips invocations, prompts and credentials while retaining separate workflows', async () => {
-    const result = await readDispatcher('/unused', avenFixture(), async () => fixture('dispatcher'));
+    const result = await readDispatcher('/unused', avenFixture(), async () => dispatcherAttempts());
     expect(result.attempts).toHaveLength(2);
     expect(JSON.stringify(result)).not.toContain('NEVER_EXPOSE');
     expect(result.attempts.map(value => value.attempt.workflow).sort()).toEqual(['implementation', 'planning']);
   });
   it('recovers absent store from Aven metadata and prefers same-attempt local phase updates', async () => {
     const aven = avenFixture();
-    const store = fixture('dispatcher');
+    const store = dispatcherFixture();
     const attempt = store.attempts['ROOT01:implementation'];
     aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify({ ...attempt, state: 'older' });
     const recovered = await readDispatcher('/missing', aven, async () => { throw new Error('ENOENT'); });
     expect(recovered.attempts[0].origin).toBe('aven-recovery');
     expect(recovered.health.status).toBe('unavailable');
-    const merged = await readDispatcher('/store', aven, async () => store);
+    const merged = await readDispatcher('/store', aven, async () => dispatcherAttempts(store));
     expect(merged.attempts.find(value => value.attempt.workflow === 'implementation')?.attempt.state).toBe('running');
   });
   it('rejects obsolete reset generations and incomplete resets', async () => {
     const aven = avenFixture();
     aven.contexts.get('ROOT01')!.metadata['dispatch.reset-generation'] = '1';
-    expect((await readDispatcher('/store', aven, async () => fixture('dispatcher'))).attempts).toHaveLength(0);
+    expect((await readDispatcher('/store', aven, async () => dispatcherAttempts())).attempts).toHaveLength(0);
     aven.contexts.get('ROOT01')!.metadata['dispatch.reset-generation'] = '0';
     aven.contexts.get('ROOT01')!.metadata['dispatch.reset-state'] = 'incomplete';
-    expect((await readDispatcher('/store', aven, async () => fixture('dispatcher'))).attempts).toHaveLength(0);
+    expect((await readDispatcher('/store', aven, async () => dispatcherAttempts())).attempts).toHaveLength(0);
   });
   it('rejects owner/workflow mismatches and unsupported execution modes', async () => {
     const aven = avenFixture();
-    const attempt = fixture('dispatcher').attempts['ROOT01:implementation'];
+    const attempt = dispatcherFixture().attempts['ROOT01:implementation'];
     aven.contexts.get('TASK01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify(attempt);
     aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.planning'] = JSON.stringify(attempt);
-    const result = await readDispatcher('/store', aven, async () => ({ attempts: { bad: { ...attempt, execution_mode: 'shell' } } }));
+    const result = await readDispatcher('/store', aven, async () => [{ ...attempt, execution_mode: 'shell' }]);
     expect(result.attempts).toHaveLength(0);
     expect(result.health.status).toBe('incomplete');
   });
   it('does not import unrelated store tasks', async () => {
-    const result = await readDispatcher('/store', avenFixture(), async () => ({ attempts: { private: { ...fixture('dispatcher').attempts['ROOT01:planning'], task_id: 'PRIVATE' } } }));
+    const result = await readDispatcher('/store', avenFixture(), async () => [{ ...dispatcherFixture().attempts['ROOT01:planning'], task_id: 'PRIVATE' }]);
     expect(result.attempts).toHaveLength(0);
   });
 });
@@ -135,10 +136,10 @@ it('resolves linked primary checkout and explicit relative store without opening
     await writeFile(join(linked, '.git'), `gitdir: ${primary}/.git/worktrees/phase\n`);
     await writeFile(join(primary, '.git/worktrees/phase/commondir'), '../..\n');
     expect(await primaryCheckout(linked)).toBe(primary);
-    const config = await startupConfig({ AVEN_DISPATCH_STORE: 'custom/state.json', UI_PROJECT_CHECKOUTS: JSON.stringify({ other: primary }) }, linked);
-    expect(config.storePath).toBe(join(linked, 'custom/state.json'));
+    const config = await startupConfig({ AVEN_DISPATCH_STORE: 'custom/dispatch.sqlite', UI_PROJECT_CHECKOUTS: JSON.stringify({ other: primary }) }, linked);
+    expect(config.storePath).toBe(join(linked, 'custom/dispatch.sqlite'));
     expect(config.projectCheckouts.get('other')).toBe(primary);
-    expect((await startupConfig({}, linked)).storePath).toBe(join(primary, '.aven-dispatch/state.json'));
+    expect((await startupConfig({ XDG_STATE_HOME: join(temp, 'state') }, linked)).storePath).toBe(join(temp, 'state/aven/dispatch.sqlite'));
     await writeFile(join(temp, 'data.json'), JSON.stringify({ valid: true }));
     expect(await boundedJsonFile(join(temp, 'data.json'))).toEqual({ valid: true });
     await expect(boundedJsonFile(join(temp, 'data.json'), 2)).rejects.toThrow('bounds');

@@ -272,7 +272,7 @@ Startup settings are trusted environment variables, never browser parameters:
 | `UI_WORKSPACE` | `default`; set explicitly for another Aven workspace |
 | `UI_PORT` | `4318` (unprivileged ports only) |
 | `UI_HOST` | Only `127.0.0.1` is accepted |
-| `AVEN_DISPATCH_STORE` | Existing configured store; relative paths resolve from the repository checkout. Otherwise reads the primary checkout's `.aven-dispatch/state.json` |
+| `AVEN_DISPATCH_STORE` | Optional override for the central SQLite store; relative paths resolve from the repository checkout. Otherwise reads `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback `~/.local/state/aven/dispatch.sqlite`) |
 | `UI_PROJECT_CHECKOUTS` | Optional JSON object mapping Aven project keys to absolute, server-local checkout paths, for example `{"rofm-argo-apps":"/work/rofm-argo-apps"}`. Paths are canonicalized at startup; selected projects without a mapping retain scoped Aven recovery only. This mapping is never exposed to the browser. |
 | `UI_OPENCODE_URL` | Explicit existing OpenCode server origin; takes precedence over `OPENCODE_SERVER_URL` and local discovery. No fallback to a different service when this server fails |
 | `UI_OPENCODE_AUTHORIZATION` | Server-only Authorization header for that explicit server; otherwise `OPENCODE_TOKEN` (Bearer) or `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` (Basic, username defaults to `opencode`) |
@@ -318,9 +318,13 @@ Choices come only from a fixed `aven project list --workspace <configured>
 --limit 100 --json` read, cached for 30 seconds. Only key/name reach the browser;
 capped or invalid-key coverage is disclosed. Unknown/malformed keys fail closed.
 Non-startup projects recover execution from their scoped Aven metadata and linked
-authenticated OpenCode sessions. Their local dispatcher store and Herdr topology
-coverage is explicitly unavailable: the startup store/repository topology is
-never borrowed, and other repositories/paths are not discovered.
+authenticated OpenCode sessions. Every project collector reads the same central
+dispatcher SQLite store read-only via `node:sqlite`, so mapped projects show
+their own attempts without borrowing the startup project's store. Dispatcher
+attempts are filtered to the loaded project's Aven task ids; Herdr topology
+coverage remains explicitly unavailable for non-startup projects, and the
+startup repository topology is never reused. Other repositories/paths are not
+discovered.
 
 Reads use explicit project/workspace scope, a 500-item cap for each of Aven's
 available and upcoming lists, and at most 80 context hydrations per snapshot
@@ -537,11 +541,13 @@ deterministic task worktree branch.
 | `AVEN_BIN` | Aven executable override; defaults to `aven` |
 | `AVEN_CONFIG_DIR` | Aven config directory; otherwise `$XDG_CONFIG_HOME/aven` or `~/.config/aven` |
 | `AVEN_COMMANDS_FILE` | Extra-command YAML; defaults to this plugin's `aven-commands.yaml` |
-| `AVEN_DISPATCH_STORE` | Dispatcher state file override; also accepts `--store` |
+| `AVEN_DISPATCH_STORE` | Dispatcher SQLite store override; also accepts `--store` |
 
-By default, every linked worktree uses the primary checkout's
-`.aven-dispatch/state.json`. Older checkout-local attempts can also be
-recovered from the dispatcher snapshot stored on their Aven task.
+By default, every checkout, worktree, and project shares one central SQLite
+store at `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback
+`~/.local/state/aven/dispatch.sqlite`). It is the only dispatcher state store:
+JSON state files are not created, read, or migrated. The dispatcher snapshot on
+each Aven task remains the task-facing recovery surface across checkouts.
 
 Aven starts in the focused pane's directory and infers its project, falling
 back to workspace scope when no project is mapped. The plugin does not copy
@@ -659,7 +665,7 @@ The Rust dispatcher keeps its internal boundaries deliberately small:
 - `src/model.rs` owns Aven command-context parsing and the serde-backed
   dispatcher state model.
 - `src/process.rs` owns command execution, OpenCode/Aven transport helpers,
-  and dispatcher state-path handling.
+  and the central SQLite dispatcher store.
 - `src/main.rs` owns command lifecycle orchestration and integrations.
 
 This separation is intentionally not a framework: add a module only when a

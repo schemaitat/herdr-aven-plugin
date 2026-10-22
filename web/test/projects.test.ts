@@ -14,6 +14,7 @@ import { config, scope, fixture, avenFixture, scratchRoot } from './fixtures.js'
 import { apiEvent, liveFixture } from './fixtures/opencode-api.js';
 import type { GraphSnapshot } from '../shared/graph.js';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { dispatcherFixture, seedDispatcherStore } from './fixtures/dispatcher.js';
 import { join } from 'node:path';
 
 const managers: ProjectManager[] = [];
@@ -99,13 +100,13 @@ describe('leased project collection', () => {
     const lease = await reading; lease.release(); await closing;
     expect(source.close).toHaveBeenCalledTimes(1);
   });
-  it('non-startup projects never read startup store or topology; recovery requires scoped context ownership', async () => {
+  it('unconfigured store keeps scoped recovery; non-startup projects never borrow startup topology', async () => {
     const readStore = vi.fn(async () => { throw new Error('must not read'); });
     const aven = avenFixture();
-    aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify(fixture('dispatcher').attempts['ROOT01:implementation']);
+    aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify(dispatcherFixture().attempts['ROOT01:implementation']);
     const recovered = await readDispatcher(undefined, aven, readStore);
     expect(readStore).not.toHaveBeenCalled(); expect(recovered.attempts.length).toBeGreaterThan(0);
-    expect(recovered.health.message).toContain('non-startup project');
+    expect(recovered.health.message).toContain('not configured');
     const data = fixture('aven'); const calls: string[] = [];
     const read = createGraphReader(await projectConfig(config, 'other'), async command => {
       calls.push(command.kind);
@@ -118,12 +119,13 @@ describe('leased project collection', () => {
     expect(snapshot.scope.project).toBe('other'); expect(snapshot.nodes.some(node => node.kind === 'attempt')).toBe(false);
     expect(snapshot.health.find(item => item.source === 'herdr')?.message).toContain('not reused');
   });
-  it('reads only the configured selected-project store and links its accepted attempt, agent and session', async () => {
+  it('reads the shared central store for every configured project and links its accepted attempt, agent and session', async () => {
     const root = await mkdtemp(join(scratchRoot, 'explorer-project-store-'));
     try {
       const startup = join(root, 'startup'); const selected = join(root, 'selected');
-      await mkdir(startup); await mkdir(join(selected, '.aven-dispatch'), { recursive: true });
-      await writeFile(join(selected, '.aven-dispatch/state.json'), JSON.stringify(fixture('dispatcher')));
+      const central = join(root, 'state', 'aven', 'dispatch.sqlite');
+      await mkdir(startup); await mkdir(selected);
+      seedDispatcherStore(central);
       const selectedData = fixture('aven');
       selectedData.tasks = selectedData.tasks.map((task: object) => ({ ...task, project: 'other' }));
       selectedData.contexts = selectedData.contexts.map((context: { project: object }) => ({ ...context, project: { key: 'other' } }));
@@ -132,7 +134,7 @@ describe('leased project collection', () => {
         if (command.kind === 'context') return selectedData.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);
         throw new Error('Unexpected command');
       };
-      const base = { scope: { ...scope, cwd: startup }, primary: startup, storePath: join(startup, '.aven-dispatch/state.json'), projectCheckouts: new Map([['other', selected]]) };
+      const base = { scope: { ...scope, cwd: startup }, primary: startup, storePath: central, projectCheckouts: new Map([['other', selected]]) };
       const read = createGraphReader(await projectConfig(base, 'other'), runner);
       await read('fast'); const selectedGraph = await read('slow');
       const attempt = selectedGraph.nodes.find(node => node.kind === 'attempt');
@@ -142,14 +144,19 @@ describe('leased project collection', () => {
       expect(selectedGraph.edges.some(edge => edge.kind === 'session')).toBe(true);
       expect(selectedGraph.edges.some(edge => edge.kind === 'assigned' && edge.source.startsWith('task:default:ROOT01'))).toBe(true);
 
-      const isolated = createGraphReader(await projectConfig(base, 'three'), runner);
+      // An unmapped project still resolves the shared central store; its Aven
+      // identity and Herdr topology remain scoped, so unrelated attempts do not
+      // attach to it.
+      const unmapped = await projectConfig(base, 'three');
+      expect(unmapped.storePath).toBe(central);
+      const isolated = createGraphReader(unmapped, runner);
       await isolated('fast'); expect((await isolated('slow')).nodes.some(node => node.kind === 'attempt')).toBe(false);
 
       selectedData.contexts[0].metadata['dispatch.reset-generation'] = '1';
       const stale = createGraphReader(await projectConfig(base, 'other'), runner);
       await stale('fast'); expect((await stale('slow')).nodes.some(node => node.kind === 'attempt')).toBe(false);
 
-      await writeFile(join(selected, '.aven-dispatch/state.json'), '{ malformed');
+      await writeFile(central, '{ malformed');
       delete selectedData.contexts[0].metadata['dispatch.reset-generation'];
       const failed = createGraphReader(await projectConfig(base, 'other'), runner);
       await failed('fast'); const failedGraph = await failed('slow');

@@ -1,71 +1,208 @@
-//! External command execution and local dispatcher state-path utilities.
+//! External command execution and the central dispatcher SQLite store.
 
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde_json::Value;
 use std::{
-    env, fs,
+    collections::BTreeSet,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::model::{Attempt, Invocation, Store, attempt_key};
-use serde_json::Value;
+
+const SCHEMA_VERSION: i64 = 1;
+const UPSERT_ATTEMPT: &str = "INSERT INTO attempts (task_id, workflow, attempt_id, task_ref, state, generation, session_id, created_at, updated_at, payload)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+     ON CONFLICT(task_id, workflow) DO UPDATE SET
+       attempt_id = excluded.attempt_id,
+       task_ref = excluded.task_ref,
+       state = excluded.state,
+       generation = excluded.generation,
+       session_id = excluded.session_id,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at,
+       payload = excluded.payload";
 
 pub(crate) fn store_attempt(store: &mut LockedStore, attempt: Attempt) {
-    store
-        .store
-        .attempts
-        .insert(attempt_key(&attempt.task_id, &attempt.workflow), attempt);
+    store.put(attempt);
 }
 pub(crate) struct LockedStore {
-    pub(crate) path: PathBuf,
-    // Keep the advisory lock alive for the lifetime of the store. Unlike the
-    // previous create_new lock-file sentinel, the operating system releases
-    // this lock when a dispatcher is killed, so a crashed terminal command
-    // cannot permanently block future Aven dispatches.
-    lock_file: fs::File,
+    connection: Connection,
+    // In-memory working set for the current command. Every mutation is
+    // checkpointed to SQLite by save(); rows are written individually so
+    // unrelated tasks/projects never serialize or overwrite each other.
     pub(crate) store: Store,
+    dirty: BTreeSet<String>,
 }
 impl LockedStore {
     pub(crate) fn open(path: PathBuf) -> Result<Self> {
         let parent = path.parent().context("store path has no parent")?;
         fs::create_dir_all(parent).context("create dispatcher state directory")?;
-        let lock = path.with_extension("lock");
-        let lock_file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&lock)
-            .with_context(|| format!("open dispatcher store lock {}", lock.display()))?;
-        lock_file.try_lock_exclusive().with_context(|| {
-            format!(
-                "dispatcher store is locked by another running dispatcher: {}; use status/reconcile instead of concurrent dispatch",
-                lock.display()
-            )
-        })?;
-        let store = if path.exists() {
-            serde_json::from_slice(&fs::read(&path)?)?
-        } else {
-            Store::default()
-        };
+        let connection = Connection::open(&path)
+            .with_context(|| format!("open dispatcher store {}", path.display()))?;
+        connection.busy_timeout(Duration::from_millis(5000))?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        migrate(&connection)?;
+        let mut store = Store::default();
+        {
+            let mut statement = connection
+                .prepare("SELECT payload FROM attempts ORDER BY created_at, task_id, workflow")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let attempt: Attempt = serde_json::from_str(&row?)?;
+                store
+                    .attempts
+                    .insert(attempt_key(&attempt.task_id, &attempt.workflow), attempt);
+            }
+        }
         Ok(Self {
-            path,
-            lock_file,
+            connection,
             store,
+            dirty: BTreeSet::new(),
         })
     }
-    pub(crate) fn save(&self) -> Result<()> {
-        let temporary = self.path.with_extension("new");
-        fs::write(&temporary, serde_json::to_vec_pretty(&self.store)?)?;
-        fs::rename(temporary, &self.path)?;
+    fn put(&mut self, attempt: Attempt) {
+        let key = attempt_key(&attempt.task_id, &attempt.workflow);
+        self.dirty.insert(key.clone());
+        self.store.attempts.insert(key, attempt);
+    }
+    pub(crate) fn save(&mut self) -> Result<()> {
+        if self.dirty.is_empty() {
+            return Ok(());
+        }
+        let keys = self.dirty.iter().cloned().collect::<Vec<_>>();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut statement = transaction.prepare_cached(UPSERT_ATTEMPT)?;
+            let updated_at = now();
+            for key in &keys {
+                let Some(attempt) = self.store.attempts.get(key) else {
+                    continue;
+                };
+                let payload = serde_json::to_string(attempt)?;
+                statement.execute(params![
+                    &attempt.task_id,
+                    &attempt.workflow,
+                    &attempt.attempt_id,
+                    &attempt.task_ref,
+                    &attempt.state,
+                    attempt.generation as i64,
+                    &attempt.session_id,
+                    attempt.created_at as i64,
+                    updated_at as i64,
+                    payload,
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        self.dirty.clear();
         Ok(())
     }
-}
-impl Drop for LockedStore {
-    fn drop(&mut self) {
-        let _ = self.lock_file.unlock();
+    /// Atomically reserve (task_id, workflow). Returns the existing attempt when
+    /// another dispatcher already owns that key.
+    pub(crate) fn reserve(&mut self, attempt: Attempt) -> Result<Option<Attempt>> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT payload FROM attempts WHERE task_id = ?1 AND workflow = ?2",
+                params![&attempt.task_id, &attempt.workflow],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(payload) = existing {
+            transaction.commit()?;
+            let parsed: Attempt = serde_json::from_str(&payload)?;
+            self.store.attempts.insert(
+                attempt_key(&parsed.task_id, &parsed.workflow),
+                parsed.clone(),
+            );
+            return Ok(Some(parsed));
+        }
+        {
+            let mut statement = transaction.prepare_cached(UPSERT_ATTEMPT)?;
+            let payload = serde_json::to_string(&attempt)?;
+            statement.execute(params![
+                &attempt.task_id,
+                &attempt.workflow,
+                &attempt.attempt_id,
+                &attempt.task_ref,
+                &attempt.state,
+                attempt.generation as i64,
+                &attempt.session_id,
+                attempt.created_at as i64,
+                now() as i64,
+                payload,
+            ])?;
+        }
+        transaction.commit()?;
+        self.put(attempt);
+        Ok(None)
     }
+    pub(crate) fn remove_attempts_for_task(&mut self, task_id: &str) -> Result<usize> {
+        let attempts = self
+            .store
+            .attempts
+            .values()
+            .filter(|attempt| attempt.task_id == task_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if attempts.is_empty() {
+            return Ok(0);
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut statement = transaction
+                .prepare_cached("DELETE FROM attempts WHERE task_id = ?1 AND workflow = ?2")?;
+            for attempt in &attempts {
+                statement.execute(params![&attempt.task_id, &attempt.workflow])?;
+            }
+        }
+        transaction.commit()?;
+        for attempt in &attempts {
+            let key = attempt_key(&attempt.task_id, &attempt.workflow);
+            self.store.attempts.remove(&key);
+            self.dirty.remove(&key);
+        }
+        Ok(attempts.len())
+    }
+}
+fn migrate(connection: &Connection) -> Result<()> {
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > SCHEMA_VERSION {
+        bail!(
+            "dispatcher store schema version {version} is newer than supported version {SCHEMA_VERSION}"
+        );
+    }
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS attempts (
+           task_id TEXT NOT NULL,
+           workflow TEXT NOT NULL,
+           attempt_id TEXT NOT NULL,
+           task_ref TEXT NOT NULL,
+           state TEXT NOT NULL,
+           generation INTEGER NOT NULL,
+           session_id TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           updated_at INTEGER NOT NULL,
+           payload TEXT NOT NULL,
+           PRIMARY KEY (task_id, workflow)
+         );
+         CREATE INDEX IF NOT EXISTS attempts_task_ref ON attempts(task_ref);
+         PRAGMA user_version = 1;",
+    )?;
+    Ok(())
 }
 
 pub(crate) fn now() -> u64 {
@@ -77,28 +214,26 @@ pub(crate) fn now() -> u64 {
 pub(crate) fn identifier(prefix: &str) -> String {
     format!("{prefix}_{:x}", now())
 }
+/// Resolve the one central store shared by every checkout, worktree and
+/// project. `--store`/`AVEN_DISPATCH_STORE` still wins for tests and isolation.
 pub(crate) fn store_path(value: Option<PathBuf>) -> PathBuf {
     value.unwrap_or_else(|| {
-        let directory = env::current_dir().unwrap();
-        // All linked checkouts share the primary checkout's existing store.
-        // This resolves a filesystem path only: it never switches branches or
-        // moves Herdr focus to the primary checkout.
-        let primary = run_in(
-            "git",
-            &["worktree".into(), "list".into(), "--porcelain".into()],
-            None,
-            Some(&directory),
+        default_store_path(
+            env::var_os("XDG_STATE_HOME").as_deref(),
+            env::var_os("HOME").as_deref(),
         )
-        .ok()
-        .and_then(|listing| {
-            listing
-                .lines()
-                .find_map(|line| line.strip_prefix("worktree "))
-                .map(PathBuf::from)
-        })
-        .unwrap_or(directory);
-        primary.join(".aven-dispatch/state.json")
     })
+}
+pub(crate) fn default_store_path(xdg_state_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
+    let base = xdg_state_home
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            home.filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value).join(".local/state"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".local/state"));
+    base.join("aven/dispatch.sqlite")
 }
 pub(crate) fn absolute_path(path: PathBuf) -> Result<PathBuf> {
     if path.is_absolute() {
@@ -126,6 +261,28 @@ pub(crate) fn repository_root(directory: &str) -> Result<String> {
         bail!("Git did not return a repository root for {directory}");
     }
     Ok(root)
+}
+
+/// Resolve the repository's primary checkout. Herdr's worktree create/open
+/// actions must start there even when the dispatcher runs inside a linked
+/// worktree.
+pub(crate) fn primary_checkout(directory: &str) -> Result<String> {
+    let listing = run(
+        "git",
+        &[
+            "-C".into(),
+            directory.into(),
+            "worktree".into(),
+            "list".into(),
+            "--porcelain".into(),
+        ],
+        None,
+    )?;
+    Ok(listing
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(str::to_owned)
+        .unwrap_or_else(|| directory.to_owned()))
 }
 
 pub(crate) fn run_in(

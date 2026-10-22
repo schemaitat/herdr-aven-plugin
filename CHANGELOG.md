@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- `aven-dispatch` now keeps all execution state in one central SQLite database
+  at `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback
+  `~/.local/state/aven/dispatch.sqlite`), shared by every checkout, worktree,
+  and project. `--store` / `AVEN_DISPATCH_STORE` still override the path and the
+  resolved path still propagates to spawned panes.
+- Hard cut: no JSON `.aven-dispatch/state.json` store is created, read, or
+  migrated. Finish or `aven-dispatch reset` older in-flight attempts recorded
+  only in JSON, then re-dispatch them.
+- SQLite WAL, `busy_timeout`, and a transactional check-then-insert replace the
+  fs2 advisory lock. The `(task_id, workflow)` primary key preserves same-task
+  uniqueness while different tasks/projects may dispatch concurrently.
+- The web dashboard reads the same central store read-only through `node:sqlite`
+  (bounded to 2000 attempts), so every configured project sees its dispatcher
+  attempts. An absent or locked store keeps the existing `unavailable` health
+  and Aven recovery snapshots.
+- Fixed dispatch from a linked worktree: Herdr worktree create/open now start
+  from the repository's primary checkout while the branch lookup stays scoped
+  to that repository.
+
 ## 0.4.0
 
 - Replace the four vendored spec-kit SDD commands with one aven-native example

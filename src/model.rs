@@ -1,6 +1,7 @@
 //! Dispatcher data model and Aven command-context parsing.
 //!
-//! This module preserves the serde-backed state stored locally and in Aven.
+//! Attempts are the serde payload of the central SQLite store; Aven metadata
+//! keeps the task-facing recovery snapshot.
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -84,7 +85,8 @@ pub(crate) struct Project {
     pub(crate) key: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+/// In-memory working set loaded from the central SQLite `attempts` table.
+#[derive(Debug, Default)]
 pub(crate) struct Store {
     pub(crate) attempts: BTreeMap<String, Attempt>,
 }

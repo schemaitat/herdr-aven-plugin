@@ -21,7 +21,8 @@ use model::{
 use process::header_value;
 use process::{
     LockedStore, absolute_path, aven, aven_args, field, identifier, now, opencode, opencode_in,
-    opencode_text, opencode_text_in, repository_root, run, run_in, store_attempt, store_path,
+    opencode_text, opencode_text_in, primary_checkout, repository_root, run, run_in, store_attempt,
+    store_path,
 };
 
 #[derive(Parser)]
@@ -771,6 +772,10 @@ fn create_worktree(
     base: Option<&str>,
 ) -> Result<WorktreeResource> {
     let origin = repository_root(origin)?;
+    // Herdr refuses worktree actions whose --cwd is a linked worktree, so the
+    // action starts from the primary checkout while the branch lookup stays
+    // scoped to this repository.
+    let herdr_root = primary_checkout(&origin)?;
     let listing = run(
         "git",
         &[
@@ -799,7 +804,7 @@ fn create_worktree(
         args.extend([
             "open".into(),
             "--cwd".into(),
-            origin.clone(),
+            herdr_root.clone(),
             "--path".into(),
             path.into(),
         ]);
@@ -807,7 +812,7 @@ fn create_worktree(
         args.extend([
             "create".into(),
             "--cwd".into(),
-            origin,
+            herdr_root,
             "--branch".into(),
             branch.to_owned(),
         ]);
@@ -1278,8 +1283,8 @@ fn provision_phase_worktrees(
 fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     // Aven owns the task-scoped durable snapshot. The individual metadata
     // fields stay queryable, while one workflow-scoped dispatch.attempt snapshot
-    // per role permits recovery from any checkout without locating a
-    // checkout-local state file. Planning and implementation therefore retain
+    // per role permits recovery from any checkout without consulting the
+    // central store's row. Planning and implementation therefore retain
     // separate sessions while sharing the selected task's worktree branch.
     let current = refresh_task_by_ref(invocation, &attempt.task_ref)?;
     ensure_attempt_current(&current, attempt)?;
@@ -1463,8 +1468,8 @@ fn dispatch(
                         })
                 })
     {
-        // Older dispatches may have used a checkout-local store. Aven's
-        // task-scoped snapshot preserves that session across checkout changes.
+        // An attempt absent from the central store may still be recoverable
+        // from the task-scoped Aven snapshot (including after the JSON cut).
         let recovered: Attempt =
             serde_json::from_str(snapshot).context("read Aven dispatcher attempt snapshot")?;
         if recovered.task_id != selected.task.id {
@@ -1704,7 +1709,19 @@ fn dispatch(
     }
     let mut store = LockedStore::open(path.clone())?;
     attempt.state = "session-pending".into();
-    store_attempt(&mut store, attempt.clone());
+    // Reservation is a single BEGIN IMMEDIATE transaction. Different tasks may
+    // provision concurrently, while a same-task race loses before creating any
+    // OpenCode session and cleans up the worktree it provisioned.
+    if let Some(existing) = store.reserve(attempt.clone())? {
+        drop(store);
+        remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
+        bail!(
+            "another dispatcher already started {} (attempt {}); run aven-dispatch status {}",
+            existing.task_ref,
+            existing.attempt_id,
+            existing.task_ref
+        );
+    }
     store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees {
         install_global_agent(ORCHESTRATOR_AGENT_ID, ORCHESTRATOR_AGENT)?;
@@ -2108,11 +2125,7 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
             None,
         )?;
     }
-    store
-        .store
-        .attempts
-        .retain(|_, attempt| attempt.task_id != task_id);
-    store.save()?;
+    store.remove_attempts_for_task(&task_id)?;
     let mut cleanup = vec!["edit".to_owned(), reference.clone()];
     let existing_metadata = root.get("metadata").and_then(Value::as_object);
     for key in [
@@ -2481,7 +2494,8 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
     }
     Ok(changed)
 }
-fn doctor() -> Result<()> {
+fn doctor(path: &Path) -> Result<()> {
+    println!("store: {}", path.display());
     let aven_version = run("aven", &["--version".into()], None)?;
     // `opencode api` intentionally truncates very large bodies, so probe a
     // small V2 endpoint rather than trying to parse its complete OpenAPI body.
@@ -2559,7 +2573,7 @@ fn main() -> Result<()> {
         } => log_event(path, &task, workflow.as_deref(), &event, &detail),
         Commands::Interrupt { task, workflow } => interrupt(path, &task, workflow.as_deref()),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
-        Commands::Doctor => doctor(),
+        Commands::Doctor => doctor(&path),
     };
     if let Err(error) = &result {
         show_terminal_error(error);
@@ -2863,20 +2877,180 @@ mod tests {
             ".opencode/agents/unrelated.md"
         ));
     }
+    fn stored_attempt(task_id: &str, workflow: &str, state: &str) -> Attempt {
+        Attempt {
+            task_id: task_id.into(),
+            task_ref: format!("APP-{}", task_id.to_uppercase()),
+            workflow: workflow.into(),
+            attempt_id: format!("att_{task_id}_{workflow}"),
+            branch: format!("app/dispatch-{task_id}"),
+            worktree: String::new(),
+            worktree_created_by_attempt: false,
+            pane: String::new(),
+            agent: String::new(),
+            model: String::new(),
+            execution_mode: ExecutionMode::SingleSession,
+            coordinator_session_id: String::new(),
+            coordinator_agent: String::new(),
+            coordinator_model: String::new(),
+            auto_permissions: false,
+            phases: Vec::new(),
+            session_id: format!("ses_{task_id}"),
+            prompt_id: String::new(),
+            pending_prompt: String::new(),
+            state: state.into(),
+            aven_update_pending: false,
+            log_cursor: String::new(),
+            log_task_ref: String::new(),
+            generation: 0,
+            babysitter: false,
+            babysitter_pane: String::new(),
+            babysitter_session_id: String::new(),
+            babysitter_prompt_id: String::new(),
+            aven: Invocation {
+                aven_exe: String::new(),
+                db_path: None,
+                workspace: None,
+                origin_cwd: String::new(),
+            },
+            created_at: now(),
+        }
+    }
     #[test]
-    fn stale_legacy_lock_file_does_not_block_dispatch_store_access() {
+    fn sqlite_store_persists_and_removes_attempts() {
         let root = tempfile::tempdir().unwrap();
-        let state = root.path().join("state.json");
-        let legacy_lock = state.with_extension("lock");
-        fs::write(&legacy_lock, "").unwrap();
+        let state = root.path().join("dispatch.sqlite");
+        let mut store = LockedStore::open(state.clone()).unwrap();
+        store_attempt(
+            &mut store,
+            stored_attempt("task-one", "planning", "running"),
+        );
+        store.save().unwrap();
+        drop(store);
 
-        let first = LockedStore::open(state.clone()).unwrap();
-        assert!(LockedStore::open(state.clone()).is_err());
-        drop(first);
+        let mut reopened = LockedStore::open(state.clone()).unwrap();
+        assert_eq!(
+            reopened
+                .store
+                .attempts
+                .get(&attempt_key("task-one", "planning"))
+                .unwrap()
+                .state,
+            "running"
+        );
+        assert_eq!(reopened.remove_attempts_for_task("task-one").unwrap(), 1);
+        reopened.save().unwrap();
+        drop(reopened);
 
-        // The file remains as a stable advisory-lock target, but no longer
-        // represents an active dispatcher once its owner exits.
-        LockedStore::open(state).unwrap();
+        assert!(LockedStore::open(state).unwrap().store.attempts.is_empty());
+    }
+    #[test]
+    fn sqlite_store_reserves_task_workflow_atomically() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("dispatch.sqlite");
+        let mut first = LockedStore::open(state.clone()).unwrap();
+        assert!(
+            first
+                .reserve(stored_attempt(
+                    "task-one",
+                    "implementation",
+                    "session-pending"
+                ))
+                .unwrap()
+                .is_none()
+        );
+        first.save().unwrap();
+
+        let mut second = LockedStore::open(state).unwrap();
+        let existing = second
+            .reserve(stored_attempt(
+                "task-one",
+                "implementation",
+                "session-pending",
+            ))
+            .unwrap()
+            .expect("the second reservation must observe the first attempt");
+        assert_eq!(existing.task_id, "task-one");
+        assert_eq!(second.store.attempts.len(), 1);
+
+        // A different workflow for the same task is a distinct execution.
+        assert!(
+            second
+                .reserve(stored_attempt("task-one", "planning", "session-pending"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(second.store.attempts.len(), 2);
+    }
+    #[test]
+    fn sqlite_store_allows_concurrent_different_task_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("dispatch.sqlite");
+        let mut first = LockedStore::open(state.clone()).unwrap();
+        let mut second = LockedStore::open(state.clone()).unwrap();
+        assert!(
+            first
+                .reserve(stored_attempt(
+                    "task-one",
+                    "implementation",
+                    "session-pending"
+                ))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            second
+                .reserve(stored_attempt(
+                    "task-two",
+                    "implementation",
+                    "session-pending"
+                ))
+                .unwrap()
+                .is_none()
+        );
+        first.save().unwrap();
+        second.save().unwrap();
+        drop((first, second));
+
+        let store = LockedStore::open(state).unwrap();
+        assert_eq!(store.store.attempts.len(), 2);
+        assert!(
+            store
+                .store
+                .attempts
+                .contains_key(&attempt_key("task-one", "implementation"))
+        );
+        assert!(
+            store
+                .store
+                .attempts
+                .contains_key(&attempt_key("task-two", "implementation"))
+        );
+    }
+    #[test]
+    fn sqlite_store_refuses_a_newer_schema_version() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("dispatch.sqlite");
+        let connection = rusqlite::Connection::open(&state).unwrap();
+        connection.pragma_update(None, "user_version", 99).unwrap();
+        drop(connection);
+        assert!(LockedStore::open(state).is_err());
+    }
+    #[test]
+    fn central_store_path_is_xdg_compatible() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            process::default_store_path(Some(OsStr::new("/state")), Some(OsStr::new("/home/u"))),
+            PathBuf::from("/state/aven/dispatch.sqlite")
+        );
+        assert_eq!(
+            process::default_store_path(None, Some(OsStr::new("/home/u"))),
+            PathBuf::from("/home/u/.local/state/aven/dispatch.sqlite")
+        );
+        assert_eq!(
+            process::store_path(Some(PathBuf::from("/custom/dispatch.sqlite"))),
+            PathBuf::from("/custom/dispatch.sqlite")
+        );
     }
     #[test]
     fn interactive_cancellation_does_not_show_an_error_screen() {
@@ -2957,7 +3131,7 @@ mod tests {
             "attempt_ids": ["att-root", "att-worker"],
             "sessions": ["ses-root", "ses-worker"]
         });
-        // Model recovery after both the checkout-local store and task metadata
+        // Model recovery after both the central store and task metadata
         // snapshots have already been removed: only the operation record is
         // available for the auditing/completed checkpoint.
         let attempts = merged_reset_inventory(

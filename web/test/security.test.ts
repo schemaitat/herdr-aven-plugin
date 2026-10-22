@@ -7,7 +7,8 @@ import { scope, scratchRoot } from './fixtures.js';
 import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readDispatcher } from '../server/sources/dispatcher.js';
-import { avenFixture, fixture } from './fixtures.js';
+import { avenFixture } from './fixtures.js';
+import { seedDispatcherStore } from './fixtures/dispatcher.js';
 
 const origin = 'http://127.0.0.1:4318';
 const token = 'a'.repeat(64);
@@ -140,11 +141,12 @@ else setTimeout(()=>console.log('{}'), 30);
       const settled = Promise.allSettled([running, queued]);
       setTimeout(() => controller.abort(), 30);
       expect((await settled).every(result => result.status === 'rejected')).toBe(true);
-      const store = join(temp, 'state.json');
-      const original = JSON.stringify(fixture('dispatcher'));
-      await writeFile(store, original);
-      await readDispatcher(store, avenFixture());
-      expect(await readFile(store, 'utf8')).toBe(original);
+      const store = join(temp, 'dispatch.sqlite');
+      seedDispatcherStore(store);
+      const original = await readFile(store);
+      const read = await readDispatcher(store, avenFixture());
+      expect(read.attempts).toHaveLength(2);
+      expect(await readFile(store)).toEqual(original);
       await expect(access(join(temp, 'state.lock'))).rejects.toThrow();
     } finally {
       process.env.PATH = previousPath;

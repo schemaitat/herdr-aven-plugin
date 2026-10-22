@@ -9,7 +9,7 @@ work=$(mkworkdir)
 fake=$work/bin
 mkdir -p "$fake"
 log=$work/calls
-state=$work/state.json
+state=$work/dispatch.sqlite
 export RUST_DISPATCH_LOG=$log
 export HERDR_SOCKET_PATH=$work/herdr.sock
 export XDG_CONFIG_HOME=$work/config
@@ -39,7 +39,7 @@ cat > "$fake/git" <<'EOF'
 case " $* " in
   *" rev-parse --show-toplevel "*) printf '%s\n' "${RUST_REPO_ROOT:-/parent}" ;;
   *)
-printf 'worktree /parent\nHEAD deadbeef\nbranch refs/heads/main\n\n'
+printf 'worktree %s\nHEAD deadbeef\nbranch refs/heads/main\n\n' "${RUST_REPO_ROOT:-/parent}"
   ;;
 esac
 EOF
@@ -113,6 +113,8 @@ assert_file_contains "$log" 'herdr-api pane.focus w1:p1' 'dispatch focuses the w
 assert_file_contains "$log" '"agent":"build"' 'primary agent sent to OpenCode session creation'
 assert_file_contains "$log" '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' 'model sent to OpenCode session creation'
 [ ! -e "$work/worktree/.opencode/opencode.jsonc" ] || fail 'ordinary dispatch must not add an OpenCode config'
+[ ! -e "$work/state.json" ] || fail 'central dispatch must not create a JSON store'
+[ ! -e "$work/.aven-dispatch" ] || fail 'central dispatch must not create .aven-dispatch'
 assert_file_contains "$log" 'opencode api POST /api/session/ses_one/prompt' 'durable prompt admission'
 assert_file_contains "$log" 'herdr pane run w1:p1 env AVEN_DISPATCH_STORE=' 'OpenCode inherits the dispatcher store in the worktree pane'
 assert_file_contains "$log" 'herdr pane send-keys w1:p1 ctrl+c' 'dispatcher clears the target pane before starting OpenCode'
@@ -125,14 +127,18 @@ prompt_line=$(grep -n 'opencode api POST /api/session/ses_one/prompt' "$log" | h
 [ "$pane_clear_line" -lt "$agent_start_line" ] || fail 'pane is cleared before the OpenCode command is sent'
 [ "$agent_start_line" -lt "$prompt_line" ] || fail 'OpenCode starts before prompt admission schedules execution'
 assert_file_contains "$log" 'Plan then implement an Aven task' 'explicit skills directory is loaded'
-assert_file_contains "$state" '"session_id": "ses_one"' 'session persisted before retry'
-assert_file_contains "$state" '"agent": "build"' 'primary agent persisted'
+assert_contains "$(sqlite_json "$state")" '"session_id": "ses_one"' 'session persisted before retry'
+assert_contains "$(sqlite_json "$state")" '"agent": "build"' 'primary agent persisted'
+assert_file_contains "$log" '--metadata dispatch.attempt.implementation=' 'Aven metadata projection keeps the workflow snapshot'
+assert_file_contains "$log" '--metadata dispatch.session-id=ses_one' 'Aven metadata projection keeps the session link'
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- status APP-1 > "$work/status"
+assert_file_contains "$work/status" '"session_id": "ses_one"' 'status reads the central SQLite attempt'
 assert_not_contains "$(cat "$log")" 'herdr pane split' 'ordinary dispatch does not create a babysitter pane'
 assert_not_contains "$(cat "$log")" 'Pre-provisioned cumulative worktrees' 'single-session prompt does not receive worktree coordinator instructions'
 
 # Babysitting is opt-in: both sessions are created and prompted through the
 # OpenCode API, then the second API session is attached in the sibling pane.
-babysitter_state=$work/babysitter-state.json
+babysitter_state=$work/babysitter-dispatch.sqlite
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_state" RUST_WORKTREE="$work/worktree-babysitter" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter >/dev/null
 assert_file_contains "$log" 'herdr pane split w1:p1 --direction right --cwd ' 'babysitter splits next to build pane'
 assert_file_contains "$log" 'opencode api GET /api/agent' 'babysitter discovery queries the global agent context'
@@ -143,17 +149,17 @@ assert_file_contains "$log" 'opencode api POST /api/session/ses_babysitter/promp
 assert_file_contains "$log" 'herdr pane run w1:p2 env AVEN_DISPATCH_STORE=' 'babysitter inherits the dispatcher store when its API-owned session attaches'
 assert_file_contains "$log" 'opencode --session '\''ses_babysitter'\''' 'babysitter pane attaches API-owned session'
 assert_file_contains "$log" 'Supervise build OpenCode session ses_one in Herdr pane w1:p1' 'babysitter receives build identity'
-assert_file_contains "$babysitter_state" '"babysitter": true' 'opt-in babysitter persisted'
-assert_file_contains "$babysitter_state" '"babysitter_session_id": "ses_babysitter"' 'babysitter API session persisted'
+assert_contains "$(sqlite_json "$babysitter_state")" '"babysitter": true' 'opt-in babysitter persisted'
+assert_contains "$(sqlite_json "$babysitter_state")" '"babysitter_session_id": "ses_babysitter"' 'babysitter API session persisted'
 assert_file_contains "$work/config/opencode/agents/aven-babysitter.md" 'You are the babysitter' 'babysitter is installed as a global aven-namespaced agent'
 [ ! -e "$work/worktree-babysitter/.opencode/opencode.jsonc" ] || fail 'babysitter dispatch must not add an OpenCode config'
 
 # `--agent select` always opens the Herdr popup picker, including when OpenCode
 # reports only one visible primary agent. The selected ID returns through a
 # private response file, so the Aven command's JSON stdin remains untouched.
-selector_state=$work/selector-state.json
+selector_state=$work/selector-dispatch.sqlite
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$selector_state" RUST_WORKTREE="$work/worktree-selector" cargo run --quiet -- dispatch --agent select --model github-copilot/gpt-5.6-terra >/dev/null
-assert_file_contains "$selector_state" '"agent": "configured-build"' 'picker returns the selected OpenCode agent id'
+assert_contains "$(sqlite_json "$selector_state")" '"agent": "configured-build"' 'picker returns the selected OpenCode agent id'
 assert_file_contains "$log" 'herdr plugin pane open --plugin aven.tasks --entrypoint agent-picker' 'selector opens the Herdr popup picker'
 assert_file_contains "$log" 'opencode api GET /api/agent' 'selector lists agents through the OpenCode API'
 
@@ -174,20 +180,26 @@ after=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 assert_eq "$after" "$before" 're-dispatch does not admit a second prompt'
 assert_file_contains "$work/retry" 'reopened APP-1 in OpenCode session ses_one' 're-dispatch reopens the persisted session'
 
-# Legacy attempts could be checkpointed as prompt-pending before their prompt
+# Older attempts could be checkpointed as prompt-pending before their prompt
 # body was durable. Single-session recovery rebuilds the deterministic workflow
 # prompt rather than leaving the selected task permanently stranded.
-legacy_state=$work/legacy-pending.json
+legacy_state=$work/legacy-pending.sqlite
 python3 - "$state" "$legacy_state" <<'PY'
 import json
+import sqlite3
 import sys
 
 source, target = sys.argv[1:]
-store = json.load(open(source))
-attempt = next(iter(store["attempts"].values()))
-attempt["state"] = "prompt-pending"
-attempt["pending_prompt"] = ""
-json.dump(store, open(target, "w"))
+with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+    src.backup(dst)
+    task_id, workflow, payload = dst.execute(
+        "SELECT task_id, workflow, payload FROM attempts").fetchone()
+    attempt = json.loads(payload)
+    attempt["state"] = "prompt-pending"
+    attempt["pending_prompt"] = ""
+    dst.execute("UPDATE attempts SET state = ?, payload = ? WHERE task_id = ? AND workflow = ?",
+                (attempt["state"], json.dumps(attempt), task_id, workflow))
+    dst.commit()
 PY
 before=$(grep -c 'POST /api/session/ses_one/prompt' "$log")
 printf '%s\n' "$context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$legacy_state" RUST_WORKTREE="$work/worktree-legacy" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" > "$work/legacy-retry"
@@ -196,7 +208,7 @@ assert_eq "$after" "$((before + 1))" 'legacy pending attempt regenerates and adm
 assert_file_contains "$work/legacy-retry" 'reopened APP-1 in OpenCode session ses_one' 'legacy pending attempt reopens its existing session'
 
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- reconcile APP-1 >/dev/null
-assert_file_contains "$state" '"log_cursor": "42"' 'durable log cursor persisted'
+assert_contains "$(sqlite_json "$state")" '"log_cursor": "42"' 'durable log cursor persisted'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- interrupt APP-1 >/dev/null
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- list --running > "$work/after-interrupt"
 assert_not_contains "$(cat "$work/after-interrupt")" '"task_ref": "APP-1"' 'interrupted dispatch is excluded from running list'
@@ -210,7 +222,7 @@ assert_file_contains "$log" 'aven note DL-LOG --stdin' 'operator event is writte
 # so this also proves reset uses the V2 activity probe before mutation.
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$state" cargo run --quiet -- reset APP-1 --yes > "$work/reset"
 assert_file_contains "$work/reset" 'reset complete for APP-1' 'confirmed reset completes'
-assert_file_contains "$state" '"attempts": {}' 'reset removes the local attempt'
+assert_eq "$(sqlite_count "$state")" 0 'reset removes the shared-store attempt'
 assert_file_contains "$log" 'opencode api GET /api/session/active' 'reset checks active sessions before cleanup'
 assert_not_contains "$(cat "$log")" 'aven edit APP-1 --status todo' 'reset preserves the task status'
 assert_not_contains "$(cat "$log")" '--remove-metadata sdd.plan-worked-out' 'reset preserves the completed-plan marker'
@@ -222,7 +234,7 @@ assert_file_contains "$work/reset" 'Aven plan was preserved' 'completion reports
 # Cumulative worktrees are provisioned by the dispatcher, not left to the
 # coordinator model. The root gets one coordinator worktree and every ordered
 # phase gets its own worker worktree; only the first phase is admitted.
-cumulative_state=$work/cumulative-state.json
+cumulative_state=$work/cumulative-dispatch.sqlite
 cumulative_context='{"version":1,"invocation":{"origin_cwd":"/repo"},"targeting":{"targets":[{"id":"epic-task","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-2","task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"}}}}'
 printf '%s\n' "$cumulative_context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_state" RUST_WORKTREE="$work/worktree-cumulative" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees >/dev/null
 epic_worktrees=$(grep -c 'branch app/dispatch-epic-task' "$log")
@@ -234,19 +246,19 @@ phase_two_line=$(grep -n 'label APP-P2 second phase' "$log" | tail -n 1 | cut -d
 [ "$phase_one_line" -lt "$phase_two_line" ] || fail 'reverse-ordered Aven children are provisioned in validated phase order'
 assert_file_contains "$log" '"agent":"aven-orchestrator"' 'root session uses the fixed global orchestrator agent'
 assert_file_contains "$work/config/opencode/agents/aven-orchestrator.md" 'You coordinate one approved Aven implementation epic' 'orchestrator is installed as a global aven-namespaced agent'
-assert_file_contains "$cumulative_state" '"task_ref": "APP-P1"' 'first phase is persisted'
-assert_file_contains "$cumulative_state" '"task_ref": "APP-P2"' 'second phase is persisted'
-assert_file_contains "$cumulative_state" '"state": "provisioned"' 'blocked successor remains provisioned without a prompt'
-assert_file_contains "$cumulative_state" '"state": "running"' 'first phase is admitted to its worker session'
+assert_contains "$(sqlite_json "$cumulative_state")" '"task_ref": "APP-P1"' 'first phase is persisted'
+assert_contains "$(sqlite_json "$cumulative_state")" '"task_ref": "APP-P2"' 'second phase is persisted'
+assert_contains "$(sqlite_json "$cumulative_state")" '"state": "provisioned"' 'blocked successor remains provisioned without a prompt'
+assert_contains "$(sqlite_json "$cumulative_state")" '"state": "running"' 'first phase is admitted to its worker session'
 assert_file_contains "$log" 'Pre-provisioned cumulative worktrees' 'worktree coordinator receives its topology instructions'
 
 # A one-phase plan has the same epic root/child structure. Worktree mode must
 # admit that single ordered child instead of requiring an arbitrary second one.
-single_epic_state=$work/single-epic-state.json
+single_epic_state=$work/single-epic-dispatch.sqlite
 single_epic_context='{"version":1,"invocation":{"origin_cwd":"/repo"},"targeting":{"targets":[{"id":"single-epic","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-3","task":{"id":"single-epic","title":"single-phase epic"},"project":{"key":"app"}}}}'
 printf '%s\n' "$single_epic_context" | PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$single_epic_state" RUST_WORKTREE="$work/worktree-single-epic" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees >/dev/null
-assert_file_contains "$single_epic_state" '"task_ref": "APP-ONLY"' 'one-child epic phase is persisted'
-assert_file_contains "$single_epic_state" '"state": "running"' 'one-child epic phase is admitted'
+assert_contains "$(sqlite_json "$single_epic_state")" '"task_ref": "APP-ONLY"' 'one-child epic phase is persisted'
+assert_contains "$(sqlite_json "$single_epic_state")" '"state": "running"' 'one-child epic phase is admitted'
 
 # A reset clears execution attempts but never changes the approved epic plan,
 # root status, or phase subtasks. The root remains the durable ADR

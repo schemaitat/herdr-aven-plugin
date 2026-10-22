@@ -14,6 +14,7 @@ import pty
 import re
 import select
 import shutil
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -47,7 +48,7 @@ def main():
     repo, fake, config = root / "repo", root / "bin", root / "aven"
     for directory in (repo, fake, config):
         directory.mkdir()
-    store = repo / ".aven-dispatch" / "state.json"
+    store = root / "state" / "aven" / "dispatch.sqlite"
     calls, agents = root / "calls.jsonl", root / "agents.json"
     session = f"aven-popup-e2e-{os.getpid()}"
     env = {
@@ -184,9 +185,14 @@ else:
         return [call for call in records() if call["argv"][:2] == ["api", "POST"]]
 
     def attempt(reference=task_ref):
-        if store.exists():
-            return next((attempt for attempt in json.loads(store.read_text())["attempts"].values()
-                         if attempt["task_ref"] == reference), None)
+        if not store.exists():
+            return None
+        connection = sqlite3.connect(store)
+        try:
+            rows = [json.loads(row[0]) for row in connection.execute("SELECT payload FROM attempts")]
+        finally:
+            connection.close()
+        return next((attempt for attempt in rows if attempt["task_ref"] == reference), None)
 
     def open_aven(title=b"POPUP_PICKER_E2E"):
         start = len(output)
@@ -224,7 +230,7 @@ else:
         open_aven()
         start = invoke_picker(b"zs", implementation_mode=True)
         wait_text(b"Choice [1-1]", start)
-        assert not posts() and not store.exists(), "Single agent was auto-selected"
+        assert not posts() and attempt() is None, "Single agent was auto-selected"
         invalid_start = len(output)
         os.write(master, b"0\n")
         wait_text(b"Enter a number from 1 to 1, or q.", invalid_start)
@@ -232,7 +238,7 @@ else:
         cancel_start = len(output)
         os.write(master, b"q\n")
         wait_text(b"POPUP_PICKER_E2E", cancel_start)
-        assert not posts() and not store.exists(), "Cancellation admitted a session"
+        assert not posts() and attempt() is None, "Cancellation admitted a session"
         assert run(["git", "worktree", "list", "--porcelain"]).count("worktree ") == initial_worktrees, \
             "Cancellation did not remove the newly created Herdr worktree"
         assert snapshot()["focused_pane_id"] == origin_pane
@@ -316,7 +322,8 @@ else:
         assert child["agent"] == "build" and len(posts()) == 4
         assert run(["git", "symbolic-ref", "HEAD"]).strip() == main_branch
         assert run(["git", "symbolic-ref", "HEAD"], cwd=source).strip() == source_branch
-        assert not (source / ".aven-dispatch" / "state.json").exists(), "Worktree used a separate default store"
+        assert not (repo / ".aven-dispatch").exists(), "Primary checkout created a legacy store"
+        assert not (source / ".aven-dispatch").exists(), "Worktree created a legacy store"
         listing = json.loads(run([str(dispatcher), "list"], cwd=source))
         assert {item["task_ref"] for item in listing} == {task_ref, worktree_ref}
         print("PASS: new task dispatch from a linked worktree; focus deferred and branches unchanged", flush=True)

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import sqlite3
 import subprocess
 import sys
 import time
@@ -19,7 +20,7 @@ log = Path(os.environ["RUST_DISPATCH_LOG"])
 
 
 def exercise(name, choice, reopen=False):
-    state = work / f"{name}.json"
+    state = work / f"{name}.sqlite"
     before = log.read_text()
     master, slave = pty.openpty()
     env = {
@@ -39,6 +40,15 @@ def exercise(name, choice, reopen=False):
     )
     os.close(slave)
     output = b""
+
+    def attempts():
+        if not state.exists():
+            return []
+        connection = sqlite3.connect(state)
+        try:
+            return [json.loads(row[0]) for row in connection.execute("SELECT payload FROM attempts")]
+        finally:
+            connection.close()
 
     def wait_for(text):
         nonlocal output
@@ -64,7 +74,7 @@ def exercise(name, choice, reopen=False):
         assert "plugin pane open" not in calls, calls
         assert "pane.focus" not in calls, calls
         assert "--no-focus" in calls, calls
-        assert state.exists() == reopen
+        assert bool(attempts()) == reopen
         if reopen:
             assert b"reopen existing session" in output
         os.write(master, b"0\n")
@@ -80,12 +90,12 @@ def exercise(name, choice, reopen=False):
         result = process.wait(timeout=30)
         if choice == b"q\n":
             assert result != 0
-            assert not state.exists()
+            assert not attempts()
             assert "POST /api/session" not in log.read_text()[len(before):]
             assert "pane.focus" not in log.read_text()[len(before):]
         else:
             assert result == 0, output.decode(errors="replace")
-            attempt = next(iter(json.loads(state.read_text())["attempts"].values()))
+            attempt = attempts()[0]
             assert attempt["agent"] == "configured-build"
             assert attempt["model"] == "github-copilot/gpt-5.6-terra"
             assert attempt["state"] == "running"

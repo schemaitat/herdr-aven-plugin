@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import type { AvenRead } from './aven.js';
 import type { SourceHealth } from '../../shared/graph.js';
@@ -17,6 +18,8 @@ export const attemptSchema = z.object({
 export type Attempt = z.infer<typeof attemptSchema>;
 export interface DispatchRead { attempts: { attempt: Attempt; origin: string; observedAt?: string }[]; health: SourceHealth }
 
+export const ATTEMPT_LIMIT = 2000;
+
 export async function boundedJsonFile(path: string, limit = 4 * 1024 * 1024): Promise<unknown> {
   const file = await open(path, 'r');
   try {
@@ -29,8 +32,23 @@ export async function boundedJsonFile(path: string, limit = 4 * 1024 * 1024): Pr
   } finally { await file.close(); }
 }
 
-export async function readDispatcher(path: string | undefined, aven: AvenRead, read = boundedJsonFile): Promise<DispatchRead> {
-  const health: SourceHealth = { source: 'dispatcher', status: 'ok', observedAt: new Date().toISOString(), message: 'Read-only store + Aven recovery snapshots; no lock or reconciliation' };
+// Read-only and bounded: no WAL writes, no lock, no reconciliation.
+export async function readSqliteAttempts(path: string | undefined): Promise<unknown[]> {
+  if (path === undefined) throw new Error('Central dispatcher store not configured');
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    const rows = database.prepare(
+      `SELECT payload FROM attempts ORDER BY created_at, task_id, workflow LIMIT ${ATTEMPT_LIMIT + 1}`,
+    ).all() as { payload: string }[];
+    if (rows.length > ATTEMPT_LIMIT) throw new Error('Too many attempts');
+    return rows.map(row => JSON.parse(String(row.payload)));
+  } finally { database.close(); }
+}
+
+export type AttemptReader = (path: string | undefined) => Promise<unknown[]>;
+
+export async function readDispatcher(path: string | undefined, aven: AvenRead, read: AttemptReader = readSqliteAttempts): Promise<DispatchRead> {
+  const health: SourceHealth = { source: 'dispatcher', status: 'ok', observedAt: new Date().toISOString(), message: 'Read-only central SQLite store + Aven recovery snapshots; no lock or reconciliation' };
   const candidates: DispatchRead['attempts'] = [];
   let rejected = 0;
   const accept = (raw: unknown, origin: string, owner?: string, workflow?: string) => {
@@ -51,15 +69,15 @@ export async function readDispatcher(path: string | undefined, aven: AvenRead, r
     }
   }
   try {
-    if (path === undefined) throw new Error('Local coverage not configured');
-    const store = z.object({ attempts: z.record(z.string(), z.unknown()) }).parse(await read(path));
-    if (Object.keys(store.attempts).length > 2000) throw new Error('Too many attempts');
-    for (const raw of Object.values(store.attempts)) accept(raw, 'local-store');
+    if (path === undefined) throw new Error('Central dispatcher store not configured');
+    const attempts = await read(path);
+    if (attempts.length > ATTEMPT_LIMIT) throw new Error('Too many attempts');
+    for (const raw of attempts) accept(raw, 'central-store');
   } catch {
     health.status = 'unavailable';
-    health.message = path === undefined ? 'Local store unavailable for non-startup project; scoped Aven recovery snapshots only' : 'Local store absent, oversized, or unsupported; scoped Aven recovery snapshots remain available';
+    health.message = path === undefined ? 'Central dispatcher store not configured; scoped Aven recovery snapshots only' : 'Central dispatcher store absent, locked, oversized, or unsupported; scoped Aven recovery snapshots remain available';
   }
-  // Latest attempt per task/workflow/generation wins. Local store wins ties (may be ahead of Aven metadata).
+  // Latest attempt per task/workflow/generation wins. The central store wins ties (may be ahead of Aven metadata).
   const merged = new Map<string, DispatchRead['attempts'][number]>();
   for (const candidate of candidates) {
     const a = candidate.attempt;

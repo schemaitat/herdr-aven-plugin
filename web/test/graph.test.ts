@@ -4,12 +4,13 @@ import { readDispatcher } from '../server/sources/dispatcher.js';
 import { readHerdr } from '../server/sources/herdr.js';
 import { entityId } from '../shared/graph.js';
 import { avenFixture, config, fixture, scope } from './fixtures.js';
+import { dispatcherAttempts, dispatcherFixture } from './fixtures/dispatcher.js';
 
 async function snapshot(mode = 'worktrees') {
   const aven = avenFixture();
-  const store = fixture('dispatcher');
+  const store = dispatcherFixture();
   store.attempts['ROOT01:implementation'].execution_mode = mode;
-  const dispatch = await readDispatcher('/store', aven, async () => store);
+  const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts(store));
   const data = fixture('herdr');
   const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
   return normalize(config, aven, dispatch, herdr);
@@ -24,7 +25,7 @@ describe('normalized identity and directed edges', () => {
     aven.tasks[1].updated_at = '2026-10-20T10:00:00Z';
     aven.tasks[2].updated_at = '2099-01-01T00:00:00Z';
     aven.tasks[2].created_at = '';
-    const dispatch = await readDispatcher('/store', aven, async () => fixture('dispatcher'));
+    const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts());
     dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = Date.parse('2026-10-19T12:00:00Z') / 1000; });
     const data = fixture('herdr');
     const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
@@ -62,7 +63,7 @@ describe('normalized identity and directed edges', () => {
     const aven = avenFixture();
     aven.tasks[1].deleted = true;
     aven.contexts.delete('TASK02');
-    const dispatch = await readDispatcher('/store', aven, async () => fixture('dispatcher'));
+    const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts());
     const herdr = await readHerdr({ ...scope, herdr: false }, '/repo', async () => { throw new Error('No Herdr'); });
     const graph = normalize(config, aven, dispatch, herdr);
     expect(graph.nodes.find(node => node.details.taskId === 'TASK01' && node.kind === 'task')?.state).toBe('deleted');
@@ -72,7 +73,7 @@ describe('normalized identity and directed edges', () => {
   it('uses API-session identity independently of Herdr session and retains cached-context timestamps', async () => {
     const aven = avenFixture();
     aven.contextObservedAt = new Map([['TASK01', '2026-10-19T00:00:00Z']]);
-    const dispatch = await readDispatcher('/store', aven, async () => fixture('dispatcher'));
+    const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts());
     const data = fixture('herdr');
     const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
     const first = normalize(config, aven, dispatch, herdr);
