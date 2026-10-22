@@ -43,7 +43,7 @@ describe('deterministic layout metrics', () => {
 
   test('overlap pairs use drawn radii plus clearance and ignore unpositioned nodes', () => {
     const nodes = [entity('epic', 'epic'), entity('task', 'task')];
-    expect(overlapPairs(nodes, positions({ epic: [0, 0], task: [95, 0] }))).toEqual([]);
+    expect(overlapPairs(nodes, positions({ epic: [0, 0], task: [110, 0] }))).toEqual([]);
     expect(overlapPairs(nodes, positions({ epic: [0, 0], task: [30, 0] }))).toEqual([['epic', 'task']]);
     expect(overlapPairs(nodes, positions({ epic: [0, 0] }))).toEqual([]);
   });

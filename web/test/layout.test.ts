@@ -113,7 +113,8 @@ describe('drop settlement around a dragged node', () => {
   const edges = [edge('e1', 'contains', 'epic:e', 'task:t'), edge('e2', 'blocks', 'task:s1', 'task:t'),
     edge('e3', 'blocks', 'task:t', 'task:s2'), edge('e4', 'assigned', 'task:t', 'attempt:at'),
     edge('e5', 'contains', 'attempt:at', 'agent:a')];
-  const base = new Map(nodes.map((node, index) => [node.id, { x: index * 200, y: index * 100 }]));
+  // Keep unconnected nodes well away so the drop arcs are not wedged between pins.
+  const base = new Map(nodes.map((node, index) => [node.id, { x: index * 220, y: -600 }]));
   const point = { x: 1200, y: 800 };
 
   test('keeps connected kinds ranked around the drop and everything else fixed', () => {
