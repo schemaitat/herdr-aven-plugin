@@ -13,6 +13,7 @@ test('keyboard bypass, visible focus, non-color relationship cues and reduced-mo
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
   await expect(page.locator('.graph-status')).toContainText('10 entities');
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-edge-flow', 'static');
   await page.keyboard.press('Tab');
   const skip = page.getByRole('link', { name: 'Skip graph to entities' });
   await expect(skip).toBeFocused(); await expect(skip).toBeVisible();

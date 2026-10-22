@@ -1,6 +1,6 @@
 import type { Entity } from '../../shared/graph.js';
 import type { GraphEdge } from './elements.js';
-import { nodeRadius } from './physics.js';
+import { CLEARANCE_GAP, nodeRadius } from './physics.js';
 
 export type Position = { x: number; y: number };
 
@@ -41,11 +41,11 @@ export function orbitalLayout(nodes: Entity[], edges: GraphEdge[]): Map<string, 
       rings.set(distance, [...(rings.get(distance) ?? []), id]);
     }
     const points = new Map<string, Position>([[root, { x: 0, y: 0 }]]);
-    let radius = nodeRadius(byId.get(root)!);
+    let radius: number = nodeRadius(byId.get(root)!);
     for (const distance of [...rings.keys()].filter(value => value > 0).sort((a, b) => a - b)) {
       const ring = rings.get(distance)!.sort();
       const largest = Math.max(...ring.map(id => nodeRadius(byId.get(id)!)));
-      radius = Math.max(radius + largest * 2 + 48, ring.length * (largest * 2 + 20) / (2 * Math.PI));
+      radius = Math.max(radius + largest * 2 + CLEARANCE_GAP + 60, ring.length * (largest * 2 + 48) / (2 * Math.PI));
       ring.forEach((id, index) => {
         const angle = index * Math.PI * 2 / ring.length - Math.PI / 2;
         points.set(id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
@@ -59,13 +59,13 @@ export function orbitalLayout(nodes: Entity[], edges: GraphEdge[]): Map<string, 
     components.push({ points, width: right - left, height: bottom - top });
   }
   const result = new Map<string, Position>();
-  const area = components.reduce((total, group) => total + (group.width + 90) * (group.height + 90), 0);
+  const area = components.reduce((total, group) => total + (group.width + 120) * (group.height + 120), 0);
   const rowLimit = Math.max(400, Math.sqrt(area) * 1.5);
   let x = 0, y = 0, rowHeight = 0;
   for (const group of components) {
-    if (x > 0 && x + group.width > rowLimit) { x = 0; y += rowHeight + 90; rowHeight = 0; }
+    if (x > 0 && x + group.width > rowLimit) { x = 0; y += rowHeight + 120; rowHeight = 0; }
     for (const [id, point] of group.points) result.set(id, { x: point.x + x, y: point.y + y });
-    x += group.width + 90;
+    x += group.width + 120;
     rowHeight = Math.max(rowHeight, group.height);
   }
   return result;

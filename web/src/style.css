@@ -58,6 +58,7 @@ dd { margin: 4px 0 0; font-size: 12px; overflow-wrap: anywhere; line-height: 1.6
 .warning { padding: 12px; background: #382e20; border: 1px solid #b99a62; border-radius: 8px; }
 .graph-panel { border: 1px solid #35415c; border-radius: 12px; margin: 16px 0 24px; background: radial-gradient(ellipse at 40% 40%, #24204966, #080d1b 75%); overflow: hidden; }
 .graph-canvas { flex: 1; min-height: 0; width: 100%; }
+.graph-flow { position: absolute; inset: 0 0 34px; width: 100%; height: calc(100% - 34px); pointer-events: none; }
 .graph-help, .graph-status { padding: 10px 18px; margin: 0; font-size: 12px; color: #b8c8e0; }
 .graph-controls { display: flex; gap: 8px; flex-wrap: wrap; }
 .graph-controls button, .collapse { padding: 8px 14px; font-size: 12px; }
@@ -169,10 +170,19 @@ footer { margin: 24px 0 0; line-height: 1.7; font-size: 11px; }
 .graph-cues { position: absolute; inset: 0 0 34px; pointer-events: none; overflow: hidden; }
 .graph-cue { position: absolute; box-sizing: border-box; transform: translate(-50%, -50%); border-radius: 50%; border: 2px solid transparent; }
 .graph-cue.working { border-color: #67efb8; box-shadow: 0 0 0 3px #67efb830; }
-.graph-cue.neighbor { border-color: #55dff7; box-shadow: 0 0 0 5px #55dff720; animation: neighbor-pulse 1.8s ease-in-out infinite; }
+.graph-cue.neighbor { border-color: #55dff7; animation: neighbor-pulse 2.2s ease-in-out infinite; }
+.graph-cue.selected { border-color: #fff0a8; animation: selected-pulse 1.9s ease-in-out infinite; }
 .graph-cue.working.neighbor { box-shadow: 0 0 0 3px #67efb840, 0 0 0 7px #55dff71f; }
+.graph-cue.working.selected { box-shadow: 0 0 0 3px #67efb840, 0 0 0 8px #fff0a81f; }
 .graph-cues.paused .graph-cue, .graph-cues.hidden .graph-cue { animation-play-state: paused; }
-@keyframes neighbor-pulse { 50% { box-shadow: 0 0 0 10px #55dff700; } }
+@keyframes neighbor-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px #55dff738; transform: translate(-50%, -50%) scale(1); }
+  50% { box-shadow: 0 0 0 16px #55dff700; transform: translate(-50%, -50%) scale(1.07); }
+}
+@keyframes selected-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px #fff0a83d; transform: translate(-50%, -50%) scale(1); }
+  50% { box-shadow: 0 0 0 15px #fff0a800; transform: translate(-50%, -50%) scale(1.05); }
+}
 .sources { margin-left: auto; position: relative; }
 .sources summary { list-style: none; cursor: pointer; padding: 7px 10px; border: 1px solid #35415c; border-radius: 8px; color: #ace0db; white-space: nowrap; }
 .sources > div { position: absolute; z-index: 12; right: 0; top: calc(100% + 6px); width: min(420px, 90vw); padding: 10px; border: 1px solid #58678b; background: #10192b; border-radius: 8px; }
