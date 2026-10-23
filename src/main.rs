@@ -231,6 +231,40 @@ fn phase_dependencies(task: &Value) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+fn unresolved_phase_blockers(task: &Value, phase_ref: &str) -> Result<Vec<String>> {
+    let unresolved_count = task
+        .pointer("/dependencies/depends_on_open")
+        .and_then(Value::as_u64)
+        .context(format!(
+            "phase {phase_ref} is missing its unresolved dependency count"
+        ))?;
+    if unresolved_count == 0 {
+        return Ok(Vec::new());
+    }
+    let blockers = task
+        .pointer("/dependencies/depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|dependency| dependency.get("unresolved").and_then(Value::as_bool) == Some(true))
+        .map(|dependency| {
+            dependency
+                .get("display_ref")
+                .or_else(|| dependency.get("task_id"))
+                .or_else(|| dependency.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown dependency")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    if blockers.is_empty() {
+        Ok(vec![format!(
+            "{unresolved_count} unresolved dependency(ies)"
+        )])
+    } else {
+        Ok(blockers)
+    }
+}
 fn validate_epic_phases(
     invocation: &Invocation,
     root: &Value,
@@ -262,11 +296,12 @@ fn validate_epic_phases(
         }
         let dependencies = phase_dependencies(task);
         if expected == 0 {
-            if !dependencies.is_empty() {
+            let blockers = unresolved_phase_blockers(task, &phase.task_ref)?;
+            if !blockers.is_empty() {
                 bail!(
                     "first phase {} has unresolved blocker(s): {}",
                     phase.task_ref,
-                    dependencies.join(", ")
+                    blockers.join(", ")
                 );
             }
         } else {
@@ -1298,7 +1333,7 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
         format!(
             "dispatch.attempt.{}={}",
             attempt.workflow,
-            serde_json::to_string(attempt)?
+            serde_json::to_string(&aven_attempt_snapshot(attempt))?
         ),
     ];
     let current_status = current
@@ -1345,6 +1380,15 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
         Some(&note),
     )?;
     Ok(())
+}
+fn aven_attempt_snapshot(attempt: &Attempt) -> Attempt {
+    let mut snapshot = attempt.clone();
+    // The full prompt is retained in the dispatcher store for recovery, but
+    // after admission it is not needed in Aven's size-limited metadata.
+    if matches!(snapshot.state.as_str(), "needs-review" | "completed") {
+        snapshot.pending_prompt.clear();
+    }
+    snapshot
 }
 fn ensure_log_task(attempt: &mut Attempt) -> Result<()> {
     if !attempt.log_task_ref.is_empty() {
@@ -2271,18 +2315,23 @@ fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     // task acceptance remains exclusively under the task workflow.
     store_attempt(&mut store, attempt.clone());
     store.save()?;
-    if attempt.aven_update_pending && write_aven_links(&attempt.aven, &attempt).is_ok() {
-        attempt.aven_update_pending = false;
-        store_attempt(&mut store, attempt.clone());
-        store.save()?;
-        println!("repaired pending Aven status, metadata, and handoff update");
-    }
     if attempt.execution_mode == ExecutionMode::Worktrees
         && advance_worktree_phases(&mut attempt, &mut store)?
     {
         store_attempt(&mut store, attempt.clone());
         store.save()?;
         println!("advanced cumulative worktree phases");
+    }
+    if attempt.aven_update_pending {
+        match write_aven_links(&attempt.aven, &attempt) {
+            Ok(()) => {
+                attempt.aven_update_pending = false;
+                store_attempt(&mut store, attempt.clone());
+                store.save()?;
+                println!("repaired pending Aven status, metadata, and handoff update");
+            }
+            Err(error) => eprintln!("pending Aven update could not be repaired: {error:#}"),
+        }
     }
     let log = opencode_text(
         "GET",
@@ -2387,6 +2436,36 @@ fn phase_session_succeeded(phase: &PhaseAttempt) -> Result<bool> {
             == Some("succeeded"),
     )
 }
+fn integrated_phase_needs_reconciliation(
+    phase_state: &str,
+    integrated_commit: &str,
+    phase_commit: &str,
+    coordinator_commit: &str,
+) -> Result<bool> {
+    if phase_state != "integrated" || phase_commit == integrated_commit {
+        return Ok(false);
+    }
+    if coordinator_commit != integrated_commit {
+        bail!(
+            "integrated phase advanced from {integrated_commit} to {phase_commit}, but coordinator is at {coordinator_commit}; refusing to reconcile a non-fast-forward state"
+        );
+    }
+    Ok(true)
+}
+fn completed_successor_needs_resume(
+    phase_state: &str,
+    task_done: bool,
+    session_succeeded: bool,
+) -> bool {
+    phase_state == "running" && !task_done && session_succeeded
+}
+fn integrated_root_state(accepted: bool) -> &'static str {
+    if accepted {
+        "completed"
+    } else {
+        "needs-review"
+    }
+}
 fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Result<bool> {
     ensure_attempt_current(
         &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
@@ -2394,9 +2473,25 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
     )?;
     let mut changed = false;
     for index in 0..attempt.phases.len() {
-        let phase = attempt.phases[index].clone();
+        let mut phase = attempt.phases[index].clone();
         if phase.state == "integrated" {
-            continue;
+            let phase_commit = git_head(Path::new(&phase.worktree))?;
+            let coordinator_commit = git_head(Path::new(&attempt.worktree))?;
+            if !integrated_phase_needs_reconciliation(
+                &phase.state,
+                &phase.integrated_commit,
+                &phase_commit,
+                &coordinator_commit,
+            )? {
+                continue;
+            }
+            // A prior reconciliation may have recorded an unchanged baseline
+            // before the worker's verified commit existed. Re-enter the same
+            // guarded integration path only when the coordinator is still at
+            // that recorded checkpoint; its fast-forward and cleanliness
+            // checks remain authoritative.
+            phase.state = "running".into();
+            attempt.phases[index].state = "running".into();
         }
         if phase.state != "running" || !phase_is_done(attempt, &phase)? {
             break;
@@ -2435,7 +2530,12 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
         let Some(next) = attempt.phases.get(index + 1).cloned() else {
             continue;
         };
-        if next.state != "provisioned" {
+        let resume_stopped_successor = completed_successor_needs_resume(
+            &next.state,
+            phase_is_done(attempt, &next)?,
+            phase_session_succeeded(&next)?,
+        );
+        if next.state != "provisioned" && !resume_stopped_successor {
             continue;
         }
         let next_directory = Path::new(&next.worktree);
@@ -2482,12 +2582,16 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
             .phases
             .iter()
             .all(|phase| phase.state == "integrated");
-    if all_integrated && attempt.state != "completed" {
-        // Integration proves execution, not the root task's acceptance gates.
-        // Leave Aven status to the reviewer/implementer and surface a distinct
-        // lifecycle state for a coordinator awaiting that review.
-        attempt.state = "needs-review".into();
-        changed = true;
+    if all_integrated {
+        // Integration alone is not acceptance: only the authoritative Aven
+        // root status can graduate the attempt from needs-review.
+        let root = refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?;
+        let accepted = root.pointer("/task/status").and_then(Value::as_str) == Some("done");
+        let next = integrated_root_state(accepted);
+        if attempt.state != next {
+            attempt.state = next.into();
+            changed = true;
+        }
     }
     if changed {
         let _ = write_aven_links(&attempt.aven, attempt);
@@ -2854,6 +2958,92 @@ mod tests {
                 &json!({"dependencies":{"depends_on":[{"task_id":"immutable-predecessor"}]}})
             ),
             vec!["immutable-predecessor"]
+        );
+    }
+    #[test]
+    fn first_phase_allows_completed_dependencies_but_rejects_open_blockers() {
+        let completed = json!({
+            "dependencies": {
+                "depends_on_open": 0,
+                "depends_on": [{"id": "completed-id", "display_ref": "APP-1", "unresolved": false}]
+            }
+        });
+        assert!(
+            unresolved_phase_blockers(&completed, "APP-P1")
+                .unwrap()
+                .is_empty()
+        );
+
+        let blocked = json!({
+            "dependencies": {
+                "depends_on_open": 1,
+                "depends_on": [{"id": "open-id", "display_ref": "APP-2", "unresolved": true}]
+            }
+        });
+        assert_eq!(
+            unresolved_phase_blockers(&blocked, "APP-P1").unwrap(),
+            vec!["APP-2"]
+        );
+    }
+    #[test]
+    fn first_phase_requires_authoritative_unresolved_dependency_count() {
+        let task = json!({"dependencies": {"depends_on": []}});
+        assert!(
+            unresolved_phase_blockers(&task, "APP-P1")
+                .unwrap_err()
+                .to_string()
+                .contains("missing its unresolved dependency count")
+        );
+    }
+    #[test]
+    fn integrated_phase_reconciles_a_later_worker_commit_at_its_checkpoint() {
+        assert!(
+            integrated_phase_needs_reconciliation("integrated", "base", "phase", "base").unwrap()
+        );
+        assert!(
+            !integrated_phase_needs_reconciliation("integrated", "base", "base", "base").unwrap()
+        );
+        assert!(
+            !integrated_phase_needs_reconciliation("running", "base", "phase", "base").unwrap()
+        );
+    }
+    #[test]
+    fn integrated_phase_refuses_reconciliation_after_coordinator_moved() {
+        let error =
+            integrated_phase_needs_reconciliation("integrated", "base", "phase", "unrelated")
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to reconcile a non-fast-forward state")
+        );
+    }
+    #[test]
+    fn completed_incomplete_successor_is_resumed_only_after_it_has_stopped() {
+        assert!(completed_successor_needs_resume("running", false, true));
+        assert!(!completed_successor_needs_resume("running", true, true));
+        assert!(!completed_successor_needs_resume("running", false, false));
+        assert!(!completed_successor_needs_resume(
+            "provisioned",
+            false,
+            true
+        ));
+    }
+    #[test]
+    fn integrated_root_requires_aven_acceptance_before_completion() {
+        assert_eq!(integrated_root_state(false), "needs-review");
+        assert_eq!(integrated_root_state(true), "completed");
+    }
+    #[test]
+    fn terminal_aven_snapshot_omits_large_admitted_prompt() {
+        let mut attempt = stored_attempt("task", "implementation", "needs-review");
+        attempt.pending_prompt = "large prompt".repeat(3000);
+        assert!(aven_attempt_snapshot(&attempt).pending_prompt.is_empty());
+        assert_eq!(attempt.pending_prompt.len(), 36000);
+        attempt.state = "prompt-pending".into();
+        assert_eq!(
+            aven_attempt_snapshot(&attempt).pending_prompt,
+            attempt.pending_prompt
         );
     }
     #[test]
