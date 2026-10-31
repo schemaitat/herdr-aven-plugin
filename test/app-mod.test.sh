@@ -10,7 +10,8 @@ set -eu
 assert_file_contains "$PLUGIN_ROOT/app/main.js" '--outlive-parent' 'mod terminals outlive the window'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" '--no-parent' 'mod terminals are not tied to the app'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" 'terminal.peek' 'mod reveals a terminal instead of owning it'
-assert_file_contains "$PLUGIN_ROOT/app/main.js" 'pane.focus' 'mod can focus a terminal'
+assert_file_contains "$PLUGIN_ROOT/app/main.js" 'terminal.peek' 'mod reveals hidden terminals in the current tab'
+assert_file_contains "$PLUGIN_ROOT/app/main.js" 'aven-tui-' 'mod reuses a live Aven TUI terminal'
 assert_file_contains "$PLUGIN_ROOT/app/mod.json" '"place": "none"' 'mod does not take layout space'
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'mod.open:aven-tasks' 'mod opens from an app command'
 

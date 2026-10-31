@@ -844,7 +844,12 @@ fn remove_owned_worktree(worktree: &str, created_by_attempt: bool) {
     worktrees::remove_owned(worktree, created_by_attempt);
 }
 fn focus_terminal(address: &str) {
-    let _ = app::focus(address);
+    // A dispatcher terminal is a hidden core terminal until it gets a pane.
+    // Focus alone fails then; peek is the supported way to reveal it in the
+    // current app tab. Both are best-effort and never affect dispatch.
+    if !app::focus(address) {
+        let _ = app::peek(address);
+    }
 }
 
 /// Stable, human-filterable owner labels. They prove which attempt a terminal
