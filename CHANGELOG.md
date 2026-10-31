@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
 
 - Migrate the dispatcher runtime from the retired `herdr` plugin interface to
   herdr-core (`hc`). Terminals are dedicated herdr-core terminals that survive
