@@ -46,7 +46,7 @@ test('untrusted labels are text and unavailable sources remain visible', async (
   await page.route('**/api/snapshot', route => route.fulfill({ json: {
     schema: 'local-explorer/v1', scope: { project: 'fixture', workspace: 'default' }, observedAt: '2026-10-20T00:00:00Z',
     nodes: [{ id: 'task:fixture', kind: 'task', label: hostile, state: 'todo', details: { untrusted: '<script>alert(1)</script>' }, provenance: [{ source: 'aven', record: 'fixture', observedAt: '2026-10-20T00:00:00Z' }] }], edges: [],
-    health: [{ source: 'aven', status: 'ok', observedAt: '2026-10-20T00:00:00Z', message: 'Fixture' }, { source: 'herdr', status: 'unavailable', observedAt: '2026-10-20T00:00:00Z', message: 'No Herdr' }],
+    health: [{ source: 'aven', status: 'ok', observedAt: '2026-10-20T00:00:00Z', message: 'Fixture' }, { source: 'core', status: 'unavailable', observedAt: '2026-10-20T00:00:00Z', message: 'No herdr-core' }],
   } }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');

@@ -1,19 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
 import { normalize, createSnapshotSource } from '../server/graph.js';
 import { readDispatcher } from '../server/sources/dispatcher.js';
-import { readHerdr } from '../server/sources/herdr.js';
+import { parsePorcelain } from '../server/sources/worktrees.js';
 import { entityId } from '../shared/graph.js';
 import { avenFixture, config, fixture, scope } from './fixtures.js';
 import { dispatcherAttempts, dispatcherFixture } from './fixtures/dispatcher.js';
+
+
+function topology() {
+  const coreData = fixture('core');
+  const appData = fixture('app');
+  const core = {
+    core: coreData.core,
+    terminals: coreData.terminals,
+    observedAt: '2026-10-20T00:00:00Z',
+    health: { source: 'core' as const, status: 'ok' as const, observedAt: '2026-10-20T00:00:00Z', message: 'fixture' },
+  };
+  const worktrees = {
+    primary: '/repo',
+    worktrees: parsePorcelain('worktree /repo\nHEAD deadbeef\nbranch refs/heads/main\n\nworktree /repo-phase1\nHEAD feedface\nbranch refs/heads/phase1\n'),
+    health: { source: 'worktrees' as const, status: 'ok' as const, observedAt: '2026-10-20T00:00:00Z', message: 'fixture' },
+  };
+  const placements = appData.spaces.flatMap((space: any) => space.tabs.flatMap((tab: any) => tab.terminals.map((terminal: any) => ({
+    terminal: terminal.terminal, pane: terminal.pane, space: space.id, spaceName: space.name, tab: tab.id, tabName: tab.name,
+    status: terminal.status ?? '', app: terminal.app ?? '', name: terminal.name ?? '',
+  }))));
+  const app = {
+    spaces: appData.spaces.map((space: any) => ({ id: space.id, name: space.name, folder: space.folder })),
+    placements,
+    health: { source: 'app' as const, status: 'ok' as const, observedAt: '2026-10-20T00:00:00Z', message: 'fixture' },
+  };
+  return { core, worktrees, app };
+}
 
 async function snapshot(mode = 'worktrees') {
   const aven = avenFixture();
   const store = dispatcherFixture();
   store.attempts['ROOT01:implementation'].execution_mode = mode;
   const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts(store));
-  const data = fixture('herdr');
-  const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
-  return normalize(config, aven, dispatch, herdr);
+  return normalize(config, aven, { ...topology(), dispatcher: dispatch });
 }
 
 describe('normalized identity and directed edges', () => {
@@ -27,21 +52,19 @@ describe('normalized identity and directed edges', () => {
     aven.tasks[2].created_at = '';
     const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts());
     dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = Date.parse('2026-10-19T12:00:00Z') / 1000; });
-    const data = fixture('herdr');
-    const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
-    const first = normalize(config, aven, dispatch, herdr, now);
+    const first = normalize(config, aven, { ...topology(), dispatcher: dispatch }, now);
     expect(first.nodes.find(node => node.details.taskId === 'ROOT01' && node.kind === 'epic')?.changedAt).toBe('2026-10-01T00:00:00.000Z');
     expect(first.nodes.filter(node => node.kind === 'attempt').map(node => node.changedAt)).toEqual(['2026-10-19T12:00:00.000Z', '2026-10-19T12:00:00.000Z']);
     expect(first.nodes.find(node => node.details.taskId === 'TASK02' && node.kind === 'task')?.changedAt).toBeUndefined();
     expect(first.nodes.filter(node => node.kind === 'workspace').every(node => node.changedAt === undefined)).toBe(true);
     expect(first.nodes.find(node => node.details.sessionId === 'ses_worker')?.changedAt).toBe('2026-10-20T10:00:00.000Z');
-    aven.health.observedAt = dispatch.health.observedAt = herdr.health.observedAt = '2026-10-20T12:00:01Z';
-    expect(normalize(config, aven, dispatch, herdr, now + 1000).nodes.map(node => [node.id, node.changedAt])).toEqual(first.nodes.map(node => [node.id, node.changedAt]));
+    aven.health.observedAt = dispatch.health.observedAt = '2026-10-20T12:00:01Z';
+    expect(normalize(config, aven, { ...topology(), dispatcher: dispatch }, now + 1000).nodes.map(node => [node.id, node.changedAt])).toEqual(first.nodes.map(node => [node.id, node.changedAt]));
     dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = now; }); // current writer persists milliseconds
-    expect(normalize(config, aven, dispatch, herdr, now).nodes.filter(node => node.kind === 'attempt').every(node => node.changedAt === new Date(now).toISOString())).toBe(true);
+    expect(normalize(config, aven, { ...topology(), dispatcher: dispatch }, now).nodes.filter(node => node.kind === 'attempt').every(node => node.changedAt === new Date(now).toISOString())).toBe(true);
     for (const invalid of [0, NaN, Infinity, now + 1, (now + 1000) / 1000]) {
       dispatch.attempts.forEach(({ attempt }) => { attempt.created_at = invalid; });
-      expect(normalize(config, aven, dispatch, herdr, now).nodes.filter(node => node.kind === 'attempt').every(node => node.changedAt === undefined)).toBe(true);
+      expect(normalize(config, aven, { ...topology(), dispatcher: dispatch }, now).nodes.filter(node => node.kind === 'attempt').every(node => node.changedAt === undefined)).toBe(true);
     }
   });
   it('retains stable IDs, deduplicates mirrored blockers/containment and keeps standalone tasks', async () => {
@@ -64,8 +87,7 @@ describe('normalized identity and directed edges', () => {
     aven.tasks[1].deleted = true;
     aven.contexts.delete('TASK02');
     const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts());
-    const herdr = await readHerdr({ ...scope, herdr: false }, '/repo', async () => { throw new Error('No Herdr'); });
-    const graph = normalize(config, aven, dispatch, herdr);
+    const graph = normalize(config, aven, { ...topology(), dispatcher: dispatch });
     expect(graph.nodes.find(node => node.details.taskId === 'TASK01' && node.kind === 'task')?.state).toBe('deleted');
     expect(graph.nodes.find(node => node.details.taskId === 'TASK02' && node.kind === 'task')?.details.relationCoverage).toBe('incomplete');
     expect(graph.nodes.filter(node => node.kind === 'session').every(node => node.state === 'unknown')).toBe(true);
@@ -74,10 +96,8 @@ describe('normalized identity and directed edges', () => {
     const aven = avenFixture();
     aven.contextObservedAt = new Map([['TASK01', '2026-10-19T00:00:00Z']]);
     const dispatch = await readDispatcher('/store', aven, async () => dispatcherAttempts());
-    const data = fixture('herdr');
-    const herdr = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
-    const first = normalize(config, aven, dispatch, herdr);
-    const second = normalize({ ...config, scope: { ...scope, session: 'other-terminal-server' } }, aven, dispatch, herdr);
+    const first = normalize(config, aven, { ...topology(), dispatcher: dispatch });
+    const second = normalize({ ...config, scope: { ...scope, session: 'other-terminal-server' } }, aven, { ...topology(), dispatcher: dispatch });
     expect(first.nodes.filter(node => node.kind === 'session').map(node => node.id)).toEqual(second.nodes.filter(node => node.kind === 'session').map(node => node.id));
     expect(first.edges.find(edge => edge.kind === 'related')?.provenance[0].observedAt).toBe('2026-10-19T00:00:00Z');
   });
@@ -89,7 +109,7 @@ describe('normalized identity and directed edges', () => {
     const session = graph.nodes.filter(node => node.details.sessionId === 'ses_root');
     expect(session).toHaveLength(1);
     expect(session[0].state).toBe('unknown');
-    expect(session[0].details.terminalObservedState).toBe('working');
+    expect(graph.nodes.find(node => node.kind === 'terminal' && node.details.address === 't1')?.state).toBe('working');
     expect(graph.edges.filter(edge => edge.kind === 'session' && edge.target === session[0].id)).toHaveLength(1);
     expect(graph.nodes.find(node => node.id === entityId('task', 'default', 'TASK01'))?.state).toBe('todo');
     expect(graph.edges.some(edge => edge.kind === 'worktree' && edge.target === entityId('worktree', '/repo-phase1'))).toBe(true);
@@ -97,7 +117,8 @@ describe('normalized identity and directed edges', () => {
   });
   it('preserves missing panes/sessions as unresolved resources and strips raw store payloads', async () => {
     const graph = await snapshot();
-    expect(graph.nodes.find(node => node.id === entityId('pane', scope.session, 'w1:p2'))?.boundary).toBe(true);
+    expect(graph.nodes.find(node => node.id === entityId('pane', scope.session, 'w0:p1'))?.state).toBe('legacy');
+    expect(graph.nodes.some(node => node.kind === 'terminal' && node.details.address === 't2')).toBe(true);
     const serialized = JSON.stringify(graph);
     expect(serialized).not.toContain('NEVER_EXPOSE');
     expect(serialized).not.toContain('pending_prompt');
@@ -114,7 +135,7 @@ describe('normalized identity and directed edges', () => {
   it('coalesces concurrent snapshot requests and caches bounded source reads', async () => {
     const data = fixture('aven');
     let calls = 0;
-    const source = createSnapshotSource({ ...config, scope: { ...scope, herdr: false }, storePath: '/nonexistent' }, async command => {
+    const source = createSnapshotSource({ ...config, scope: { ...scope, core: false }, storePath: '/nonexistent' }, async command => {
       calls++;
       if (command.kind === 'list') return command.upcoming ? [] : data.tasks;
       if (command.kind === 'context') return data.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);
@@ -124,12 +145,12 @@ describe('normalized identity and directed edges', () => {
     expect(one).toBe(two);
     expect(await source()).toBe(one);
     expect(calls).toBe(5);
-    expect(one.health.find(health => health.source === 'herdr')?.status).toBe('unavailable');
+    expect(one.health.find(health => health.source === 'core')?.status).toBe('unavailable');
   });
   it('retains the last snapshot explicitly stale during an Aven outage', async () => {
     const data = fixture('aven');
     let fail = false;
-    const source = createSnapshotSource({ ...config, scope: { ...scope, herdr: false }, storePath: '/nonexistent' }, async command => {
+    const source = createSnapshotSource({ ...config, scope: { ...scope, core: false }, storePath: '/nonexistent' }, async command => {
       if (fail) throw new Error('Offline');
       if (command.kind === 'list') return command.upcoming ? [] : data.tasks;
       if (command.kind === 'context') return data.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);

@@ -85,6 +85,68 @@ pub(crate) struct Project {
     pub(crate) key: String,
 }
 
+/// Where an attempt's OpenCode terminal lives. `address` is only durable
+/// together with `core_id`: terminal addresses restart with a new core, and a
+/// bare `t7` is never proof that a terminal this attempt owns still exists.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TerminalRef {
+    #[serde(default)]
+    pub(crate) core_id: String,
+    #[serde(default)]
+    pub(crate) core_name: String,
+    #[serde(default)]
+    pub(crate) address: String,
+    #[serde(default)]
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) role: String,
+    /// True only when this attempt created the terminal. A reused terminal is
+    /// user-owned and must never be killed or removed automatically.
+    #[serde(default)]
+    pub(crate) created_by_attempt: bool,
+}
+impl TerminalRef {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.address.is_empty()
+    }
+    pub(crate) fn matches_core(&self, core_id: &str) -> bool {
+        !self.address.is_empty() && (self.core_id.is_empty() || self.core_id == core_id)
+    }
+}
+
+/// The latest fact herdr-core reported for one attempt terminal. This is an
+/// observation, never acceptance: Aven status and OpenCode API outcomes remain
+/// authoritative.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TerminalObservation {
+    #[serde(default)]
+    pub(crate) core_id: String,
+    #[serde(default)]
+    pub(crate) address: String,
+    /// live / finished / removed / unknown
+    #[serde(default)]
+    pub(crate) state: String,
+    /// idle / working / done / blocked / error, or empty when never reported.
+    #[serde(default)]
+    pub(crate) status: String,
+    /// permission / question / auth when the program reported a blocked kind.
+    #[serde(default)]
+    pub(crate) status_kind: String,
+    #[serde(default)]
+    pub(crate) program: String,
+    #[serde(default)]
+    pub(crate) reason: String,
+    #[serde(default)]
+    pub(crate) turn: u64,
+    #[serde(default)]
+    pub(crate) seq: u64,
+    #[serde(default)]
+    pub(crate) updated_at: u64,
+    /// finished / lost / restarted / removed / recovered-shell, empty when normal.
+    #[serde(default)]
+    pub(crate) recovery: String,
+}
+
 /// In-memory working set loaded from the central SQLite `attempts` table.
 #[derive(Debug, Default)]
 pub(crate) struct Store {
@@ -104,6 +166,18 @@ pub(crate) struct Attempt {
     /// automatic cleanup.
     #[serde(default)]
     pub(crate) worktree_created_by_attempt: bool,
+    /// Empty on legacy records, which are read-only evidence from the retired
+    /// `herdr` runtime. New attempts record `hc`.
+    #[serde(default)]
+    pub(crate) backend: String,
+    /// Durable herdr-core identity and the build terminal address.
+    #[serde(default)]
+    pub(crate) core_id: String,
+    #[serde(default)]
+    pub(crate) core_name: String,
+    #[serde(default)]
+    pub(crate) terminal: TerminalRef,
+    /// Legacy Herdr pane id, retained as historical evidence for old attempts.
     #[serde(default)]
     pub(crate) pane: String,
     #[serde(default)]
@@ -119,9 +193,17 @@ pub(crate) struct Attempt {
     #[serde(default)]
     pub(crate) coordinator_model: String,
     #[serde(default)]
+    pub(crate) coordinator_terminal: TerminalRef,
+    #[serde(default)]
     pub(crate) auto_permissions: bool,
     #[serde(default)]
     pub(crate) phases: Vec<PhaseAttempt>,
+    /// Keyed by role (`builder`, `coordinator`, `babysitter`, `phase:<task_id>`).
+    #[serde(default)]
+    pub(crate) terminals: BTreeMap<String, TerminalObservation>,
+    /// Last herdr-core event sequence this attempt has reconciled through.
+    #[serde(default)]
+    pub(crate) last_event_seq: u64,
     #[serde(default)]
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
@@ -139,6 +221,8 @@ pub(crate) struct Attempt {
     pub(crate) generation: u64,
     #[serde(default)]
     pub(crate) babysitter: bool,
+    #[serde(default)]
+    pub(crate) babysitter_terminal: TerminalRef,
     #[serde(default)]
     pub(crate) babysitter_pane: String,
     #[serde(default)]
@@ -174,9 +258,15 @@ pub(crate) struct PhaseAttempt {
     pub(crate) worktree: String,
     #[serde(default)]
     pub(crate) worktree_created_by_attempt: bool,
+    #[serde(default)]
+    pub(crate) terminal: TerminalRef,
+    /// Legacy Herdr pane id, retained as historical evidence.
     pub(crate) pane: String,
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
+    /// Durable prompt body for crash-safe re-admission with the same message id.
+    #[serde(default)]
+    pub(crate) pending_prompt: String,
     pub(crate) commit: String,
     pub(crate) integrated_commit: String,
     pub(crate) state: String,
@@ -186,12 +276,6 @@ pub(crate) struct EpicPhase {
     pub(crate) task_id: String,
     pub(crate) task_ref: String,
     pub(crate) title: String,
-}
-#[derive(Debug, Clone)]
-pub(crate) struct WorktreeResource {
-    pub(crate) path: String,
-    pub(crate) pane: String,
-    pub(crate) created_by_attempt: bool,
 }
 pub(crate) fn default_workflow() -> String {
     "default".into()
@@ -205,4 +289,54 @@ pub(crate) fn workflow_for_skill(skill: Option<&str>) -> &'static str {
 }
 pub(crate) fn attempt_key(task_id: &str, workflow: &str) -> String {
     format!("{task_id}:{workflow}")
+}
+
+/// Repeatable conversion of a persisted record. Legacy records keep their pane
+/// as readable evidence and are explicitly marked with the retired backend;
+/// they are never reinterpreted as herdr-core terminals.
+pub(crate) fn normalize_attempt(mut attempt: Attempt) -> Attempt {
+    if attempt.backend.is_empty() {
+        attempt.backend = if attempt.pane.is_empty() && attempt.terminal.is_empty() {
+            "hc".into()
+        } else {
+            "herdr".into()
+        };
+    } else if attempt.backend != "hc" && !attempt.pane.is_empty() && attempt.terminal.is_empty() {
+        // Older `opencode-v2` records still addressed Herdr panes. They are
+        // historical evidence exactly like a bare `herdr` record.
+        attempt.backend = "herdr".into();
+    }
+    if attempt.terminals.is_empty() {
+        let roles = attempt_terminal_roles(&attempt)
+            .into_iter()
+            .map(|(role, terminal)| (role.to_owned(), terminal.clone()))
+            .collect::<Vec<_>>();
+        for (role, terminal) in roles {
+            attempt.terminals.insert(
+                role,
+                TerminalObservation {
+                    core_id: terminal.core_id,
+                    address: terminal.address,
+                    state: "unknown".into(),
+                    ..TerminalObservation::default()
+                },
+            );
+        }
+    }
+    attempt
+}
+
+pub(crate) fn attempt_terminal_roles(attempt: &Attempt) -> Vec<(&'static str, &TerminalRef)> {
+    let mut roles = vec![("builder", &attempt.terminal)];
+    if !attempt.coordinator_terminal.is_empty() {
+        roles.push(("coordinator", &attempt.coordinator_terminal));
+    }
+    if !attempt.babysitter_terminal.is_empty() {
+        roles.push(("babysitter", &attempt.babysitter_terminal));
+    }
+    roles
+}
+
+pub(crate) fn attempt_is_legacy(attempt: &Attempt) -> bool {
+    attempt.backend != "hc" && !attempt.pane.is_empty()
 }

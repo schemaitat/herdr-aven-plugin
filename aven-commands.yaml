@@ -2,7 +2,7 @@
 # tui.commands, after the built-in "dispatch" command. This file is part of the
 # plugin; edit it, then re-run the installer to apply changes:
 #
-#   herdr plugin action invoke aven.tasks.install-aven-command
+#   just install   (or sh scripts/install-aven-command.sh)
 #
 # Every active entry is indented under tui.commands and has ${PLUGIN_ROOT}
 # replaced with this plugin's directory, so it can pass the bundled workflow
@@ -168,7 +168,7 @@
 #
 # - name: dispatch-claude
 #   aliases: [custom-dispatch-claude]
-#   description: Implement the selected task with Claude in a Herdr worktree
+#   description: Implement the selected task with Claude in a herdr-core worktree
 #   program: aven-dispatch
 #   args:
 #     - dispatch

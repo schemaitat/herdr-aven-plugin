@@ -53,7 +53,7 @@ block=$tmp/block
 # Install the Rust dispatcher into Cargo's global bin directory before writing
 # commands that invoke it by name. Aven executes custom commands directly, so
 # the installed binary must be available on PATH in the environment that starts
-# Aven/Herdr.
+# Aven and the commands it starts.
 if ! command -v cargo >/dev/null 2>&1; then
   printf 'warning: cargo is required to install aven-dispatch; no Aven commands were changed\n'
   exit 1
@@ -75,7 +75,7 @@ dispatch_item() {
   cat <<'EOF'
     - name: dispatch
       aliases: [custom-dispatch]
-      description: Implement the selected task with a coding agent in a Herdr worktree
+      description: Implement the selected task with a coding agent in a herdr-core worktree
       program: aven-dispatch
       args:
         - dispatch
@@ -116,7 +116,7 @@ substitute_root() {
   replace_all '${PLUGIN_ROOT}' "$PLUGIN_ROOT"
 }
 
-# Aven may be started by the long-running Herdr server, whose PATH need not
+# Aven may be started by a long-running desktop/service session, whose PATH need not
 # contain Cargo's bin directory even when this installer does. Persist the
 # resolved executable path so custom commands such as z b are launchable from
 # the popup as well as an interactive shell.

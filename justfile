@@ -1,20 +1,25 @@
 default:
     @just --list
 
+# Install the dispatcher, the Aven commands, the optional herdr-app mod, and
+# report readiness. No legacy herdr plugin/runtime is installed.
 install:
-    herdr plugin link "{{justfile_directory()}}"
-    sh scripts/install-keybindings.sh
+    cargo install --path . --force
     sh scripts/install-aven-command.sh
+    sh scripts/install-app-mod.sh
     sh scripts/doctor.sh
+
+install-app-mod:
+    sh scripts/install-app-mod.sh
 
 test:
     cargo test --workspace
     sh test/run.sh
 
-# Real Herdr/Aven popup lifecycle in an isolated session; no real agent runs.
+# Real herdr-core + fake OpenCode/Aven processes in an isolated HC_SESSION.
 test-e2e:
     cargo build --workspace
-    python3 test/herdr-popup-e2e.py
+    sh test/rust-dispatch.test.sh
 
 check:
     cargo check --workspace
@@ -24,6 +29,23 @@ fmt:
 
 doctor:
     cargo run -- doctor
+
+# Long-running event-driven supervisor. Start it under a service manager or
+# with `nohup`; `just watch-status` and `just watch-stop` manage it explicitly.
+watch:
+    cargo run -- watch
+
+watch-once:
+    cargo run -- watch --once
+
+watch-status:
+    cargo run -- watch --status
+
+watch-stop:
+    cargo run -- watch --stop
+
+app-check:
+    herdr-app check app
 
 # Optional local read-only dashboard (Node 24 LTS).
 ui-install:

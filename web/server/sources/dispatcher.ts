@@ -5,11 +5,28 @@ import type { AvenRead } from './aven.js';
 import type { SourceHealth } from '../../shared/graph.js';
 
 const value = z.string().max(16384).default('');
-const phaseSchema = z.object({ task_id: z.string().min(1).max(128), task_ref: value, pane: value, session_id: value, branch: value, worktree: value, state: value });
+const terminalRefSchema = z.object({
+  core_id: value, core_name: value, address: value, name: value, role: value,
+  created_by_attempt: z.boolean().default(false),
+}).default({ core_id: '', core_name: '', address: '', name: '', role: '', created_by_attempt: false });
+const observationSchema = z.object({
+  core_id: value, address: value, state: value, status: value, status_kind: value,
+  program: value, reason: value, turn: z.number().int().nonnegative().safe().default(0),
+  seq: z.number().int().nonnegative().safe().default(0), updated_at: z.number().nonnegative().default(0),
+  recovery: value,
+});
+const phaseSchema = z.object({
+  task_id: z.string().min(1).max(128), task_ref: value, pane: value, terminal: terminalRefSchema,
+  session_id: value, branch: value, worktree: value, state: value,
+});
 export const attemptSchema = z.object({
   task_id: z.string().min(1).max(128), task_ref: value, workflow: z.string().min(1).max(128).default('default'),
   attempt_id: z.string().min(1).max(128), generation: z.number().int().nonnegative().safe().default(0),
   execution_mode: z.enum(['single-session', 'subsessions', 'worktrees']).default('single-session'),
+  // Empty is a legacy Herdr record: read-only evidence, never a core terminal.
+  backend: value, core_id: value, core_name: value,
+  terminal: terminalRefSchema, coordinator_terminal: terminalRefSchema, babysitter_terminal: terminalRefSchema,
+  terminals: z.record(z.string().max(256), observationSchema).default({}),
   session_id: value, coordinator_session_id: value, babysitter_session_id: value,
   pane: value, babysitter_pane: value, agent: value, coordinator_agent: value,
   state: value, worktree: value, branch: value, log_task_ref: value,

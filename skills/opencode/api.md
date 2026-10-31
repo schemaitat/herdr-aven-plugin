@@ -7,16 +7,18 @@ description: Operate durable OpenCode V2 sessions through the local OpenCode API
 
 Use this guide when a dispatcher or coordinator needs to inspect, admit, or
 interrupt an **API-owned OpenCode session**. Use the OpenCode API for durable
-session operations; use Herdr only to attach an existing session to a pane and
-inspect its terminal lifecycle.
+session operations; use herdr-core (`hc`) only for the terminal that displays
+an existing session and for its observed lifecycle.
 
 ## Ownership boundary
 
 - **OpenCode API** owns session IDs, models, prompts, permissions, outcomes,
   forms, and interruption.
-- **Herdr** owns worktrees, panes, terminal attachment, and screen/agent
-  lifecycle. Its `agent` commands are not a replacement for creating or
-  addressing an OpenCode V2 session by its durable ID.
+- **herdr-core** owns terminals and the programs attached to them. Git performs
+  worktree operations through `hc exec`; core is not a replacement for creating
+  or addressing an OpenCode V2 session by its durable ID.
+- A core status word (`idle`, `working`, `done`, `blocked`, `error`) is an
+  observation. It is never proof of prompt admission or task acceptance.
 - Let `aven-dispatch reconcile <root-ref>` advance cumulative phases. It
   verifies a completed worker, fast-forwards the root, advances the next
   worktree, and admits the already-created successor session. Do not manually
@@ -34,7 +36,9 @@ opencode api POST /api/session/<session-id>/interrupt
 ```
 
 The session response is authoritative for completion: inspect
-`.data.outcome` for `succeeded`, not only the terminal’s idle state.
+`.data.outcome` for `succeeded`, not only the terminal’s idle state. Inspect a
+core terminal with `hc get <address> --json` and `hc read <address> --lines
+120`; wait with `hc wait <address>` instead of sleeping.
 
 For a dispatcher that owns a new prompt, use the documented prompt endpoint
 with a caller-generated message ID and require the returned `.data.id` to

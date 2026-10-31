@@ -1,40 +1,38 @@
 # herdr-aven-plugin
 
-Use [Aven](https://aventasks.dev) inside a [Herdr](https://herdr.dev) popup.
+Use [Aven](https://aventasks.dev) with [herdr-core](https://herdr.dev) (`hc`).
 Capture tasks, select an OpenCode agent, and dispatch work into a Git worktree
-without leaving your terminal.
+without leaving your terminal. `hc` owns terminals and keeps them alive when a
+window or popup closes; Aven remains the task source of truth; OpenCode's V2
+API owns sessions and prompt admission. The desktop [herdr-app](https://herdr.dev)
+mod is optional and only changes what you see.
 
 ## Installation
 
-**Requirements:** Linux or macOS, Herdr ≥ 0.9.0, Aven with custom-command
-`terminal` execution support, Git, OpenCode V2, and Rust/Cargo. Keep `aven`,
-`opencode`, and Cargo's bin directory on `PATH`. Tested with Herdr 0.9.5 and
-Aven 0.1.49.
+**Requirements:** Linux or macOS, herdr-core ≥ 0.1.15 (`hc`), Aven with
+custom-command `terminal` execution support, Git, OpenCode V2, and Rust/Cargo.
+Keep `aven`, `hc`, `opencode`, and Cargo's bin directory on `PATH`.
+`herdr-app` is optional. Tested with herdr-core 0.1.15.
 
-Install from GitHub:
-
-```sh
-herdr plugin install schemaitat/herdr-aven-plugin
-```
-
-Or link a local checkout:
+Install the dispatcher, Aven commands, and the optional app mod:
 
 ```sh
-herdr plugin link /path/to/herdr-aven-plugin
+git clone https://github.com/schemaitat/herdr-aven-plugin
+cd herdr-aven-plugin
+just install
 ```
 
-From inside Herdr, install the bindings and Aven commands:
+`just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
+commands, installs `mods/aven-tasks` into `$HERDR_APP_HOME` (or
+`~/.config/herdr-app`), and reports readiness with `just doctor`. The app mod
+is optional; when `herdr-app` is absent the same dispatch, supervision, and
+recovery work headlessly. The installer preserves unrelated app settings and
+never overwrites an existing key binding.
 
-```sh
-herdr plugin action invoke aven.tasks.install-keybindings
-herdr plugin action invoke aven.tasks.install-aven-command
-herdr integration install opencode
-herdr plugin action invoke aven.tasks.doctor
-```
+There is no legacy `herdr` plugin manifest, popup entrypoint, or keybinding
+installer to install. The retired runtime is not started or migrated in place.
 
-The command installer builds and installs `aven-dispatch` with Cargo, then
-writes its resolved executable path into Aven's configuration. Existing
-unmanaged settings are preserved; conflicting settings are reported.
+For the dashboard, install Node 24 LTS and run `just ui-install` once.
 
 ## Getting started
 
@@ -65,15 +63,16 @@ just ui-start
 ```
 
 The explorer lists project tasks/epics and their typed relationships, dispatcher
-attempts/roles, API session identities, Herdr panes/workspaces, and Git worktrees.
+attempts/roles, API session identities, herdr-core terminals and their observed
+status, optional herdr-app placement, and Git worktrees.
 Search, type/state/time/epic filters, keyboard-selectable entries, related-entity buttons,
 and a provenance/detail panel provide the non-canvas inspection path. Task
 acceptance, persisted attempt state, and terminal-observed state are separate.
 Live OpenCode V2 activity drives **Working** indicators on linked sessions,
 agents and tasks, including pane-less sessions. A task badge means linked
 execution, not acceptance: Aven status never changes. Approval/input are separate
-facets and may coexist with Working. Herdr observations remain inspectable even
-when they contradict the API. Missing/unsupported API data is unknown, not idle
+facets and may coexist with Working. herdr-core observations remain inspectable
+even when they contradict the API. Missing/unsupported API data is unknown, not idle
 or done; observations expire after 4.5 seconds, including in disconnected browsers.
 
 The graph canvas occupies the remaining browser viewport below a single compact,
@@ -273,13 +272,14 @@ Startup settings are trusted environment variables, never browser parameters:
 | `UI_PORT` | `4318` (unprivileged ports only) |
 | `UI_HOST` | Only `127.0.0.1` is accepted |
 | `AVEN_DISPATCH_STORE` | Optional override for the central SQLite store; relative paths resolve from the repository checkout. Otherwise reads `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback `~/.local/state/aven/dispatch.sqlite`) |
-| `UI_PROJECT_CHECKOUTS` | Optional JSON object mapping Aven project keys to absolute, server-local checkout paths, for example `{"rofm-argo-apps":"/work/rofm-argo-apps"}`. Paths are canonicalized at startup; selected projects without a mapping retain scoped Aven recovery only. This mapping is never exposed to the browser. |
+| `UI_PROJECT_CHECKOUTS` | Optional JSON object mapping Aven project keys to absolute, server-local checkout paths, for example `{"rofm-argo-apps":"/work/rofm-argo-apps"}`. Paths are canonicalized at startup; selected projects without a mapping keep scoped Aven recovery only and read no Git worktree inventory. This mapping is never exposed to the browser. |
 | `UI_OPENCODE_URL` | Explicit existing OpenCode server origin; takes precedence over `OPENCODE_SERVER_URL` and local discovery. No fallback to a different service when this server fails |
 | `UI_OPENCODE_AUTHORIZATION` | Server-only Authorization header for that explicit server; otherwise `OPENCODE_TOKEN` (Bearer) or `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` (Basic, username defaults to `opencode`) |
 | `UI_OPENCODE_SERVICE_FILE` | Optional trusted registration file for local discovery; otherwise `$XDG_STATE_HOME/opencode/service.json` or `~/.local/state/opencode/service.json`. Its origin is checked for loopback before the client's authenticated health probe |
 
-Run inside Herdr to inherit its existing session/socket context. Outside Herdr,
-the Aven explorer still works and topology is labelled unavailable. The server
+herdr-core and Git worktree reads use `hc` on `PATH`. The desktop app is optional:
+when it is absent or closed, core facts and worktrees remain observable and app
+placement is labelled unavailable. The server
 does not start or control any upstream service. Missing/malformed optional data
 is visible in source-health cards. Aven outages retain the previous snapshot
 with an explicit stale label; connection failures retain selection and label
@@ -293,7 +293,7 @@ settings above. Credentials stay in the server process, not browser storage,
 requests, logs or query strings. The installed server's OpenAPI document gates
 optional events, waiting facets, parent-filtered child reads and durable logs.
 Only dispatcher-linked sessions and explicitly related API children are read;
-Herdr terminal detection alone does not authorize session reads.
+herdr-core terminal detection alone does not authorize session reads.
 
 Open the printed **127.0.0.1 URL** directly (not `localhost` or a remote tunnel).
 The page automatically requests `/bootstrap` from that same origin, keeps its
@@ -321,10 +321,11 @@ Non-startup projects recover execution from their scoped Aven metadata and linke
 authenticated OpenCode sessions. Every project collector reads the same central
 dispatcher SQLite store read-only via `node:sqlite`, so mapped projects show
 their own attempts without borrowing the startup project's store. Dispatcher
-attempts are filtered to the loaded project's Aven task ids; Herdr topology
-coverage remains explicitly unavailable for non-startup projects, and the
-startup repository topology is never reused. Other repositories/paths are not
-discovered.
+attempts are filtered to the loaded project's Aven task ids; core terminals are
+included only when an attempt or an ownership label ties them to the loaded
+project. Non-startup worktree inventory is read from that project's configured
+checkout; the startup repository topology is never reused. Other
+repositories/paths are not discovered.
 
 Reads use explicit project/workspace scope, a 500-item cap for each of Aven's
 available and upcoming lists, and at most 80 context hydrations per snapshot
@@ -336,7 +337,7 @@ after 60 seconds since their last successful bounded read (or creation). Full
 admission returns retryable HTTP 503; close streams and retry after idle expiry.
 Eviction/shutdown closes readers, timers and each collector's own API subscription.
 CLI concurrency remains four process-wide, not four per project.
-API and Herdr lanes poll independently at approximately
+API, core, worktree, and optional app lanes poll independently at approximately
 two seconds; Aven/dispatcher use a five-second lane. No lane overlaps itself.
 Authenticated same-origin fetch/SSE delivers versioned complete snapshots and
 health heartbeats; clients reconnect with backoff, resnapshot on gaps/restarts,
@@ -468,9 +469,15 @@ history/source windows can be incomplete. The existing terminal dispatcher and
 popup actions stay independent; no new dispatch behavior or automatic browser
 launch action is installed.
 
-### Terminal popup
+### Aven overlay and dispatch
 
-Open Herdr in your repository. If needed, map it to an Aven project:
+Open herdr-app in your repository. The optional `aven-tasks` mod adds the
+**Open aven** and **Add a task** commands and binds `ctrl-shift-a` when that
+chord is free. You can also run the same actions from the app command palette
+(`mod.open:aven-tasks`). Headless use needs neither the app nor the mod:
+`aven tui -p` works in any terminal.
+
+If needed, map the checkout to an Aven project:
 
 ```sh
 aven project create "My app" --path "$PWD"
@@ -478,8 +485,7 @@ aven project create "My app" --path "$PWD"
 
 | Keys | Action |
 | --- | --- |
-| `prefix+a` | Open Aven for the focused pane's project |
-| `prefix+shift+c` | Quickly add a task |
+| `ctrl-shift-a` | Open the Aven overlay (when the app mod is installed) |
 | `z d` in Aven | Dispatch the selected task |
 | `z s` in Aven | Plan then implement the selected task |
 | `z p` in Aven | Turn the selected task idea into a durable implementation plan |
@@ -496,17 +502,22 @@ command; the other dispatch bindings use uppercase `D`, `P`, `I`, `B`, and
 ### Dispatch flow
 
 1. Select a task and press `z d`.
-2. Choose an agent by number in the **existing Herdr popup**, then press Enter.
-   The picker appears even with one agent. `q` cancels without moving focus.
-3. The dispatcher creates an OpenCode session, attaches its terminal in the
-   task worktree, and submits the task through the OpenCode V2 API.
-4. Aven records the handoff and marks the task `active`; focus then moves to
-   the worktree pane. Prompt admission does **not** mean the task is complete.
+2. Choose an agent by number in the existing Aven terminal, or in a dedicated
+   herdr-core picker terminal when dispatched outside Aven. The picker appears
+   even with one agent. `q` cancels without creating a session or prompt.
+3. Worktree discovery, creation, cleanliness checks, and integration run through
+   `hc exec --cwd <repo> git ...`. The dispatcher creates the OpenCode session,
+   starts the OpenCode CLI in a dedicated herdr-core terminal, and submits the
+   task through the OpenCode V2 API.
+4. Aven records the handoff and marks the task `active`. Prompt admission does
+   **not** mean the task is complete, and a core status word is not acceptance.
 
 Dispatch works from the primary checkout **or any linked worktree**. You do
-not need to switch to `main`. Worktrees are created/opened without taking
-focus while you choose. Re-dispatch confirms the existing session's agent
-and reuses that session without admitting a duplicate prompt.
+not need to switch to `main`. Worktrees are created/opened through core without
+taking focus while you choose. Re-dispatch confirms the existing session's
+agent, adopts the existing owned terminal, and reuses the session without
+admitting a duplicate prompt. A missing status stays unknown; a terminal
+recovered with a shell is never treated as a resumed OpenCode process.
 
 The `z s` workflow keeps specs, plans, subtasks, and progress in Aven, then
 implements only after it has set `sdd.plan-worked-out=true`. `z p` plans only:
@@ -542,12 +553,19 @@ deterministic task worktree branch.
 | `AVEN_CONFIG_DIR` | Aven config directory; otherwise `$XDG_CONFIG_HOME/aven` or `~/.config/aven` |
 | `AVEN_COMMANDS_FILE` | Extra-command YAML; defaults to this plugin's `aven-commands.yaml` |
 | `AVEN_DISPATCH_STORE` | Dispatcher SQLite store override; also accepts `--store` |
+| `AVEN_WORKTREE_ROOT` | Worktree root override; defaults to `~/.herdr/worktrees` |
+| `HC_BIN` | herdr-core executable override; defaults to `hc` |
+| `HERDR_APP_BIN` | herdr-app executable override; defaults to `herdr-app` |
+| `HC_SESSION` | Isolated herdr-core session for integration tests; never set it for normal work |
 
 By default, every checkout, worktree, and project shares one central SQLite
 store at `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback
 `~/.local/state/aven/dispatch.sqlite`). It is the only dispatcher state store:
 JSON state files are not created, read, or migrated. The dispatcher snapshot on
 each Aven task remains the task-facing recovery surface across checkouts.
+The watcher writes `<store dir>/watch.json` (ownership and last event sequence)
+and `<store dir>/terminals.json` (bounded terminal facts for the read-only
+dashboard). Both are observations; neither is acceptance.
 
 Aven starts in the focused pane's directory and infers its project, falling
 back to workspace scope when no project is mapped. The plugin does not copy
@@ -564,7 +582,7 @@ Installed commands ask for an agent, then a model. Planning (`z p`) puts the
 implementation (`z i`) put the `build` agent and latest Terra model first. The
 picker remains interactive, so any visible agent or supported model can still
 be selected. Entering `q` at either picker cancels the dispatch and removes the
-newly created Herdr worktree. Edit `aven-commands.yaml` to add commands or
+newly created herdr-core worktree. Edit `aven-commands.yaml` to add commands or
 change CLI options. For example:
 
 ```yaml
@@ -581,8 +599,8 @@ change CLI options. For example:
 Use `--agent select` for the picker or `--agent <id>` to bypass it; use
 `--model provider/model` to bypass model selection for scripts. Keep
 **`execution: terminal`** for picker commands: Aven passes task JSON through
-`AVEN_COMMAND_CONTEXT` and lends the popup terminal to the picker. Herdr
-cannot nest a second popup inside Aven.
+`AVEN_COMMAND_CONTEXT` and lends its terminal to the picker. Outside Aven the
+dispatcher opens a dedicated herdr-core picker terminal instead.
 
 Use `--skill aven/sdd-plan-implement --skills-dir /path/to/plugin/skills` for the bundled
 plan-and-implement workflow, `--skill aven/sdd-plan` for planning only, or
@@ -592,7 +610,7 @@ namespaced Markdown workflow under `skills/`.
 Apply command changes and **close/reopen Aven**:
 
 ```sh
-herdr plugin action invoke aven.tasks.install-aven-command
+sh scripts/install-aven-command.sh
 ```
 
 ### Inspect a dispatch
@@ -611,6 +629,29 @@ aven-dispatch reset HAP-XXXX --yes
 `interrupt` stops execution without marking the task done. For direct dispatch,
 pass Aven's versioned command context on stdin; opt-in babysitting uses
 `aven-dispatch dispatch --agent select --babysitter`.
+
+Supervision is event-driven:
+
+```sh
+aven-dispatch watch              # long-running owner; subscribe to owned terminals
+aven-dispatch watch --once       # bounded reconcile pass, then exit
+aven-dispatch watch --status     # lock owner and durable state
+aven-dispatch watch --stop       # stop the owner explicitly
+aven-dispatch message HAP-XXXX --text "..." --role builder --wait
+```
+
+`watch` subscribes to herdr-core events filtered by dispatcher ownership labels,
+starts from a snapshot, handles `missed` events by resubscribing, and uses core
+events only as triggers to reconcile authoritative OpenCode/Aven state. A
+bounded periodic pass covers changes that have no core event. Duplicate
+notifications, reconnects, and watcher restarts never submit a prompt or launch
+a worker twice. `message` uses guarded `hc send --if idle --wait`; it refuses
+blocked programs rather than bypassing a permission dialog.
+
+A legacy attempt created by the retired `herdr` runtime remains read-only
+evidence. Move its durable OpenCode session to herdr-core explicitly with
+`aven-dispatch dispatch --relaunch` (it preserves the session and never
+re-admits an already admitted prompt), or reset and redispatch it.
 
 ### Reset a task safely
 
@@ -645,38 +686,49 @@ retained approved plan can be dispatched again without duplicate planning.
 ```sh
 just fmt       # Check Rust formatting
 just check     # Compile checks
-just test      # Unit, fixture, and terminal/PTY regression tests
-just test-e2e  # Real Herdr + Aven popup test; run inside Herdr
+just test      # Rust unit tests and shell/integration fixtures
+just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
+just app-check # herdr-app check app
+just ui-check  # Dashboard TypeScript
+just ui-test   # Dashboard unit tests
 ```
 
-The E2E test verifies the picker, cancellation, deferred focus, session reuse,
-and dispatch from linked worktrees without switching branches. It uses the
-installer-generated commands and disposable config, database, repository,
-worktrees, and Herdr session. OpenCode and Cargo installation are stubbed:
-no real agent runs, no tokens are spent, and user sessions/configs stay intact.
-Failure artifacts are retained for debugging.
+The E2E fixture uses `test/hc_fixture.py` as `HC_BIN`; its `hc exec` runs real
+Git, so worktree operations are exercised through the same boundary as
+production. OpenCode and Aven are stubbed: no real agent runs, no tokens are
+spent, and user sessions/configs stay intact. `watch.test.sh` uses an isolated
+`HC_FIXTURE_STATE` and its own store, never the user's core or terminals.
 
-Main entrypoints: `src/main.rs` (dispatcher orchestration), `bin/run.sh`
-(plugin actions and panes), `herdr-plugin.toml` (manifest), and
-`scripts/install-aven-command.sh` (Aven command installation).
+Main entrypoints: `src/main.rs` (dispatcher orchestration), `app/` (optional
+herdr-app mod), `scripts/install-aven-command.sh` (Aven commands),
+`scripts/install-app-mod.sh` (owned mod files and free-key merge), and
+`justfile` (the minimal working set).
 
 The Rust dispatcher keeps its internal boundaries deliberately small:
 
 - `src/model.rs` owns Aven command-context parsing and the serde-backed
-  dispatcher state model.
-- `src/process.rs` owns command execution, OpenCode/Aven transport helpers,
-  and the central SQLite dispatcher store.
-- `src/main.rs` owns command lifecycle orchestration and integrations.
+  dispatcher state model, including durable core/terminal identities.
+- `src/process.rs` owns OpenCode/Aven transport helpers and the central SQLite
+  store. Worktree Git is not here.
+- `src/core.rs` owns the herdr-core CLI contract: identity, launches, facts,
+  snapshots, safe event parsing, and guarded sends.
+- `src/worktrees.rs` owns every Git worktree operation through `hc exec`.
+- `src/watch.rs` owns watcher ownership, durable supervision state, terminal
+  correlation, and the bounded dashboard inventory.
+- `src/app.rs` owns optional herdr-app focus/peek only; it is never on the
+  dispatch path.
 
 This separation is intentionally not a framework: add a module only when a
 shared concern has a clear owner.
 
-**Troubleshooting:** Reopen Aven after changing commands. Check executable and
-project resolution with `aven.tasks.doctor`; inspect plugin failures with
-`herdr plugin log list --plugin aven.tasks`. Terminal dispatch failures display
-their complete error chain and wait for Enter before returning to Aven. If the
-picker is missing, confirm the installed command uses `--agent select` and
-`execution: terminal`.
+**Troubleshooting:** Reopen Aven after changing commands. Check readiness with
+`aven-dispatch doctor` (or `just doctor`). `hc --version`, `hc server status
+--json`, `hc ls --json`, and `hc get <address> --json` show the core contract;
+`aven-dispatch watch --status` shows whether a supervisor owns the store. A
+missing desktop app is normal. Validate the optional mod with `just app-check`.
+Terminal dispatch failures keep the complete error chain visible in the borrowed
+Aven terminal. If the picker is missing, confirm the installed command uses
+`--agent select` and `execution: terminal`.
 
 ## License
 

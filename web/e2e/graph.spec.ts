@@ -78,12 +78,17 @@ test('bubble shapes, typed directed relationships, derived provenance and graph/
 });
 
 test('single-click selects without focusing or opening info; explicit focus preserves cues and edges', async ({ page }) => {
+  // The floating entity panel overlays the lower-right canvas; close it so the
+  // click reaches the graph, not a list row.
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const pointToTask = await point(page, 'task:b');
   await page.mouse.click(pointToTask.x, pointToTask.y);
   await expect(page.getByText('Connected component · ranked layout', { exact: false })).toHaveCount(0);
   await expect(page.getByRole('complementary', { name: 'Entity details' })).toHaveCount(0);
   await expect(page.locator('.graph-cue[data-cue~="one-hop"]')).not.toHaveCount(0);
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await expect(page.getByText('1 hop', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   const emphasized = await page.locator('.graph-canvas').evaluate(element => (element as GraphContainer)._cyreg.cy.elements('.direct-edge').map(edge => edge.id()));
   expect(emphasized.length).toBeGreaterThan(0);
   await page.keyboard.press('i');
@@ -430,7 +435,7 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   const types = page.getByRole('group', { name: 'Entity types', exact: true });
   const relations = page.getByRole('group', { name: 'Relationship kinds', exact: true });
   for (const kind of ['epic', 'task', 'attempt', 'agent', 'session']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
-  for (const kind of ['workspace', 'pane', 'worktree', 'boundary']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
+  for (const kind of ['workspace', 'terminal', 'pane', 'worktree', 'boundary']) await expect(types.getByRole('checkbox', { name: kind, exact: true })).not.toBeChecked();
   for (const kind of ['contains', 'blocks', 'related', 'assigned', 'session', 'placed-in', 'worktree', 'agent-dependency']) await expect(relations.getByRole('checkbox', { name: kind, exact: true })).toBeChecked();
    await expect(page.getByLabel('Recent source changes')).toHaveValue('all');
   await onlyTypes(page, []);
@@ -439,7 +444,7 @@ test('defaults, multi-type/empty/reset controls, combined fuzzy/state/time/epic 
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Reset empty scope', exact: true }).click();
   await page.getByText('Filters', { exact: true }).click();
-  await expect(page.locator('.scope-facts')).toContainText('5 of 9 types');
+  await expect(page.locator('.scope-facts')).toContainText('5 of 10 types');
   await page.keyboard.press('Escape');
   const details = page.getByRole('complementary', { name: 'Entity details' });
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /Standalone investigation/ }).click();
@@ -487,7 +492,7 @@ test('entity and relationship select/deselect-all actions drive scope without hi
   await page.getByText('Filters', { exact: true }).click();
   const types = page.getByRole('group', { name: 'Entity types', exact: true });
   await page.getByRole('button', { name: 'Select all types', exact: true }).click();
-  await expect(types.getByRole('checkbox', { checked: true })).toHaveCount(9);
+  await expect(types.getByRole('checkbox', { checked: true })).toHaveCount(10);
   await page.getByRole('button', { name: 'Deselect all types', exact: true }).click();
   await expect(types.getByRole('checkbox', { checked: true })).toHaveCount(0);
   await expect(page.getByText('An empty selection means no matches.', { exact: true })).toBeVisible();

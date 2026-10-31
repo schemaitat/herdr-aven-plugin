@@ -56,6 +56,7 @@ impl LockedStore {
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             for row in rows {
                 let attempt: Attempt = serde_json::from_str(&row?)?;
+                let attempt = crate::model::normalize_attempt(attempt);
                 store
                     .attempts
                     .insert(attempt_key(&attempt.task_id, &attempt.workflow), attempt);
@@ -147,6 +148,21 @@ impl LockedStore {
         transaction.commit()?;
         self.put(attempt);
         Ok(None)
+    }
+    /// Remove exactly one reserved attempt after a failed provisioning step.
+    pub(crate) fn remove_attempt(&mut self, task_id: &str, workflow: &str) -> Result<usize> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let removed = transaction.execute(
+            "DELETE FROM attempts WHERE task_id = ?1 AND workflow = ?2",
+            params![task_id, workflow],
+        )?;
+        transaction.commit()?;
+        let key = attempt_key(task_id, workflow);
+        self.store.attempts.remove(&key);
+        self.dirty.remove(&key);
+        Ok(removed)
     }
     pub(crate) fn remove_attempts_for_task(&mut self, task_id: &str) -> Result<usize> {
         let attempts = self
@@ -241,48 +257,6 @@ pub(crate) fn absolute_path(path: PathBuf) -> Result<PathBuf> {
     } else {
         Ok(env::current_dir()?.join(path))
     }
-}
-
-/// Resolve a caller-provided directory to the root of its current Git
-/// worktree. Dispatcher commands can be invoked from any subdirectory, while
-/// Herdr workspace creation needs a stable checkout path.
-pub(crate) fn repository_root(directory: &str) -> Result<String> {
-    let root = run(
-        "git",
-        &[
-            "-C".into(),
-            directory.into(),
-            "rev-parse".into(),
-            "--show-toplevel".into(),
-        ],
-        None,
-    )?;
-    if root.is_empty() {
-        bail!("Git did not return a repository root for {directory}");
-    }
-    Ok(root)
-}
-
-/// Resolve the repository's primary checkout. Herdr's worktree create/open
-/// actions must start there even when the dispatcher runs inside a linked
-/// worktree.
-pub(crate) fn primary_checkout(directory: &str) -> Result<String> {
-    let listing = run(
-        "git",
-        &[
-            "-C".into(),
-            directory.into(),
-            "worktree".into(),
-            "list".into(),
-            "--porcelain".into(),
-        ],
-        None,
-    )?;
-    Ok(listing
-        .lines()
-        .find_map(|line| line.strip_prefix("worktree "))
-        .map(str::to_owned)
-        .unwrap_or_else(|| directory.to_owned()))
 }
 
 pub(crate) fn run_in(

@@ -3,28 +3,39 @@ import { entityId, type EdgeKind, type Entity, type GraphSnapshot, type Provenan
 import type { Runner } from './commands.js';
 import type { ProjectConfig } from './config.js';
 import { avenSource, type AvenRead } from './sources/aven.js';
+import { readApp, type AppRead } from './sources/app.js';
+import { readCore, type CoreRead } from './sources/core.js';
 import { readDispatcher, type DispatchRead } from './sources/dispatcher.js';
-import { readHerdr, type HerdrRead } from './sources/herdr.js';
+import { readWorktrees, type WorktreeRead } from './sources/worktrees.js';
 import { attemptTime, effectiveTimes, sourceTime } from '../shared/scope.js';
 
 type Config = ProjectConfig;
-export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead, herdr: HerdrRead, now = Date.now()): GraphSnapshot {
+type Sources = { core: CoreRead; worktrees: WorktreeRead; app: AppRead; dispatcher: DispatchRead };
+
+export function normalize(config: Config, aven: AvenRead, sources: Sources, now = Date.now()): GraphSnapshot {
+  const { core, worktrees, app, dispatcher: dispatch } = sources;
   const nodes = new Map<string, Entity>();
   const edges = new Map<string, Relationship>();
   const taskId = (id: string) => entityId('task', config.scope.workspace, id);
-  const topologyId = (kind: 'pane' | 'workspace', id: string) => entityId(kind, config.scope.session, id);
-  // API sessions are independent of terminal placement and survive Herdr session changes.
+  const terminalId = (address: string, coreId = '') => entityId('terminal', coreId || 'local', address);
+  const paneId = (id: string) => entityId('pane', config.scope.session, id);
+  const workspaceId = (id: string) => entityId('workspace', config.scope.session, id);
+  // API sessions are independent of terminal placement and survive core restarts.
   const sessionId = (id: string, service = 'opencode') => entityId('session', service, id);
-  const worktreeId = (path: string) => entityId('worktree', resolve(config.scope.cwd, path));
-  const provenance = (source: 'aven' | 'dispatcher' | 'herdr', record: string): Provenance => ({ source, record, observedAt: ({ aven: aven.health, dispatcher: dispatch.health, herdr: herdr.health })[source].observedAt });
+  const worktreeId = (path: string) => entityId('worktree', resolve(config.primary, path));
+  const provenance = (source: 'aven' | 'dispatcher' | 'core' | 'worktrees' | 'app', record: string): Provenance => ({
+    source,
+    record,
+    observedAt: ({ aven: aven.health, dispatcher: dispatch.health, core: core.health, worktrees: worktrees.health, app: app.health })[source].observedAt,
+  });
   const node = (entity: Entity) => {
     const previous = nodes.get(entity.id);
     if (!previous || previous.boundary) nodes.set(entity.id, entity);
     else previous.provenance = [...previous.provenance, ...entity.provenance].filter((p, i, all) => all.findIndex(other => other.source === p.source && other.record === p.record) === i);
     return entity.id;
   };
-  const stub = (id: string, label: string, p: Provenance) => {
-    if (!nodes.has(id)) node({ id, kind: 'boundary', label, state: 'unresolved', boundary: true, details: { coverage: 'Outside scope, unhydrated, or missing resource' }, provenance: [p] });
+  const stub = (id: string, label: string, p: Provenance, state = 'unresolved') => {
+    if (!nodes.has(id)) node({ id, kind: 'boundary', label, state, boundary: true, details: { coverage: 'Outside scope, unhydrated, or missing resource' }, provenance: [p] });
     return id;
   };
   const edge = (kind: EdgeKind, source: string, target: string, p: Provenance) => {
@@ -57,20 +68,60 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
     }
   }
 
-  for (const workspace of herdr.workspaces) {
-    const p = provenance('herdr', workspace.workspace_id);
-    const id = node({ id: topologyId('workspace', workspace.workspace_id), kind: 'workspace', label: workspace.workspace_id, state: 'observed', details: { workspaceId: workspace.workspace_id }, provenance: [p] });
-    if (workspace.worktree) edge('worktree', id, stub(worktreeId(workspace.worktree.checkout_path), workspace.worktree.checkout_path, p), p);
+  // Git worktree inventory is proven by hc-executed Git, never by a path guess.
+  for (const tree of worktrees.worktrees) {
+    const p = provenance('worktrees', tree.path);
+    node({ id: worktreeId(tree.path), kind: 'worktree', label: tree.branch.replace(/^refs\/heads\//, '') || tree.path, state: tree.detached ? 'detached' : 'observed',
+      details: { path: tree.path, branch: tree.branch, head: tree.head, primary: tree.path === worktrees.primary }, provenance: [p] });
   }
-  for (const tree of herdr.worktrees) node({ id: worktreeId(tree.path), kind: 'worktree', label: tree.branch ?? tree.path, state: 'observed', details: { path: tree.path, branch: tree.branch ?? '' }, provenance: [provenance('herdr', tree.path)] });
-  for (const pane of herdr.panes) {
-    const p = provenance('herdr', pane.pane_id);
-    const paneId = node({ id: topologyId('pane', pane.pane_id), kind: 'pane', label: pane.pane_id, state: 'observed', details: { paneId: pane.pane_id, tabId: pane.tab_id, terminalObservedState: pane.agent_status }, provenance: [p] });
-    edge('contains', stub(topologyId('workspace', pane.workspace_id), pane.workspace_id, p), paneId, p);
-    if (pane.cwd && herdr.worktrees.some(tree => tree.path === pane.cwd)) edge('worktree', paneId, worktreeId(pane.cwd), p);
-    if (pane.agent_session?.kind === 'id') {
-      const session = node({ id: sessionId(pane.agent_session.value, pane.agent ?? 'unknown'), kind: 'session', label: pane.agent_session.value, state: 'unknown', details: { sessionId: pane.agent_session.value, service: pane.agent ?? 'unknown', apiActivity: 'unknown (requires project-linked API observation)', terminalObservedState: pane.agent_status }, provenance: [p] });
-      edge('placed-in', session, paneId, p);
+
+  const projectTaskIds = new Set([...aven.contexts.keys(), ...aven.tasks.map(task => task.id)]);
+  const owned = new Set<string>();
+  for (const { attempt } of dispatch.attempts) {
+    for (const ref of [attempt.terminal, attempt.coordinator_terminal, attempt.babysitter_terminal, ...attempt.phases.map(phase => phase.terminal)]) {
+      if (ref.address) owned.add(ref.address);
+    }
+  }
+
+  // Terminal entities come from core facts. Labels authorize correlation with
+  // this project; a bare address never does. Hidden terminals remain observable.
+  const coreTerminals = new Map<string, typeof core.terminals[number]>();
+  for (const terminal of core.terminals) {
+    const task = terminal.labels['aven.task_id'];
+    if (!owned.has(terminal.address) && !(task && projectTaskIds.has(task))) continue;
+    coreTerminals.set(terminal.address, terminal);
+    const p = provenance('core', terminal.address);
+    node({ id: terminalId(terminal.address, core.core.id), kind: 'terminal', label: `${terminal.address}${terminal.name ? ` · ${terminal.name}` : ''}`,
+      state: terminal.status || terminal.state,
+      details: {
+        address: terminal.address, coreId: core.core.id, coreName: core.core.name, coreVersion: core.core.version,
+        terminalState: terminal.state, terminalStatus: terminal.status || 'unknown', statusKind: terminal.status_kind,
+        program: terminal.program, reported: terminal.reported, recoveredShell: terminal.recovered_shell,
+        reason: terminal.reason, turn: terminal.turn, observation: 'core fact; not API activity or acceptance',
+        ...(terminal.labels['aven.task'] ? { taskRef: terminal.labels['aven.task'] } : {}),
+        ...(terminal.labels['aven.role'] ? { role: terminal.labels['aven.role'] } : {}),
+        ...(terminal.labels['aven.workflow'] ? { workflow: terminal.labels['aven.workflow'] } : {}),
+      }, provenance: [p] });
+  }
+
+  // Optional app placement. Absence never removes a terminal or implies control.
+  const visibleSpaces = new Set<string>();
+  for (const placement of app.placements) {
+    if (!coreTerminals.has(placement.terminal)) continue;
+    const p = provenance('app', placement.space);
+    visibleSpaces.add(placement.space);
+    const pane = paneId(placement.pane || `${placement.tab}:${placement.terminal}`);
+    node({ id: pane, kind: 'pane', label: placement.tabName || placement.pane, state: 'observed', details: { paneId: placement.pane, tabId: placement.tab, tabName: placement.tabName }, provenance: [p] });
+    const workspace = node({ id: workspaceId(placement.space), kind: 'workspace', label: placement.spaceName || placement.space, state: 'observed', details: { spaceId: placement.space, folder: app.spaces.find(space => space.id === placement.space)?.folder ?? '' }, provenance: [p] });
+    edge('contains', workspace, pane, p);
+    edge('placed-in', terminalId(placement.terminal, core.core.id), pane, p);
+  }
+  for (const space of app.spaces) {
+    if (!visibleSpaces.has(space.id)) continue;
+    const workspace = workspaceId(space.id);
+    if (space.folder) {
+      const tree = worktrees.worktrees.find(candidate => candidate.path === space.folder);
+      if (tree) edge('worktree', workspace, worktreeId(tree.path), provenance('app', space.id));
     }
   }
 
@@ -78,37 +129,66 @@ export function normalize(config: Config, aven: AvenRead, dispatch: DispatchRead
     const p = { ...provenance(origin === 'aven-recovery' ? 'aven' : 'dispatcher', `${origin}/${a.task_id}/${a.workflow}/${a.generation}/${a.attempt_id}`), observedAt: observedAt ?? dispatch.health.observedAt };
     const attemptId = node({ id: entityId('attempt', a.task_id, a.workflow, a.generation, a.attempt_id), kind: 'attempt', label: `${a.workflow} · ${a.attempt_id}`, state: a.state || 'unknown',
       changedAt: attemptTime(a.created_at, now),
-      details: { taskId: a.task_id, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id, executionMode: a.execution_mode, persistedState: a.state, origin, logRef: a.log_task_ref }, provenance: [p] });
+      details: { taskId: a.task_id, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id, executionMode: a.execution_mode, persistedState: a.state, origin, logRef: a.log_task_ref, backend: a.backend || 'legacy-herdr', coreId: a.core_id, acceptance: 'Aven task status is separate from this execution state' }, provenance: [p] });
     edge('assigned', stub(taskId(a.task_id), a.task_ref, p), attemptId, p);
-    const role = (key: string, task: string, session: string, pane: string, path: string, state: string, name: string) => {
-      if (!session && !pane && !path && !name) return;
-      const agent = node({ id: entityId('agent', a.task_id, a.workflow, a.generation, a.attempt_id, key), kind: 'agent', label: `${key}${name ? ` · ${name}` : ''}`, state: state || 'unknown', details: { role: key.split('/')[0], persistedState: state, taskId: task, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id }, provenance: [p] });
+    const role = (key: string, task: string, session: string, ref: { address: string; core_id: string } | undefined, legacyPane: string, path: string, state: string, name: string) => {
+      if (!session && !ref?.address && !legacyPane && !path && !name) return;
+      const observationKey = key.startsWith('worker/') ? `phase:${key.slice('worker/'.length)}` : key.split('/')[0];
+      const observation = a.terminals[observationKey] ?? a.terminals[key];
+      const agent = node({ id: entityId('agent', a.task_id, a.workflow, a.generation, a.attempt_id, key), kind: 'agent', label: `${key}${name ? ` · ${name}` : ''}`, state: state || 'unknown',
+        details: { role: key.split('/')[0], persistedState: state, taskId: task, workflow: a.workflow, generation: a.generation, attemptId: a.attempt_id,
+          terminalAddress: ref?.address ?? '', terminalState: observation?.state ?? 'unknown', terminalStatus: observation?.status || 'unknown', recovery: observation?.recovery ?? '',
+          observation: observation ? 'core observation; never acceptance' : 'no terminal observation' }, provenance: [p] });
       edge('contains', attemptId, agent, p);
       edge('assigned', stub(taskId(task), task, p), agent, p);
       if (session) {
         const id = node({ id: sessionId(session), kind: 'session', label: session, state: 'unknown', details: { sessionId: session, service: 'opencode', apiActivity: 'unknown (awaiting API observation)' }, provenance: [p] });
         edge('session', agent, id, p);
-        if (pane) edge('placed-in', id, stub(topologyId('pane', pane), pane, p), p);
+        if (ref?.address) edge('placed-in', id, stub(terminalId(ref.address, ref.core_id || a.core_id), ref.address, p), p);
       }
-      if (pane) edge('placed-in', agent, stub(topologyId('pane', pane), pane, p), p);
+      if (ref?.address) {
+        edge('placed-in', agent, stub(terminalId(ref.address, ref.core_id || a.core_id), ref.address, p), p);
+      }
+      if (legacyPane) {
+        // Legacy panes are historical evidence only; they are never treated as
+        // a core terminal address or as permission to control anything.
+        const id = node({ id: paneId(legacyPane), kind: 'pane', label: `legacy ${legacyPane}`, state: 'legacy', details: { paneId: legacyPane, legacy: true, note: 'Retired herdr runtime; read-only evidence' }, provenance: [p] });
+        edge('placed-in', agent, id, p);
+      }
       if (path) edge('worktree', agent, stub(worktreeId(path), path, p), p);
     };
     // A root session recorded as coordinator is one execution, not an additional fictional worker.
-    if (!a.coordinator_session_id || a.session_id !== a.coordinator_session_id) role('worker', a.task_id, a.session_id, a.pane, a.worktree, a.state, a.agent);
-    if (a.coordinator_session_id || a.coordinator_agent) role('coordinator', a.task_id, a.coordinator_session_id, a.coordinator_session_id === a.session_id ? a.pane : '', a.worktree, a.state, a.coordinator_agent);
-    role('babysitter', a.task_id, a.babysitter_session_id, a.babysitter_pane, '', 'unknown', '');
-    for (const phase of a.phases) role(`worker/${phase.task_id}`, phase.task_id, phase.session_id, phase.pane, phase.worktree, phase.state, '');
+    if (!a.coordinator_session_id || a.session_id !== a.coordinator_session_id) role('worker', a.task_id, a.session_id, a.terminal, a.pane, a.worktree, a.state, a.agent);
+    if (a.coordinator_session_id || a.coordinator_agent) role('coordinator', a.task_id, a.coordinator_session_id, a.coordinator_terminal, a.coordinator_session_id === a.session_id ? a.pane : '', a.worktree, a.state, a.coordinator_agent);
+    role('babysitter', a.task_id, a.babysitter_session_id, a.babysitter_terminal, a.babysitter_pane, '', 'unknown', '');
+    for (const phase of a.phases) role(`worker/${phase.task_id}`, phase.task_id, phase.session_id, phase.terminal, phase.pane, phase.worktree, phase.state, '');
   }
   const times = effectiveTimes([...nodes.values()], [...edges.values()], now);
   for (const entity of nodes.values()) {
     const time = times.get(entity.id);
     if (time !== undefined) entity.changedAt = new Date(time).toISOString();
   }
-  return { schema: 'local-explorer/v1', observedAt: new Date(now).toISOString(), scope: { project: config.scope.project, workspace: config.scope.workspace }, nodes: [...nodes.values()].sort((a, b) => a.id.localeCompare(b.id)), edges: [...edges.values()].sort((a, b) => a.id.localeCompare(b.id)), health: [aven.health, dispatch.health, herdr.health] };
+  return {
+    schema: 'local-explorer/v1', observedAt: new Date(now).toISOString(),
+    scope: { project: config.scope.project, workspace: config.scope.workspace },
+    nodes: [...nodes.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    edges: [...edges.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    health: [aven.health, dispatch.health, core.health, worktrees.health, app.health],
+  };
+}
+
+async function readSources(config: Config, run: Runner): Promise<{ aven: AvenRead; core: CoreRead; worktrees: WorktreeRead; app: AppRead }> {
+  const readAven = avenSource(config.scope, run);
+  const [aven, core, worktrees, app] = await Promise.all([
+    readAven(),
+    readCore(config.scope, config.terminalsPath, run),
+    readWorktrees(config.scope, config.primary, run),
+    readApp(config.scope, run),
+  ]);
+  return { aven, core, worktrees, app };
 }
 
 export function createSnapshotSource(config: Config, run: Runner) {
-  const readAven = avenSource(config.scope, run);
   let cache: GraphSnapshot | undefined;
   let time = 0;
   let pending: Promise<GraphSnapshot> | undefined;
@@ -116,11 +196,11 @@ export function createSnapshotSource(config: Config, run: Runner) {
     if (cache && Date.now() - time < 4000) return cache;
     if (pending) return pending;
     pending = (async () => {
-      const [aven, herdr] = await Promise.all([readAven(), readHerdr(config.scope, config.primary, run)]);
-      const dispatch = await readDispatcher(config.storePath, aven);
-      const snapshot = normalize(config, aven, dispatch, herdr);
+      const sources = await readSources(config, run);
+      const dispatch = await readDispatcher(config.storePath, sources.aven);
+      const snapshot = normalize(config, sources.aven, { ...sources, dispatcher: dispatch });
       // Keep last good Aven entities visible during outages, explicitly stale; never turn absence into completion.
-      if (aven.health.status === 'unavailable' && cache) {
+      if (sources.aven.health.status === 'unavailable' && cache) {
         return { ...cache, health: cache.health.map(health => ({ ...health, status: 'stale' as const, message: 'Refresh unavailable; showing last snapshot' })) };
       }
       return snapshot;
@@ -135,18 +215,24 @@ export function createGraphReader(config: Config, run: Runner) {
   const readAven = avenSource(config.scope, run);
   let aven: AvenRead = { tasks: [], contexts: new Map(), health: { source: 'aven', status: 'unavailable', observedAt: '', message: 'Loading' } };
   let dispatch: DispatchRead = { attempts: [], health: { source: 'dispatcher', status: 'unavailable', observedAt: '', message: 'Loading' } };
-  let herdr: HerdrRead = { panes: [], workspaces: [], worktrees: [], health: { source: 'herdr', status: 'unavailable', observedAt: '', message: 'Loading' } };
+  let core: CoreRead = { core: { id: '', name: '', version: '', machine: '' }, terminals: [], observedAt: '', health: { source: 'core', status: 'unavailable', observedAt: '', message: 'Loading' } };
+  let trees: WorktreeRead = { primary: config.primary, worktrees: [], health: { source: 'worktrees', status: 'unavailable', observedAt: '', message: 'Loading' } };
+  let app: AppRead = { spaces: [], placements: [], health: { source: 'app', status: 'unavailable', observedAt: '', message: 'Loading' } };
   return async (lane: 'fast' | 'slow') => {
     if (lane === 'slow') {
       const next = await readAven();
       aven = next.health.status === 'unavailable' && aven.tasks.length ? { ...aven, health: { ...aven.health, status: 'stale', message: next.health.message } } : next;
       dispatch = await readDispatcher(config.storePath, aven);
     } else {
-       const next: HerdrRead = config.localCoverage === false
-         ? { panes: [], workspaces: [], worktrees: [], health: { source: 'herdr', status: 'unavailable', observedAt: new Date().toISOString(), message: 'Local topology unavailable for non-startup project; startup repository topology is not reused' } }
-         : await readHerdr(config.scope, config.primary, run);
-      herdr = next.health.status === 'unavailable' && herdr.panes.length ? { ...herdr, health: { ...herdr.health, status: 'stale', message: next.health.message } } : next;
+      const [nextCore, nextTrees, nextApp] = await Promise.all([
+        readCore(config.scope, config.terminalsPath, run),
+        readWorktrees(config.scope, config.primary, run),
+        readApp(config.scope, run),
+      ]);
+      core = nextCore.health.status === 'unavailable' && core.terminals.length ? { ...core, health: { ...core.health, status: 'stale', message: nextCore.health.message } } : nextCore;
+      trees = nextTrees.health.status === 'unavailable' && trees.worktrees.length ? { ...trees, health: { ...trees.health, status: 'stale', message: nextTrees.health.message } } : nextTrees;
+      app = nextApp;
     }
-    return normalize(config, aven, dispatch, herdr);
+    return normalize(config, aven, { core, worktrees: trees, app, dispatcher: dispatch });
   };
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { avenSource, taskSchema } from '../server/sources/aven.js';
 import { readDispatcher, boundedJsonFile } from '../server/sources/dispatcher.js';
-import { readHerdr } from '../server/sources/herdr.js';
+import { readCore } from '../server/sources/core.js';
+import { parsePorcelain, readWorktrees } from '../server/sources/worktrees.js';
+import { readApp } from '../server/sources/app.js';
 import { configuredProjectCheckouts, primaryCheckout, startupConfig } from '../server/config.js';
 import { fixture, scope, avenFixture, scratchRoot } from './fixtures.js';
 import { dispatcherAttempts, dispatcherFixture } from './fixtures/dispatcher.js';
@@ -104,25 +106,59 @@ describe('dispatcher immutable snapshots', () => {
   });
 });
 
-describe('Herdr scoped topology', () => {
-  const data = fixture('herdr');
-  it('filters unrelated workspaces and never exposes raw terminal titles', async () => {
-    const result = await readHerdr(scope, '/repo', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees);
-    expect(result.panes).toHaveLength(2);
-    expect(result.workspaces).toHaveLength(2);
-    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+describe('herdr-core and optional app topology', () => {
+  const data = fixture('core');
+  it('reads the bounded dispatcher inventory without raw screens or control authority', async () => {
+    const temp = await mkdtemp(join(scratchRoot, 'core-inventory-'));
+    try {
+      const path = join(temp, 'terminals.json');
+      await writeFile(path, JSON.stringify(data));
+      const result = await readCore(scope, path, async () => { throw new Error('no command expected'); });
+      expect(result.terminals).toHaveLength(4);
+      expect(result.health.status).toBe('ok');
+      expect(result.health.message).toContain('observation');
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    } finally { await rm(temp, { recursive: true, force: true }); }
   });
-  it('does not invoke Herdr outside inherited context', async () => {
+  it('falls back to a minimal live hc listing without ownership labels', async () => {
+    const result = await readCore(scope, undefined, async command => {
+      if (command.kind === 'core-list') return { terminals: [{ address: 't1', agent: 'opencode', state: 'live', status: 'working', turn: 2 }] };
+      if (command.kind === 'core-status') return { core: { id: 'core-1', name: 'local' }, version: '0.1.15' };
+      throw new Error('Unexpected command');
+    });
+    expect(result.terminals[0].address).toBe('t1');
+    expect(result.core.id).toBe('core-1');
+    expect(result.health.status).toBe('incomplete');
+  });
+  it('does not invoke herdr-core when the project disables it', async () => {
     let called = false;
-    const result = await readHerdr({ ...scope, herdr: false }, '/repo', async () => { called = true; });
+    const result = await readCore({ ...scope, core: false }, undefined, async () => { called = true; });
     expect(called).toBe(false);
     expect(result.health.status).toBe('unavailable');
   });
-  it.each([null, {}, { result: { snapshot: { workspaces: [], panes: [{}] } } }])('degrades malformed topology %j', async malformed => {
-    expect((await readHerdr(scope, '/repo', async () => malformed)).health.status).toBe('unavailable');
+  it.each([null, {}, { schema: 'wrong', terminals: [] }])('degrades malformed inventories %j', async malformed => {
+    const temp = await mkdtemp(join(scratchRoot, 'core-malformed-'));
+    try {
+      const path = join(temp, 'terminals.json');
+      await writeFile(path, JSON.stringify(malformed));
+      expect((await readCore(scope, path, async () => { throw new Error('unavailable'); })).health.status).toBe('unavailable');
+    } finally { await rm(temp, { recursive: true, force: true }); }
   });
-  it('rejects a worktree inventory from another repository', async () => {
-    expect((await readHerdr(scope, '/other', async command => command.kind === 'snapshot' ? data.snapshot : data.worktrees)).health.status).toBe('unavailable');
+  it('reads worktree inventory through hc and rejects another repository', async () => {
+    const porcelain = 'worktree /repo\nHEAD deadbeef\nbranch refs/heads/main\n\nworktree /repo-phase1\nHEAD feedface\nbranch refs/heads/phase1\n';
+    expect(parsePorcelain(porcelain)).toHaveLength(2);
+    const result = await readWorktrees(scope, '/repo', async () => porcelain);
+    expect(result.worktrees[1].branch).toBe('refs/heads/phase1');
+    expect(result.health.status).toBe('ok');
+    expect((await readWorktrees(scope, '/other', async () => porcelain)).health.status).toBe('unavailable');
+  });
+  it('treats app placement as optional and separate from core facts', async () => {
+    const result = await readApp(scope, async () => fixture('app'));
+    expect(result.placements).toHaveLength(4);
+    expect(result.health.status).toBe('ok');
+    const unavailable = await readApp(scope, async () => { throw new Error('closed'); });
+    expect(unavailable.health.status).toBe('unavailable');
+    expect(unavailable.placements).toHaveLength(0);
   });
 });
 

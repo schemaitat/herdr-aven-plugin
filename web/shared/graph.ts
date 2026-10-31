@@ -1,6 +1,6 @@
-export type NodeKind = 'epic' | 'task' | 'attempt' | 'agent' | 'session' | 'workspace' | 'pane' | 'worktree' | 'boundary';
+export type NodeKind = 'epic' | 'task' | 'attempt' | 'agent' | 'session' | 'workspace' | 'pane' | 'terminal' | 'worktree' | 'boundary';
 export type EdgeKind = 'contains' | 'blocks' | 'related' | 'assigned' | 'session' | 'placed-in' | 'worktree';
-export type SourceName = 'aven' | 'dispatcher' | 'herdr' | 'opencode';
+export type SourceName = 'aven' | 'dispatcher' | 'core' | 'worktrees' | 'app' | 'opencode';
 export interface Activity {
   sessionId: string;
   state: 'working' | 'idle' | 'missing' | 'unknown';

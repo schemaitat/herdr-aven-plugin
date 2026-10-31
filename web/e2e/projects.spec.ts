@@ -8,7 +8,7 @@ const listing = { workspace: 'default', startup: 'alpha', status: 'ok', message:
 function snapshot(project: string, version = 1): GraphSnapshot {
   return { ...graphFixture, scope: { workspace: 'default', project }, version, stream: { status: 'fixture', gaps: 0, instance: project },
     nodes: graphFixture.nodes.map(node => ({ ...node, label: `${project} ${node.label}`, state: 'active', changedAt: new Date().toISOString() })),
-    health: project === 'alpha' ? graphFixture.health : [...graphFixture.health, { source: 'dispatcher', status: 'unavailable', observedAt: '', message: 'Local store unavailable for non-startup project; scoped Aven recovery snapshots only' }, { source: 'herdr', status: 'unavailable', observedAt: '', message: 'Local topology unavailable for non-startup project; startup repository topology is not reused' }],
+    health: project === 'alpha' ? graphFixture.health : [...graphFixture.health, { source: 'dispatcher', status: 'unavailable', observedAt: '', message: 'Local store unavailable for non-startup project; scoped Aven recovery snapshots only' }, { source: 'core', status: 'unavailable', observedAt: '', message: 'herdr-core inventory unavailable for the non-startup project; startup repository topology is not reused' }],
   };
 }
 async function fixtures(page: Page) {
@@ -118,7 +118,7 @@ test('A → B → A resets project memory/selection/query/epic but retains type/
   await expect(page.getByLabel('Epic scope', { exact: true })).toHaveValue('');
   await expect(page.getByRole('combobox', { name: 'Source state', exact: true })).toHaveValue('active');
   await expect(page.getByRole('combobox', { name: 'Recent source changes', exact: true })).toHaveValue('24h');
-   await expect(page.getByRole('group', { name: 'Entity types', exact: true }).getByRole('checkbox', { checked: true })).toHaveCount(9);
+   await expect(page.getByRole('group', { name: 'Entity types', exact: true }).getByRole('checkbox', { checked: true })).toHaveCount(10);
   await page.getByText('Filters', { exact: true }).click();
   await page.getByRole('button', { name: 'Entities & details', exact: true }).click();
   await page.getByRole('region', { name: 'Entities', exact: true }).getByRole('button', { name: /beta Build graph/ }).click();

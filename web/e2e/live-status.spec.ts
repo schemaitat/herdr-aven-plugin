@@ -60,7 +60,7 @@ test('API activity transitions within five seconds without task-status/camera/se
   expect(await visualState(page)).toEqual(before);
   await entities.getByRole('button', { name: /session session:opencode:ses_one/ }).click();
   await page.getByRole('button', { name: 'Live activity', exact: true }).click();
-  await expect(activity.getByText(/Herdr terminal observation: idle/)).toBeVisible();
+  await expect(activity.getByText(/Legacy herdr terminal observation: idle/)).toBeVisible();
   await expect(activity.getByText('Working · current', { exact: true })).toBeVisible();
   expect(await activity.textContent()).not.toContain('private prompt');
   expect(audit.every(method => method === 'GET')).toBe(true);

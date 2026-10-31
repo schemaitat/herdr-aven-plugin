@@ -1,33 +1,38 @@
 import { spawn } from 'node:child_process';
 
-export interface Scope { cwd: string; project: string; workspace: string; herdr: boolean; session: string }
+export interface Scope { cwd: string; project: string; workspace: string; core: boolean; session: string }
 export type ReadCommand =
   | { kind: 'projects' }
   | { kind: 'list'; upcoming?: boolean }
   | { kind: 'context'; ref: string }
-  | { kind: 'snapshot' }
-  | { kind: 'worktrees' };
+  | { kind: 'worktrees' }
+  | { kind: 'app' }
+  | { kind: 'core-list' }
+  | { kind: 'core-status' };
 export const LIST_LIMIT = 500;
 export type Runner = (command: ReadCommand) => Promise<unknown>;
 export const identifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 export const PROJECT_LIMIT = 100;
 
-export function commandVector(scope: Scope, command: ReadCommand): [string, string[]] {
+export interface CommandVector { program: string; args: string[]; format: 'json' | 'text' }
+
+export function commandVector(scope: Scope, command: ReadCommand): CommandVector {
   if (!identifier.test(scope.project) || !identifier.test(scope.workspace)) throw new Error('Invalid startup scope');
   const avenScope = ['--project', scope.project, '--workspace', scope.workspace];
   switch (command.kind) {
-    case 'projects': return ['aven', ['project', 'list', '--workspace', scope.workspace, '--limit', String(PROJECT_LIMIT), '--json']];
-    case 'list': return ['aven', ['list', ...avenScope, '--limit', String(LIST_LIMIT), '--json', ...(command.upcoming ? ['--upcoming'] : [])]];
+    case 'projects': return { program: 'aven', args: ['project', 'list', '--workspace', scope.workspace, '--limit', String(PROJECT_LIMIT), '--json'], format: 'json' };
+    case 'list': return { program: 'aven', args: ['list', ...avenScope, '--limit', String(LIST_LIMIT), '--json', ...(command.upcoming ? ['--upcoming'] : [])], format: 'json' };
     case 'context': {
       if (!/^[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(command.ref)) throw new Error('Invalid task reference');
-      return ['aven', ['context', command.ref, '--workspace', scope.workspace, '--json']];
+      return { program: 'aven', args: ['context', command.ref, '--workspace', scope.workspace, '--json'], format: 'json' };
     }
-    case 'snapshot':
-      if (!scope.herdr) throw new Error('Herdr is unavailable');
-      return ['herdr', ['api', 'snapshot']];
-    case 'worktrees':
-      if (!scope.herdr) throw new Error('Herdr is unavailable');
-      return ['herdr', ['worktree', 'list', '--cwd', scope.cwd]];
+    // Every worktree operation goes through herdr-core, including this read-only inventory.
+    case 'worktrees': return { program: 'hc', args: ['exec', '--cwd', scope.cwd, 'git', 'worktree', 'list', '--porcelain'], format: 'text' };
+    // Optional desktop topology; absent app is a normal headless state.
+    case 'app': return { program: 'herdr-app', args: ['ls'], format: 'json' };
+    // Headless fallback when the dispatcher inventory file is absent.
+    case 'core-list': return { program: 'hc', args: ['ls', '--all', '--json'], format: 'json' };
+    case 'core-status': return { program: 'hc', args: ['server', 'status', '--json'], format: 'json' };
     default: throw new Error('Unsupported source command');
   }
 }
@@ -45,13 +50,13 @@ const processBudget = commandBudget();
 export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 1024 * 1024, concurrency: 4 }, signal?: AbortSignal): Runner {
   const local = commandBudget(bounds.concurrency);
   return async command => {
-    const [program, args] = commandVector(scope, command);
+    const vector = commandVector(scope, command);
     await local.acquire();
     await processBudget.acquire();
     try {
       if (signal?.aborted) throw new Error('Source cancelled');
       return await new Promise<unknown>((resolve, reject) => {
-        const child = spawn(program, args, { cwd: scope.cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(vector.program, vector.args, { cwd: scope.cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
         const chunks: Buffer[] = [];
         let size = 0;
         let failure = '';
@@ -72,7 +77,9 @@ export function createRunner(scope: Scope, bounds = { timeout: 4000, bytes: 4 * 
           signal?.removeEventListener('abort', abort);
           if (failure) return reject(new Error(failure));
           if (code !== 0) return reject(new Error('Source command failed'));
-          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+          const output = Buffer.concat(chunks).toString('utf8');
+          if (vector.format === 'text') return resolve(output);
+          try { resolve(JSON.parse(output)); }
           catch { reject(new Error('Malformed source JSON')); }
         });
       });

@@ -11,6 +11,7 @@ export const styles: StylesheetJson = [
   { selector: 'node[kind = "attempt"]', style: { shape: 'hexagon' } },
   { selector: 'node[kind = "session"]', style: { shape: 'round-rectangle' } },
   { selector: 'node[kind = "workspace"]', style: { shape: 'barrel' } },
+  { selector: 'node[kind = "terminal"]', style: { shape: 'round-tag' } },
   { selector: 'node[kind = "pane"]', style: { shape: 'rectangle' } },
   { selector: 'node[kind = "worktree"]', style: { shape: 'triangle' } },
   { selector: 'node[kind = "boundary"]', style: { shape: 'octagon', 'border-style': 'dashed' } },

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Migrate the dispatcher runtime from the retired `herdr` plugin interface to
+  herdr-core (`hc`). Terminals are dedicated herdr-core terminals that survive
+  the short-lived Aven popup; every worktree discovery, creation, cleanliness
+  check, fast-forward integration, and removal now runs through
+  `hc exec --cwd <repo> git ...`.
+- Persist durable core and terminal identities (`core_id`, address, ownership
+  labels, role) for builders, coordinators, babysitters, and phase workers,
+  alongside the legacy pane fields as read-only historical evidence. A kept
+  terminal recovered with a shell is not treated as a resumed OpenCode process.
+- Add the event-driven `aven-dispatch watch` supervisor with explicit
+  start/status/stop and one-owner-per-store locking. It starts from a core
+  snapshot, records ordered fact changes and missed-event gaps, and reconciles
+  authoritative OpenCode/Aven state without repeating launches or prompt
+  admission. A bounded periodic pass covers changes without a core event.
+- Add `aven-dispatch message` for guarded `hc send --if idle --wait` supervisor
+  interaction. It refuses blocked programs instead of bypassing permission
+  dialogs.
+- Make admission and advancement crash-safe: phase prompts are checkpointed
+  before admission and a prompt-pending phase re-admits the exact same message
+  id. A reservation that crashed before session creation is discarded only when
+  its checkout is proven owned and clean; a reused or dirty checkout is
+  preserved for inspection.
+- Persist worktree ownership intent and the attempt reservation before pickers
+  or OpenCode side effects, and remove exactly that reservation when
+  provisioning fails.
+- Add `dispatch --relaunch` for an explicit, safe migration of a legacy Herdr
+  attempt's durable OpenCode session. Normal dispatch refuses legacy records
+  rather than reinterpreting pane ids as core terminal addresses.
+- Replace the legacy `herdr-plugin.toml` popup manifest, `bin/run.sh`, and
+  Herdr keybinding installer with the repository-owned optional
+  `app/` herdr-app mod. `scripts/install-app-mod.sh` installs only owned mod
+  files, merges free keys, preserves unrelated settings, and never replaces an
+  existing binding.
+- Dashboard sources now split herdr-core terminal facts, `hc exec` Git worktree
+  inventory, and optional herdr-app placement. Terminals are entities distinct
+  from legacy panes; core status, persisted execution state, OpenCode API
+  activity, and Aven acceptance remain separately labelled.
+- Update bundled agents for `hc ls/get/read/wait/send` supervision, no sleep or
+  poll loops, permission escalation, and safe recovery.
+- `aven-dispatch doctor` now validates the core identity and required
+  `events.subscribe`/`terminal.send` capabilities, and treats a missing desktop
+  app as a supported headless state.
+
 - `aven-dispatch` now keeps all execution state in one central SQLite database
   at `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback
   `~/.local/state/aven/dispatch.sqlite`), shared by every checkout, worktree,

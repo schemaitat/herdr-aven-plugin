@@ -1,0 +1,11 @@
+{
+  "schema": "aven-dispatch-terminals/v1",
+  "observed_at": 1793436800000,
+  "core": { "id": "core-1", "name": "local-core", "version": "0.1.15", "machine": "test" },
+  "terminals": [
+    { "address": "t1", "name": "aven-demo-root", "state": "live", "status": "working", "status_kind": "", "program": "opencode", "reason": "", "turn": 4, "reported": true, "recovered_shell": false, "labels": { "aven.dispatch": "1", "aven.task": "DEMO-ROOT", "aven.task_id": "ROOT01", "aven.workflow": "implementation", "aven.attempt": "attempt1", "aven.role": "coordinator" } },
+    { "address": "t2", "name": "aven-demo-babysitter", "state": "live", "status": "idle", "status_kind": "", "program": "opencode", "reason": "", "turn": 1, "reported": true, "recovered_shell": false, "labels": { "aven.dispatch": "1", "aven.task": "DEMO-ROOT", "aven.task_id": "ROOT01", "aven.workflow": "implementation", "aven.attempt": "attempt1", "aven.role": "babysitter" } },
+    { "address": "t3", "name": "aven-demo-phase-one", "state": "live", "status": "blocked", "status_kind": "permission", "program": "opencode", "reason": "", "turn": 2, "reported": true, "recovered_shell": false, "labels": { "aven.dispatch": "1", "aven.task": "DEMO-ONE", "aven.task_id": "TASK01", "aven.workflow": "implementation", "aven.attempt": "attempt1", "aven.role": "phase" } },
+    { "address": "t9", "name": "unrelated", "state": "live", "status": "working", "status_kind": "", "program": "zsh", "reason": "", "turn": 0, "reported": false, "recovered_shell": true, "labels": {} }
+  ]
+}

@@ -3,7 +3,7 @@ import { effectiveTimes, ownership, reachable } from '../../shared/scope.js';
 import { RELATION_KINDS, relationships, waitingCue, type GraphEdge, type RelationKind } from './elements.js';
 import { searchEntities } from './search.js';
 
-export const ALL_TYPES: NodeKind[] = ['epic', 'task', 'attempt', 'agent', 'session', 'workspace', 'pane', 'worktree', 'boundary'];
+export const ALL_TYPES: NodeKind[] = ['epic', 'task', 'attempt', 'agent', 'session', 'workspace', 'terminal', 'pane', 'worktree', 'boundary'];
 export const DEFAULT_TYPES: NodeKind[] = ['epic', 'task', 'attempt', 'agent', 'session'];
 export const DEFAULT_RELATION_KINDS: RelationKind[] = [...RELATION_KINDS];
 export const TIME_WINDOWS = { '24h': 24, '72h': 72, '7d': 168, '14d': 336, '30d': 720 } as const;

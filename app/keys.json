@@ -1,0 +1,6 @@
+{
+  "global": {
+    "ctrl-shift-a": "mod.open:aven-tasks",
+    "ctrl-shift-u": "mod.open:aven-tasks"
+  }
+}

@@ -6,7 +6,7 @@ export type Position = { x: number; y: number };
 
 /** Radial readability order: ownership at the centre, resources on the outer rings. */
 export const KIND_RANK = {
-  epic: 0, task: 1, attempt: 2, agent: 3, session: 4, pane: 5, worktree: 5, workspace: 6, boundary: 6,
+  epic: 0, task: 1, attempt: 2, agent: 3, session: 4, terminal: 5, pane: 5, worktree: 5, workspace: 6, boundary: 6,
 } as const satisfies Record<NodeKind, number>;
 
 export const kindRank = (node: Pick<Entity, 'kind'>) => KIND_RANK[node.kind];

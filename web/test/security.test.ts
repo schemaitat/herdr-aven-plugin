@@ -78,11 +78,12 @@ describe('loopback same-origin authenticated read API', () => {
 
 describe('fixed source command vectors', () => {
   it('only admits fixed read shapes with explicit server-owned scope', () => {
-    expect(commandVector(scope, { kind: 'projects' })).toEqual(['aven', ['project', 'list', '--workspace', 'default', '--limit', '100', '--json']]);
-    expect(commandVector(scope, { kind: 'list', upcoming: true })).toEqual(['aven', ['list', '--project', 'demo', '--workspace', 'default', '--limit', '500', '--json', '--upcoming']]);
-    expect(commandVector(scope, { kind: 'context', ref: 'DEMO-ONE' })).toEqual(['aven', ['context', 'DEMO-ONE', '--workspace', 'default', '--json']]);
-    expect(commandVector(scope, { kind: 'snapshot' })).toEqual(['herdr', ['api', 'snapshot']]);
-    expect(commandVector(scope, { kind: 'worktrees' })).toEqual(['herdr', ['worktree', 'list', '--cwd', '/repo']]);
+    expect(commandVector(scope, { kind: 'projects' })).toMatchObject({ program: 'aven', args: ['project', 'list', '--workspace', 'default', '--limit', '100', '--json'], format: 'json' });
+    expect(commandVector(scope, { kind: 'list', upcoming: true })).toMatchObject({ program: 'aven', args: ['list', '--project', 'demo', '--workspace', 'default', '--limit', '500', '--json', '--upcoming'] });
+    expect(commandVector(scope, { kind: 'context', ref: 'DEMO-ONE' })).toMatchObject({ program: 'aven', args: ['context', 'DEMO-ONE', '--workspace', 'default', '--json'] });
+    expect(commandVector(scope, { kind: 'core-list' })).toMatchObject({ program: 'hc', args: ['ls', '--all', '--json'], format: 'json' });
+    expect(commandVector(scope, { kind: 'worktrees' })).toMatchObject({ program: 'hc', args: ['exec', '--cwd', '/repo', 'git', 'worktree', 'list', '--porcelain'], format: 'text' });
+    expect(commandVector(scope, { kind: 'app' })).toMatchObject({ program: 'herdr-app', args: ['ls'], format: 'json' });
     expect(() => commandVector(scope, { kind: 'reconcile' } as unknown as ReadCommand)).toThrow('Unsupported');
     expect(() => commandVector({ ...scope, project: '--all' }, { kind: 'list' })).toThrow('startup scope');
     expect(() => commandVector({ ...scope, workspace: 'x; curl evil' }, { kind: 'list' })).toThrow('startup scope');
@@ -107,16 +108,16 @@ else if (mode === 'stderr') { process.stderr.write('x'.repeat(8192)); console.lo
 else if (mode === 'malformed') console.log('not JSON');
 else setTimeout(()=>console.log('{}'), 30);
 `;
-      for (const name of ['aven', 'herdr']) await writeFile(join(temp, name), stub, { mode: 0o755 });
+      for (const name of ['aven', 'hc', 'herdr-app']) await writeFile(join(temp, name), stub, { mode: 0o755 });
       process.env.PATH = temp;
       process.env.EXPLORER_STUB_AUDIT = audit;
       process.env.EXPLORER_STUB_MODE = 'ok';
       const run = createRunner({ ...scope, cwd: temp }, { bytes: 1024, timeout: 1000, concurrency: 1 });
-      await Promise.all([run({ kind: 'list' }), run({ kind: 'context', ref: 'DEMO-ONE' }), run({ kind: 'snapshot' }), run({ kind: 'worktrees' })]);
+      await Promise.all([run({ kind: 'list' }), run({ kind: 'context', ref: 'DEMO-ONE' }), run({ kind: 'core-list' }), run({ kind: 'worktrees' })]);
       const calls = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-      expect(calls.map(call => call.args.slice(0, 2))).toEqual([['list', '--project'], ['context', 'DEMO-ONE'], ['api', 'snapshot'], ['worktree', 'list']]);
+      expect(calls.map(call => call.args.slice(0, 2))).toEqual([['list', '--project'], ['context', 'DEMO-ONE'], ['ls', '--all'], ['exec', '--cwd']]);
       for (let i = 1; i < calls.length; i++) expect(calls[i].time - calls[i - 1].time).toBeGreaterThanOrEqual(25);
-      expect(JSON.stringify(calls)).not.toMatch(/reconcile|--running|edit|prompt|create|focus/);
+      expect(JSON.stringify(calls)).not.toMatch(/reconcile|--running|edit|prompt|create|focus|remove|add/);
       // Separate project runners must not multiply the process-wide four-command budget.
       const runners = Array.from({ length: 4 }, (_, i) => createRunner({ ...scope, cwd: temp, project: `p${i}` }));
       await Promise.all(Array.from({ length: 12 }, (_, i) => runners[i % 4]({ kind: 'list' })));

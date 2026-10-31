@@ -2,7 +2,7 @@ import { entityId, type Activity, type GraphSnapshot } from '../shared/graph.js'
 
 export const ACTIVITY_TTL = 4500;
 export function linkedSessions(graph: GraphSnapshot) {
-  // Only dispatcher assignments authorize API reads; Herdr alone is not project/session authority.
+  // Only dispatcher assignments authorize API reads; core terminal facts alone are not project/session authority.
   const assigned = new Set(graph.edges.filter(edge => edge.kind === 'session').map(edge => edge.target));
   for (let depth = 0; depth < 4; depth++) for (const edge of graph.edges) {
     if (edge.kind === 'contains' && assigned.has(edge.source) && edge.provenance.some(p => p.source === 'opencode')) assigned.add(edge.target);

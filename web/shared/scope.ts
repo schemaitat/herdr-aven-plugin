@@ -27,7 +27,7 @@ export function ownership(nodes: Entity[], edges: Relationship[], containment = 
       (edge.kind === 'assigned' && (from === 'task' || from === 'epic') && (to === 'attempt' || to === 'agent')) ||
       (edge.kind === 'contains' && from === 'attempt' && to === 'agent') ||
       (edge.kind === 'session' && from === 'agent' && to === 'session') ||
-      (edge.kind === 'placed-in' && (from === 'agent' || from === 'session') && (to === 'pane' || (to === 'boundary' && edge.target.startsWith('pane:')))) ||
+      (edge.kind === 'placed-in' && (from === 'agent' || from === 'session') && (to === 'terminal' || to === 'pane' || (to === 'boundary' && (edge.target.startsWith('terminal:') || edge.target.startsWith('pane:'))))) ||
       (edge.kind === 'worktree' && from === 'agent' && (to === 'worktree' || (to === 'boundary' && edge.target.startsWith('worktree:'))));
     if (owns) paths.set(edge.source, [...(paths.get(edge.source) ?? []), edge.target]);
   }

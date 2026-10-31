@@ -5,25 +5,28 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{self, BufRead, IsTerminal, Read, Write},
-    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+mod app;
+mod core;
 mod model;
 mod process;
+mod watch;
+mod worktrees;
 
 use model::{
     Attempt, CommandContext, EpicPhase, ExecutionMode, Invocation, PhaseAttempt, Selected,
-    WorktreeResource, attempt_key, workflow_for_skill,
+    TerminalRef, attempt_is_legacy, attempt_key, normalize_attempt, workflow_for_skill,
 };
 #[cfg(test)]
 use process::header_value;
 use process::{
     LockedStore, absolute_path, aven, aven_args, field, identifier, now, opencode, opencode_in,
-    opencode_text, opencode_text_in, primary_checkout, repository_root, run, run_in, store_attempt,
-    store_path,
+    opencode_text, opencode_text_in, run, store_attempt, store_path,
 };
+use worktrees::WorktreeResource;
 
 #[derive(Parser)]
 #[command(about = "Durable one-task Aven to OpenCode V2 dispatcher")]
@@ -64,6 +67,10 @@ enum Commands {
         /// Implementation topology; legacy dispatches default to single-session.
         #[arg(long, value_enum)]
         mode: Option<ExecutionMode>,
+        /// Explicitly relaunch a legacy Herdr attempt on herdr-core. Never
+        /// re-admits an already admitted prompt.
+        #[arg(long)]
+        relaunch: bool,
     },
     /// Resume an existing attempt without creating a second session.
     Resume {
@@ -104,6 +111,42 @@ enum Commands {
         task: String,
         #[arg(long)]
         workflow: Option<String>,
+    },
+    /// Render an agent/model picker in a dedicated herdr-core terminal.
+    Pick {
+        /// agent or model
+        #[arg(long)]
+        kind: String,
+    },
+    /// Send text to an idle attempt terminal. Refuses blocked programs.
+    Message {
+        task: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long, default_value = "builder")]
+        role: String,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Supervise dispatcher terminals through herdr-core events.
+    Watch {
+        /// Reconcile once and exit; useful for tests and external schedulers.
+        #[arg(long)]
+        once: bool,
+        /// Stop the owning watcher and report its pid.
+        #[arg(long)]
+        stop: bool,
+        /// Print watcher ownership and durable supervision state.
+        #[arg(long)]
+        status: bool,
+        /// Bounded periodic reconciliation interval in seconds.
+        #[arg(long, default_value_t = 60)]
+        interval: u64,
+        /// Reconcile all attempts once, then exit.
+        #[arg(long)]
+        reconcile_all: bool,
     },
     /// Invalidate dispatch execution state while preserving the durable Aven plan.
     Reset {
@@ -345,14 +388,14 @@ fn phase_is_eligible(
     {
         bail!("phase {} has unresolved dependencies", phase.task_ref);
     }
-    if let Some(predecessor) = predecessor {
-        if predecessor.state != "integrated" || !phase_is_done_for(invocation, predecessor)? {
-            bail!(
-                "phase {} cannot be admitted before predecessor {} is verified and integrated",
-                phase.task_ref,
-                predecessor.task_ref
-            );
-        }
+    if let Some(predecessor) = predecessor
+        && (predecessor.state != "integrated" || !phase_is_done_for(invocation, predecessor)?)
+    {
+        bail!(
+            "phase {} cannot be admitted before predecessor {} is verified and integrated",
+            phase.task_ref,
+            predecessor.task_ref
+        );
     }
     Ok(task)
 }
@@ -482,7 +525,7 @@ fn install_agent_definition(directory: &Path, agent_id: &str, contents: &str) ->
     Ok(destination)
 }
 /// Install plugin-owned agents once in OpenCode's global agent directory. The
-/// stable `aven-*` IDs work from every temporary Herdr worktree, avoiding
+/// stable `aven-*` IDs work from every temporary dispatch worktree, avoiding
 /// per-worktree configuration caches and preserving project configuration.
 fn install_global_agent(agent_id: &str, contents: &str) -> Result<PathBuf> {
     install_agent_definition(&global_opencode_agents_dir()?, agent_id, contents)
@@ -556,10 +599,10 @@ fn model_choices(configured: Option<&str>, preferred: Option<&str>) -> Vec<(Stri
             .unwrap_or(model);
         choices.push((format!("Preferred ({name})"), model.to_owned()));
     }
-    if let Some(model) = configured.filter(|model| !model.is_empty()) {
-        if !choices.iter().any(|(_, choice)| choice == model) {
-            choices.push((format!("Agent default ({model})"), model.to_owned()));
-        }
+    if let Some(model) = configured.filter(|model| !model.is_empty())
+        && !choices.iter().any(|(_, choice)| choice == model)
+    {
+        choices.push((format!("Agent default ({model})"), model.to_owned()));
     }
     for (name, model) in MODEL_CHOICES {
         if !choices.iter().any(|(_, choice)| choice == model) {
@@ -594,64 +637,101 @@ fn choose_model(
     }
 }
 
-fn select_model(choices: &[(String, String)], response: &Path) -> Result<String> {
+fn picker(kind: &str, choices: &[(String, String)], store_path: &Path) -> Result<String> {
+    if choices.is_empty() {
+        bail!("no {kind} choices are available");
+    }
+    let ids = choices
+        .iter()
+        .map(|(_, id)| id.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let choices_text = choices
+        .iter()
+        .enumerate()
+        .map(|(index, (name, id))| format!("  {}. {} ({})", index + 1, name, id))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let id = identifier("pick");
+    let response = store_path.with_file_name(format!(".picker-{kind}-{id}.response"));
+    let _ = fs::remove_file(&response);
+    let response_text = response
+        .to_str()
+        .context("picker response path is not valid UTF-8")?
+        .to_owned();
+    let suffix = id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .rev()
+        .take(6)
+        .collect::<String>();
+    let name = format!("aven-pick-{}-{suffix}", sanitize_name(kind));
+    let executable = env::current_exe().context("resolve aven-dispatch executable")?;
+    let terminal = core::launch(&core::LaunchSpec {
+        name,
+        cwd: env::current_dir()?.to_string_lossy().to_string(),
+        labels: vec![
+            ("aven.dispatch".into(), "1".into()),
+            ("aven.role".into(), "picker".into()),
+            ("aven.picker".into(), kind.into()),
+        ],
+        env: vec![
+            (
+                "AVEN_DISPATCH_PICKER_RESPONSE".into(),
+                response_text.clone(),
+            ),
+            ("AVEN_DISPATCH_PICKER_CHOICES".into(), choices_text),
+            ("AVEN_DISPATCH_PICKER_IDS".into(), ids),
+        ],
+        argv: vec![
+            executable.to_string_lossy().to_string(),
+            "pick".into(),
+            "--kind".into(),
+            kind.into(),
+        ],
+    })?;
+    // Revealing the picker is optional; submission waits for its response file.
+    let _ = app::peek(&terminal.address);
+    for tick in 0..1200u32 {
+        if response.exists() {
+            let selected = fs::read_to_string(&response)?.trim().to_owned();
+            let _ = fs::remove_file(&response);
+            if choices.iter().any(|(_, id)| id == &selected) {
+                let _ = core::remove(&terminal.address);
+                return Ok(selected);
+            }
+            bail!("OpenCode {kind} selection was canceled");
+        }
+        if tick % 10 == 9
+            && let Ok(current) = core::get(&terminal.address)
+            && !current.live()
+        {
+            bail!("OpenCode {kind} picker exited without a selection");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = core::kill(&terminal.address);
+    let _ = core::remove(&terminal.address);
+    bail!("timed out waiting for the herdr-core OpenCode {kind} picker")
+}
+
+fn select_model(choices: &[(String, String)], store_path: &Path) -> Result<String> {
     if env::var_os("AVEN_COMMAND_CONTEXT").is_some() {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             bail!("Aven terminal dispatch requires an interactive terminal");
         }
         return choose_model(choices, &mut io::stdin().lock(), &mut io::stdout().lock());
     }
-    let choices_text = choices
+    let choices = choices
         .iter()
-        .enumerate()
-        .map(|(index, (name, model))| format!("  {}. {} ({})", index + 1, name, model))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let ids = choices
-        .iter()
-        .map(|(_, model)| model.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let response = response
-        .to_str()
-        .context("model picker response path is not valid UTF-8")?;
-    let _ = fs::remove_file(response);
-    run(
-        "herdr",
-        &[
-            "plugin".into(),
-            "pane".into(),
-            "open".into(),
-            "--plugin".into(),
-            "aven.tasks".into(),
-            "--entrypoint".into(),
-            "model-picker".into(),
-            "--env".into(),
-            format!("AVEN_DISPATCH_PICKER_RESPONSE={response}"),
-            "--env".into(),
-            format!("AVEN_DISPATCH_PICKER_CHOICES={choices_text}"),
-            "--env".into(),
-            format!("AVEN_DISPATCH_PICKER_IDS={ids}"),
-        ],
-        None,
-    )?;
-    for _ in 0..1200 {
-        if Path::new(response).exists() {
-            let selected = fs::read_to_string(response)?.trim().to_owned();
-            let _ = fs::remove_file(response);
-            if choices.iter().any(|(_, model)| model == &selected) {
-                return Ok(selected);
-            }
-            bail!("OpenCode model selection was canceled");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    bail!("timed out waiting for the Herdr OpenCode model picker")
+        .map(|(name, model)| (name.clone(), model.clone()))
+        .collect::<Vec<_>>();
+    picker("model", &choices, store_path)
 }
 
 fn select_agent(
     worktree: &str,
-    response: &Path,
+    store_path: &Path,
     existing: Option<&str>,
     preferred: Option<&str>,
 ) -> Result<String> {
@@ -682,68 +762,20 @@ fn select_agent(
         );
     }
 
-    // Aven's terminal execution mode lends us the existing Herdr popup and
-    // supplies JSON via AVEN_COMMAND_CONTEXT. Opening another popup here fails
-    // with ui_busy: Herdr has only one session-modal popup slot.
+    // Aven's terminal execution mode lends us the existing terminal and
+    // supplies JSON via AVEN_COMMAND_CONTEXT. Open the picker inline there;
+    // elsewhere it gets its own dedicated herdr-core terminal.
     if env::var_os("AVEN_COMMAND_CONTEXT").is_some() {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             bail!("Aven terminal dispatch requires an interactive terminal");
         }
         return choose_agent(&agents, &mut io::stdin().lock(), &mut io::stdout().lock());
     }
-    if env::var("HERDR_PLUGIN_ENTRYPOINT_ID").as_deref() == Ok("tui") {
-        bail!(
-            "Aven dispatch needs execution: terminal to reuse its Herdr popup; update the installed Aven commands and reopen Aven"
-        );
-    }
-
     let choices = agents
         .iter()
-        .enumerate()
-        .map(|(index, agent)| format!("  {}. {} ({})", index + 1, agent.name, agent.id))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let ids = agents
-        .iter()
-        .map(|agent| agent.id.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let response_path = response;
-    let response = response_path
-        .to_str()
-        .context("agent picker response path is not valid UTF-8")?;
-    let _ = fs::remove_file(response);
-    run(
-        "herdr",
-        &[
-            "plugin".into(),
-            "pane".into(),
-            "open".into(),
-            "--plugin".into(),
-            "aven.tasks".into(),
-            "--entrypoint".into(),
-            "agent-picker".into(),
-            "--env".into(),
-            format!("AVEN_DISPATCH_PICKER_RESPONSE={response}"),
-            "--env".into(),
-            format!("AVEN_DISPATCH_PICKER_CHOICES={choices}"),
-            "--env".into(),
-            format!("AVEN_DISPATCH_PICKER_IDS={ids}"),
-        ],
-        None,
-    )?;
-    for _ in 0..1200 {
-        if response_path.exists() {
-            let selected = fs::read_to_string(response_path)?.trim().to_owned();
-            let _ = fs::remove_file(response_path);
-            if agents.iter().any(|agent| agent.id == selected) {
-                return Ok(selected);
-            }
-            bail!("OpenCode agent selection was canceled");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    bail!("timed out waiting for the Herdr OpenCode agent picker")
+        .map(|agent| (agent.name.clone(), agent.id.clone()))
+        .collect::<Vec<_>>();
+    picker("agent", &choices, store_path)
 }
 
 fn configured_agent_model(worktree: &str, agent_id: &str) -> Result<Option<String>> {
@@ -803,215 +835,177 @@ fn ensure_attempt_current(task: &Value, attempt: &Attempt) -> Result<()> {
 fn create_worktree(
     origin: &str,
     branch: &str,
-    label: &str,
+    _label: &str,
     base: Option<&str>,
 ) -> Result<WorktreeResource> {
-    let origin = repository_root(origin)?;
-    // Herdr refuses worktree actions whose --cwd is a linked worktree, so the
-    // action starts from the primary checkout while the branch lookup stays
-    // scoped to this repository.
-    let herdr_root = primary_checkout(&origin)?;
-    let listing = run(
-        "git",
-        &[
-            "-C".into(),
-            origin.clone(),
-            "worktree".into(),
-            "list".into(),
-            "--porcelain".into(),
-        ],
-        None,
-    )?;
-    let existing = listing.split("\n\n").find_map(|entry| {
-        entry
-            .lines()
-            .find_map(|line| line.strip_prefix("branch refs/heads/"))
-            .filter(|candidate| *candidate == branch)
-            .and_then(|_| {
-                entry
-                    .lines()
-                    .find_map(|line| line.strip_prefix("worktree "))
-            })
-    });
-    let mut args = vec!["worktree".into()];
-    let created_by_attempt = existing.is_none();
-    if let Some(path) = existing {
-        args.extend([
-            "open".into(),
-            "--cwd".into(),
-            herdr_root.clone(),
-            "--path".into(),
-            path.into(),
-        ]);
-    } else {
-        args.extend([
-            "create".into(),
-            "--cwd".into(),
-            herdr_root,
-            "--branch".into(),
-            branch.to_owned(),
-        ]);
-        if let Some(base) = base {
-            args.extend(["--base".into(), base.to_owned()]);
-        }
-    }
-    args.extend(["--label".into(), label.to_owned(), "--no-focus".into()]);
-    let output = run("herdr", &args, None)?;
-    let value: Value = serde_json::from_str(&output)?;
-    let worktree = value
-        .pointer("/result/worktree/path")
-        .and_then(Value::as_str)
-        .context("Herdr worktree path")?
-        .to_owned();
-    let pane = value
-        .pointer("/result/root_pane/pane_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
-    Ok(WorktreeResource {
-        path: worktree,
-        pane,
-        created_by_attempt,
-    })
+    worktrees::create(origin, branch, base)
 }
 fn remove_owned_worktree(worktree: &str, created_by_attempt: bool) {
-    if !created_by_attempt {
-        eprintln!(
-            "preserved reused worktree {worktree}; it was not created by this dispatch attempt"
-        );
-        return;
+    worktrees::remove_owned(worktree, created_by_attempt);
+}
+fn focus_terminal(address: &str) {
+    let _ = app::focus(address);
+}
+
+/// Stable, human-filterable owner labels. They prove which attempt a terminal
+/// belongs to; they are never used as permission to advance Aven state.
+struct TerminalOwner<'a> {
+    task_id: &'a str,
+    task_ref: &'a str,
+    workflow: &'a str,
+    attempt_id: &'a str,
+    generation: u64,
+}
+fn terminal_labels(
+    owner: &TerminalOwner<'_>,
+    role: &str,
+    phase: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut labels = vec![
+        ("aven.dispatch".into(), "1".into()),
+        ("aven.task".into(), owner.task_ref.into()),
+        ("aven.task_id".into(), owner.task_id.into()),
+        ("aven.workflow".into(), owner.workflow.into()),
+        ("aven.attempt".into(), owner.attempt_id.into()),
+        ("aven.generation".into(), owner.generation.to_string()),
+        ("aven.role".into(), role.into()),
+    ];
+    if let Some(phase) = phase {
+        labels.push(("aven.phase".into(), phase.into()));
     }
-    let Ok(listing) = run("herdr", &["workspace".into(), "list".into()], None) else {
-        return;
-    };
-    let Ok(listing): Result<Value, _> = serde_json::from_str(&listing) else {
-        return;
-    };
-    let workspace = listing
-        .pointer("/result/workspaces")
-        .and_then(Value::as_array)
-        .and_then(|workspaces| {
-            workspaces.iter().find_map(|workspace| {
-                (workspace
-                    .pointer("/worktree/checkout_path")
-                    .and_then(Value::as_str)
-                    == Some(worktree))
-                .then(|| workspace.pointer("/workspace_id").and_then(Value::as_str))
-                .flatten()
-            })
-        });
-    let Some(workspace) = workspace else {
-        return;
-    };
-    let _ = run("herdr", &worktree_remove_args(workspace), None);
+    labels
 }
-fn worktree_remove_args(workspace: &str) -> Vec<String> {
-    vec![
-        "worktree".into(),
-        "remove".into(),
-        "--workspace".into(),
-        workspace.into(),
-    ]
-}
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-fn focus_pane(pane: &str) -> Result<()> {
-    // The CLI exposes directional pane focus only. The public socket API can
-    // focus this exact pane across workspaces without relying on agent detection.
-    let socket = env::var_os("HERDR_SOCKET_PATH").context("HERDR_SOCKET_PATH is not set")?;
-    let mut stream = UnixStream::connect(socket).context("connect to Herdr for pane focus")?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let id = identifier("focus");
-    writeln!(
-        stream,
-        "{}",
-        json!({"id": id, "method": "pane.focus", "params": {"pane_id": pane}})
-    )?;
-    let mut response = String::new();
-    io::BufReader::new(stream).read_line(&mut response)?;
-    let response: Value = serde_json::from_str(&response).context("Herdr pane focus response")?;
-    if response.get("id").and_then(Value::as_str) != Some(&id) {
-        bail!("Herdr pane focus returned an unexpected request id");
-    }
-    if let Some(error) = response.get("error") {
-        bail!("Herdr pane focus failed: {error}");
-    }
-    if response.get("result").is_none() {
-        bail!("Herdr pane focus returned no result");
-    }
-    Ok(())
-}
-fn process_info_has_foreground_shell(process_info: &Value) -> Result<bool> {
-    let shell_pid = process_info
-        .pointer("/result/process_info/shell_pid")
-        .and_then(Value::as_u64)
-        .context("Herdr pane process-info shell_pid")?;
-    let foreground = process_info
-        .pointer("/result/process_info/foreground_processes")
-        .and_then(Value::as_array)
-        .context("Herdr pane process-info foreground_processes")?;
-    Ok(!foreground.is_empty()
-        && foreground
-            .iter()
-            .all(|process| process.pointer("/pid").and_then(Value::as_u64) == Some(shell_pid)))
-}
-fn pane_has_foreground_shell(pane: &str) -> Result<bool> {
-    let output = run(
-        "herdr",
-        &[
-            "pane".into(),
-            "process-info".into(),
-            "--pane".into(),
-            pane.into(),
-        ],
-        None,
-    )?;
-    let process_info: Value =
-        serde_json::from_str(&output).context("Herdr pane process-info response")?;
-    process_info_has_foreground_shell(&process_info)
-}
-/// Clear a partial terminal line and prove that a shell, not an existing
-/// OpenCode/agent process, owns terminal input before using `pane run`.
-fn clear_pane_for_command(pane: &str) -> Result<()> {
-    run(
-        "herdr",
-        &[
-            "pane".into(),
-            "send-keys".into(),
-            pane.into(),
-            "ctrl+c".into(),
-        ],
-        None,
-    )?;
-    for _ in 0..50 {
-        if pane_has_foreground_shell(pane)? {
-            return Ok(());
+fn sanitize_name(value: &str) -> String {
+    let mut out = String::new();
+    for character in value.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || matches!(character, '-' | '_' | '.')
+        {
+            out.push(character);
+        } else {
+            out.push('-');
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
-    bail!(
-        "pane {pane} remains occupied after Ctrl+C; refusing to send an OpenCode command as agent prompt input"
-    )
+    out
 }
-fn start_opencode_in_pane(pane: &str, session_id: &str, store_path: &Path) -> Result<()> {
-    clear_pane_for_command(pane)?;
-    run(
-        "herdr",
-        &[
-            "pane".into(),
-            "run".into(),
-            pane.into(),
-            format!(
-                "env AVEN_DISPATCH_STORE={} opencode --session {}",
-                shell_quote(&store_path.to_string_lossy()),
-                shell_quote(session_id),
-            ),
-        ],
-        None,
-    )?;
-    Ok(())
+fn terminal_name(owner: &TerminalOwner<'_>, role: &str) -> String {
+    let suffix = owner
+        .attempt_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .rev()
+        .take(6)
+        .collect::<String>();
+    let mut stem = format!(
+        "aven-{}-{}",
+        sanitize_name(owner.task_ref),
+        sanitize_name(role)
+    );
+    // Keep the attempt suffix: it distinguishes two attempts for the same
+    // task/role while the name stays within hc's 32-character limit.
+    stem.truncate(25);
+    let stem = stem.trim_end_matches('-');
+    format!("{stem}-{suffix}")
+}
+
+/// Launch (or safely adopt) the OpenCode CLI for one role in a dedicated
+/// herdr-core terminal, detached from this short-lived dispatcher process.
+fn launch_opencode_terminal(
+    owner: &TerminalOwner<'_>,
+    role: &str,
+    phase: Option<&str>,
+    cwd: &str,
+    session_id: &str,
+    store_path: &Path,
+) -> Result<(core::CoreIdentity, core::Terminal, bool)> {
+    if session_id.is_empty() {
+        bail!("refusing to launch a terminal without a durable OpenCode session id");
+    }
+    let core = core::identity()?;
+    let labels = terminal_labels(owner, role, phase);
+    let name = terminal_name(owner, phase.unwrap_or(role));
+    if let Some(existing) = core::find_owned(&labels, &name)? {
+        if existing.recovered_shell() {
+            // A kept terminal recovered with a shell is not a resumed OpenCode
+            // process, even at the same address. Close only the terminal this
+            // exact attempt owns, then launch a fresh one.
+            let _ = core::kill(&existing.address);
+            let _ = core::remove(&existing.address);
+        } else {
+            return Ok((core, existing, false));
+        }
+    }
+    let terminal = core::launch(&core::LaunchSpec {
+        name,
+        cwd: cwd.into(),
+        labels,
+        env: vec![(
+            "AVEN_DISPATCH_STORE".into(),
+            store_path.to_string_lossy().to_string(),
+        )],
+        argv: vec!["opencode".into(), "--session".into(), session_id.into()],
+    })?;
+    Ok((core, terminal, true))
+}
+fn terminal_ref_for(
+    core: &core::CoreIdentity,
+    terminal: &core::Terminal,
+    role: &str,
+    created: bool,
+) -> TerminalRef {
+    core::terminal_ref(core, terminal, role, created)
+}
+fn record_terminal(
+    attempt: &mut Attempt,
+    role: &str,
+    terminal: &core::Terminal,
+    core: &core::CoreIdentity,
+) {
+    let reference = terminal_ref_for(core, terminal, role, true);
+    match role {
+        "builder" => attempt.terminal = reference,
+        "coordinator" => attempt.coordinator_terminal = reference,
+        "babysitter" => attempt.babysitter_terminal = reference,
+        _ => {}
+    }
+    attempt.terminals.insert(
+        role.into(),
+        terminal.observe(
+            core,
+            0,
+            if terminal.recovered_shell() {
+                "recovered-shell"
+            } else {
+                ""
+            },
+        ),
+    );
+}
+fn launch_and_record(
+    attempt: &mut Attempt,
+    role: &str,
+    cwd: &str,
+    session_id: &str,
+    store_path: &Path,
+    store: &mut LockedStore,
+) -> Result<core::Terminal> {
+    let owner = TerminalOwner {
+        task_id: &attempt.task_id,
+        task_ref: &attempt.task_ref,
+        workflow: &attempt.workflow,
+        attempt_id: &attempt.attempt_id,
+        generation: attempt.generation,
+    };
+    let (core, terminal, _) =
+        launch_opencode_terminal(&owner, role, None, cwd, session_id, store_path)?;
+    attempt.core_id = core.id.clone();
+    attempt.core_name = core.name.clone();
+    record_terminal(attempt, role, &terminal, &core);
+    store_attempt(store, attempt.clone());
+    store.save()?;
+    Ok(terminal)
 }
 fn wait_for_global_agent(agent_id: &str) -> Result<()> {
     // Global Markdown profiles are discovered from the server's global
@@ -1038,6 +1032,40 @@ fn wait_for_global_agent(agent_id: &str) -> Result<()> {
     }
     bail!("global bundled {agent_id} agent is not discoverable")
 }
+fn babysitter_message(attempt: &Attempt) -> String {
+    format!(
+        "Supervise build OpenCode session {} in herdr-core terminal {} for task {}. Begin the 60-second monitoring protocol now and stay with it until the task is verified resolved.",
+        attempt.session_id,
+        if attempt.babysitter_terminal.is_empty() {
+            &attempt.terminal.address
+        } else {
+            &attempt.babysitter_terminal.address
+        },
+        attempt.task_ref
+    )
+}
+fn admit_babysitter(attempt: &mut Attempt, store: &mut LockedStore) -> Result<()> {
+    if attempt.babysitter_prompt_id.is_empty() {
+        attempt.babysitter_prompt_id = identifier("msg");
+    }
+    let text = babysitter_message(attempt);
+    attempt.state = "babysitter-prompt-pending".into();
+    store_attempt(store, attempt.clone());
+    store.save()?;
+    let admission = opencode(
+        "POST",
+        &format!("/api/session/{}/prompt", attempt.babysitter_session_id),
+        Some(json!({
+            "id": attempt.babysitter_prompt_id,
+            "text": text,
+            "resume": true,
+        })),
+    )?;
+    if field(&admission, "/data/id")? != attempt.babysitter_prompt_id {
+        bail!("OpenCode admitted an unexpected babysitter message id");
+    }
+    Ok(())
+}
 fn start_babysitter(
     attempt: &mut Attempt,
     store_path: &Path,
@@ -1062,49 +1090,17 @@ fn start_babysitter(
     attempt.state = "babysitter-session-pending".into();
     store_attempt(store, attempt.clone());
     store.save()?;
-    let output = run(
-        "herdr",
-        &[
-            "pane".into(),
-            "split".into(),
-            attempt.pane.clone(),
-            "--direction".into(),
-            "right".into(),
-            "--cwd".into(),
-            attempt.worktree.clone(),
-            "--no-focus".into(),
-        ],
-        None,
-    )?;
-    let response: Value = serde_json::from_str(&output).context("Herdr pane split response")?;
-    attempt.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
-    store_attempt(store, attempt.clone());
-    store.save()?;
-    start_opencode_in_pane(
-        &attempt.babysitter_pane,
-        &attempt.babysitter_session_id,
+    let worktree = attempt.worktree.clone();
+    let session_id = attempt.babysitter_session_id.clone();
+    launch_and_record(
+        attempt,
+        "babysitter",
+        &worktree,
+        &session_id,
         store_path,
+        store,
     )?;
-    attempt.babysitter_prompt_id = identifier("msg");
-    attempt.state = "babysitter-prompt-pending".into();
-    store_attempt(store, attempt.clone());
-    store.save()?;
-    let admission = opencode(
-        "POST",
-        &format!("/api/session/{}/prompt", attempt.babysitter_session_id),
-        Some(json!({
-            "id": attempt.babysitter_prompt_id,
-            "text": format!(
-                "Supervise build OpenCode session {} in Herdr pane {} for task {}. Begin the 60-second monitoring protocol now and stay with it until the task is verified resolved.",
-                attempt.session_id, attempt.pane, attempt.task_ref
-            ),
-            "resume": true,
-        })),
-    )?;
-    if field(&admission, "/data/id")? != attempt.babysitter_prompt_id {
-        bail!("OpenCode admitted an unexpected babysitter message id");
-    }
-    Ok(())
+    admit_babysitter(attempt, store)
 }
 fn bundled_skill(skill: Option<String>, skills_dir: Option<PathBuf>) -> Result<Option<String>> {
     let Some(skill) = skill.or_else(|| env::var("AVEN_DISPATCH_SKILL").ok()) else {
@@ -1270,21 +1266,53 @@ fn provision_phase_worktrees(
             Path::new(&resource.path),
         )?;
         let session_id = field(&session, "/data/id")?.to_owned();
-        start_opencode_in_pane(&resource.pane, &session_id, store_path)?;
         attempt.phases.push(PhaseAttempt {
             task_id: task.task_id.clone(),
             task_ref: task.task_ref.clone(),
             title: task.title.clone(),
             branch,
-            worktree: resource.path,
+            worktree: resource.path.clone(),
             worktree_created_by_attempt: resource.created_by_attempt,
-            pane: resource.pane,
-            session_id,
+            terminal: TerminalRef::default(),
+            pane: String::new(),
+            session_id: session_id.clone(),
             prompt_id: String::new(),
+            pending_prompt: String::new(),
             commit: String::new(),
             integrated_commit: String::new(),
             state: "provisioned".into(),
         });
+        let index = attempt.phases.len() - 1;
+        let owner = TerminalOwner {
+            task_id: &attempt.task_id,
+            task_ref: &attempt.task_ref,
+            workflow: &attempt.workflow,
+            attempt_id: &attempt.attempt_id,
+            generation: attempt.generation,
+        };
+        let (core, terminal, _) = launch_opencode_terminal(
+            &owner,
+            "phase",
+            Some(&task.task_id),
+            &resource.path,
+            &session_id,
+            store_path,
+        )?;
+        attempt.core_id = core.id.clone();
+        attempt.core_name = core.name.clone();
+        attempt.phases[index].terminal = terminal_ref_for(&core, &terminal, "phase", true);
+        attempt.terminals.insert(
+            format!("phase:{}", task.task_id),
+            terminal.observe(
+                &core,
+                0,
+                if terminal.recovered_shell() {
+                    "recovered-shell"
+                } else {
+                    ""
+                },
+            ),
+        );
         store_attempt(store, attempt.clone());
         store.save()?;
     }
@@ -1295,6 +1323,7 @@ fn provision_phase_worktrees(
     let task = phase_is_eligible(&attempt.aven, ready, None)?;
     let mut ready = ready.clone();
     ready.prompt_id = identifier("msg");
+    ready.pending_prompt = phase_prompt(&task, &ready, &attempt.task_ref, skills_dir)?;
     ready.state = "prompt-pending".into();
     attempt.phases[0] = ready.clone();
     store_attempt(store, attempt.clone());
@@ -1304,7 +1333,7 @@ fn provision_phase_worktrees(
         &format!("/api/session/{}/prompt", ready.session_id),
         Some(json!({
             "id": ready.prompt_id,
-            "text": phase_prompt(&task, &ready, &attempt.task_ref, skills_dir)?,
+            "text": ready.pending_prompt,
             "resume": true,
         })),
     )?;
@@ -1312,6 +1341,7 @@ fn provision_phase_worktrees(
         bail!("OpenCode admitted an unexpected phase message id");
     }
     ready.state = "running".into();
+    ready.pending_prompt.clear();
     attempt.phases[0] = ready;
     Ok(())
 }
@@ -1324,8 +1354,17 @@ fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
     let current = refresh_task_by_ref(invocation, &attempt.task_ref)?;
     ensure_attempt_current(&current, attempt)?;
     let metadata = vec![
-        "dispatch.backend=opencode-v2".to_owned(),
+        "dispatch.backend=hc".to_owned(),
         format!("dispatch.session-id={}", attempt.session_id),
+        format!("dispatch.core-id={}", attempt.core_id),
+        format!(
+            "dispatch.terminal={}",
+            if attempt.terminal.is_empty() {
+                &attempt.coordinator_terminal.address
+            } else {
+                &attempt.terminal.address
+            }
+        ),
         format!("dispatch.attempt-id={}", attempt.attempt_id),
         format!("dispatch.state={}", attempt.state),
         format!("dispatch.workflow={}", attempt.workflow),
@@ -1448,7 +1487,10 @@ fn dispatcher_event(attempt: &Attempt, event: &str, detail: &str) -> Value {
         "event": event,
         "state": attempt.state,
         "worktree": attempt.worktree,
-        "pane": attempt.pane,
+        "terminal": if attempt.terminal.is_empty() { &attempt.coordinator_terminal.address } else { &attempt.terminal.address },
+        "core_id": attempt.core_id,
+        "backend": attempt.backend,
+        "legacy_pane": attempt.pane,
         "opencode_session_id": attempt.session_id,
         "detail": detail,
     })
@@ -1467,6 +1509,7 @@ fn write_debug_event(attempt: &Attempt, event: &str, detail: &str) -> Option<Val
     Some(record)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch(
     path: PathBuf,
     dry_run: bool,
@@ -1478,6 +1521,7 @@ fn dispatch(
     skills_dir: Option<PathBuf>,
     babysitter: bool,
     requested_mode: Option<ExecutionMode>,
+    relaunch: bool,
 ) -> Result<()> {
     let input = if let Some(context) = env::var_os("AVEN_COMMAND_CONTEXT") {
         fs::read_to_string(context).context("read Aven terminal command context")?
@@ -1514,8 +1558,9 @@ fn dispatch(
     {
         // An attempt absent from the central store may still be recoverable
         // from the task-scoped Aven snapshot (including after the JSON cut).
-        let recovered: Attempt =
-            serde_json::from_str(snapshot).context("read Aven dispatcher attempt snapshot")?;
+        let recovered: Attempt = normalize_attempt(
+            serde_json::from_str(snapshot).context("read Aven dispatcher attempt snapshot")?,
+        );
         if recovered.task_id != selected.task.id {
             bail!("Aven dispatcher snapshot belongs to a different task");
         }
@@ -1528,8 +1573,47 @@ fn dispatch(
             store.save()?;
         }
     }
+    // A reservation without a durable OpenCode session crashed between
+    // workspace provisioning and session creation. No agent ran, so discard it
+    // only when the checkout is provably owned and clean, then dispatch fresh.
+    if let Some(incomplete) = store.store.attempts.get(&key).cloned()
+        && incomplete.session_id.is_empty()
+        && !dry_run
+    {
+        if !incomplete.worktree.is_empty() {
+            if !incomplete.worktree_created_by_attempt {
+                bail!(
+                    "incomplete attempt {} reuses worktree {}; inspect it before redispatch",
+                    incomplete.attempt_id,
+                    incomplete.worktree
+                );
+            }
+            if !worktrees::clean(Path::new(&incomplete.worktree)).unwrap_or(false) {
+                bail!(
+                    "incomplete attempt {} left changes in {}; inspect them before redispatch",
+                    incomplete.attempt_id,
+                    incomplete.worktree
+                );
+            }
+        }
+        drop(store);
+        if !incomplete.worktree.is_empty() {
+            worktrees::remove_owned(&incomplete.worktree, true);
+        }
+        let mut reopened_store = LockedStore::open(path.clone())?;
+        reopened_store.remove_attempt(&incomplete.task_id, &incomplete.workflow)?;
+        reopened_store.save()?;
+        drop(reopened_store);
+        store = LockedStore::open(path.clone())?;
+    }
     if let Some(existing) = store.store.attempts.get(&key).cloned() {
         ensure_attempt_current(&task, &existing)?;
+        if attempt_is_legacy(&existing) && !relaunch {
+            bail!(
+                "attempt {} was created by the retired herdr runtime; run `aven-dispatch dispatch --relaunch` to move its durable OpenCode session to herdr-core, or reset and redispatch",
+                existing.attempt_id
+            );
+        }
         if let Some(mode) = requested_mode
             && mode != existing.execution_mode
         {
@@ -1555,9 +1639,7 @@ fn dispatch(
             None,
         )?;
         if agent.as_deref().is_none_or(|agent| agent == "select") {
-            let response =
-                path.with_file_name(format!(".agent-picker-{}.response", identifier("reopen")));
-            select_agent(&resource.path, &response, Some(&existing.agent), None)?;
+            select_agent(&resource.path, &path, Some(&existing.agent), None)?;
         }
         if model.is_none() {
             select_model(
@@ -1565,19 +1647,47 @@ fn dispatch(
                     format!("Saved model ({})", existing.model),
                     existing.model.clone(),
                 )],
-                &path.with_file_name(format!(".model-picker-{}.response", identifier("reopen"))),
+                &path,
             )?;
         }
         let mut reopened = existing;
         let prior_state = reopened.state.clone();
+        let same_checkout = reopened.worktree == resource.path;
+        reopened.worktree_created_by_attempt =
+            (same_checkout && reopened.worktree_created_by_attempt) || resource.created_by_attempt;
         reopened.worktree = resource.path;
-        reopened.pane = resource.pane;
-        reopened.worktree_created_by_attempt = resource.created_by_attempt;
+        let was_legacy = attempt_is_legacy(&reopened);
+        reopened.backend = "hc".into();
         reopened.state = "terminal-pending".into();
+        if was_legacy {
+            // Identity cannot be mapped; the new terminal replaces the old
+            // pane, and the durable OpenCode session/prompt ids are preserved.
+            reopened.terminal = TerminalRef::default();
+            reopened.coordinator_terminal = TerminalRef::default();
+            reopened.babysitter_terminal = TerminalRef::default();
+            reopened.terminals.clear();
+            for phase in &mut reopened.phases {
+                phase.terminal = TerminalRef::default();
+            }
+        }
         let mut store = LockedStore::open(path.clone())?;
         store_attempt(&mut store, reopened.clone());
         store.save()?;
-        start_opencode_in_pane(&reopened.pane, &reopened.session_id, &path)?;
+        let role = if reopened.execution_mode == ExecutionMode::Worktrees {
+            "coordinator"
+        } else {
+            "builder"
+        };
+        let session_id = reopened.session_id.clone();
+        let worktree = reopened.worktree.clone();
+        launch_and_record(
+            &mut reopened,
+            role,
+            &worktree,
+            &session_id,
+            &path,
+            &mut store,
+        )?;
         if reopened.babysitter {
             if reopened.babysitter_session_id.is_empty() {
                 // A prior dispatch can fail during babysitter discovery after
@@ -1585,28 +1695,22 @@ fn dispatch(
                 // reopen rather than silently reopening without supervision.
                 start_babysitter(&mut reopened, &path, &mut store)?;
             } else {
-                let output = run(
-                    "herdr",
-                    &[
-                        "pane".into(),
-                        "split".into(),
-                        reopened.pane.clone(),
-                        "--direction".into(),
-                        "right".into(),
-                        "--cwd".into(),
-                        reopened.worktree.clone(),
-                        "--no-focus".into(),
-                    ],
-                    None,
-                )?;
-                let response: Value =
-                    serde_json::from_str(&output).context("Herdr pane split response")?;
-                reopened.babysitter_pane = field(&response, "/result/pane/pane_id")?.to_owned();
-                start_opencode_in_pane(
-                    &reopened.babysitter_pane,
-                    &reopened.babysitter_session_id,
+                let session = reopened.babysitter_session_id.clone();
+                let worktree = reopened.worktree.clone();
+                launch_and_record(
+                    &mut reopened,
+                    "babysitter",
+                    &worktree,
+                    &session,
                     &path,
+                    &mut store,
                 )?;
+                if matches!(
+                    prior_state.as_str(),
+                    "babysitter-session-pending" | "babysitter-prompt-pending"
+                ) {
+                    admit_babysitter(&mut reopened, &mut store)?;
+                }
             }
         }
         if matches!(prior_state.as_str(), "prompt-pending" | "terminal-pending") {
@@ -1644,14 +1748,25 @@ fn dispatch(
                 bail!("OpenCode admitted an unexpected recovered message id");
             }
         }
-        reopened.state = if matches!(prior_state.as_str(), "prompt-pending" | "terminal-pending") {
+        reopened.state = if matches!(
+            prior_state.as_str(),
+            "prompt-pending"
+                | "terminal-pending"
+                | "babysitter-session-pending"
+                | "babysitter-prompt-pending"
+        ) {
             "running".into()
         } else {
             prior_state
         };
         store_attempt(&mut store, reopened.clone());
         store.save()?;
-        focus_pane(&reopened.pane)?;
+        let focused = if !reopened.terminal.is_empty() {
+            reopened.terminal.address.clone()
+        } else {
+            reopened.coordinator_terminal.address.clone()
+        };
+        focus_terminal(&focused);
         println!(
             "reopened {} in OpenCode session {} (attempt {})",
             reopened.task_ref, reopened.session_id, reopened.attempt_id
@@ -1670,6 +1785,10 @@ fn dispatch(
         branch: branch(&selected.project.key, &selected.task.id),
         worktree: String::new(),
         worktree_created_by_attempt: false,
+        backend: "hc".into(),
+        core_id: String::new(),
+        core_name: String::new(),
+        terminal: TerminalRef::default(),
         pane: String::new(),
         agent: agent.unwrap_or_default(),
         model: model.unwrap_or_default(),
@@ -1677,8 +1796,11 @@ fn dispatch(
         coordinator_session_id: String::new(),
         coordinator_agent: String::new(),
         coordinator_model: String::new(),
+        coordinator_terminal: TerminalRef::default(),
         auto_permissions: true,
         phases: Vec::new(),
+        terminals: BTreeMap::new(),
+        last_event_seq: 0,
         session_id: String::new(),
         prompt_id: identifier("msg"),
         pending_prompt: String::new(),
@@ -1688,6 +1810,7 @@ fn dispatch(
         log_task_ref: String::new(),
         generation,
         babysitter,
+        babysitter_terminal: TerminalRef::default(),
         babysitter_pane: String::new(),
         babysitter_session_id: String::new(),
         babysitter_prompt_id: String::new(),
@@ -1718,44 +1841,11 @@ fn dispatch(
         None,
     )?;
     attempt.worktree = resource.path;
-    attempt.pane = resource.pane;
     attempt.worktree_created_by_attempt = resource.created_by_attempt;
-    if attempt.agent.is_empty() || attempt.agent == "select" {
-        let response =
-            path.with_file_name(format!(".agent-picker-{}.response", attempt.attempt_id));
-        attempt.agent = match select_agent(
-            &attempt.worktree,
-            &response,
-            None,
-            preferred_agent.as_deref(),
-        ) {
-            Ok(agent) => agent,
-            Err(error) => {
-                remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
-                return Err(error);
-            }
-        };
-    }
-    if attempt.model.is_empty() {
-        let configured = configured_agent_model(&attempt.worktree, &attempt.agent)?;
-        let response =
-            path.with_file_name(format!(".model-picker-{}.response", attempt.attempt_id));
-        attempt.model = match select_model(
-            &model_choices(configured.as_deref(), preferred_model.as_deref()),
-            &response,
-        ) {
-            Ok(model) => model,
-            Err(error) => {
-                remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
-                return Err(error);
-            }
-        };
-    }
+    // Persist ownership intent before pickers or a session can have side
+    // effects. A later failure removes exactly this reservation and safely
+    // cleans only the checkout this attempt created.
     let mut store = LockedStore::open(path.clone())?;
-    attempt.state = "session-pending".into();
-    // Reservation is a single BEGIN IMMEDIATE transaction. Different tasks may
-    // provision concurrently, while a same-task race loses before creating any
-    // OpenCode session and cleans up the worktree it provisioned.
     if let Some(existing) = store.reserve(attempt.clone())? {
         drop(store);
         remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
@@ -1766,6 +1856,41 @@ fn dispatch(
             existing.task_ref
         );
     }
+    store.save()?;
+    drop(store);
+    let fail_provisioning =
+        |attempt: &Attempt, error: anyhow::Error, path: &Path| -> anyhow::Error {
+            if let Ok(mut store) = LockedStore::open(path.to_path_buf())
+                && let Err(cleanup) = store.remove_attempt(&attempt.task_id, &attempt.workflow)
+            {
+                eprintln!("could not remove failed provisioning reservation: {cleanup:#}");
+            }
+            remove_owned_worktree(&attempt.worktree, attempt.worktree_created_by_attempt);
+            error
+        };
+    if attempt.agent.is_empty() || attempt.agent == "select" {
+        attempt.agent =
+            match select_agent(&attempt.worktree, &path, None, preferred_agent.as_deref()) {
+                Ok(agent) => agent,
+                Err(error) => return Err(fail_provisioning(&attempt, error, &path)),
+            };
+    }
+    if attempt.model.is_empty() {
+        let configured = match configured_agent_model(&attempt.worktree, &attempt.agent) {
+            Ok(configured) => configured,
+            Err(error) => return Err(fail_provisioning(&attempt, error, &path)),
+        };
+        attempt.model = match select_model(
+            &model_choices(configured.as_deref(), preferred_model.as_deref()),
+            &path,
+        ) {
+            Ok(model) => model,
+            Err(error) => return Err(fail_provisioning(&attempt, error, &path)),
+        };
+    }
+    let mut store = LockedStore::open(path.clone())?;
+    attempt.state = "session-pending".into();
+    store_attempt(&mut store, attempt.clone());
     store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees {
         install_global_agent(ORCHESTRATOR_AGENT_ID, ORCHESTRATOR_AGENT)?;
@@ -1803,12 +1928,27 @@ fn dispatch(
     attempt.coordinator_session_id = attempt.session_id.clone();
     attempt.coordinator_agent = session_agent;
     attempt.coordinator_model = session_model;
-    // Launch the OpenCode CLI in the worktree pane before scheduling the prompt.
-    // The CLI attaches to the API-created session by its durable ID.
+    // Launch the OpenCode CLI in its dedicated herdr-core terminal before
+    // scheduling the prompt. The CLI attaches to the API-created session by
+    // its durable ID, and the terminal survives this short-lived dispatcher.
     attempt.state = "terminal-pending".into();
     store_attempt(&mut store, attempt.clone());
     store.save()?;
-    start_opencode_in_pane(&attempt.pane, &attempt.session_id, &path)?;
+    let role = if attempt.execution_mode == ExecutionMode::Worktrees {
+        "coordinator"
+    } else {
+        "builder"
+    };
+    let session_id = attempt.session_id.clone();
+    let worktree = attempt.worktree.clone();
+    let terminal = launch_and_record(
+        &mut attempt,
+        role,
+        &worktree,
+        &session_id,
+        &path,
+        &mut store,
+    )?;
     attempt.state = "prompt-pending".into();
     let topology = (attempt.execution_mode == ExecutionMode::Worktrees)
         .then(|| coordinator_topology(&attempt));
@@ -1853,7 +1993,12 @@ fn dispatch(
         store_attempt(&mut store, attempt.clone());
         store.save()?;
     }
-    focus_pane(&attempt.pane)?;
+    focus_terminal(&terminal.address);
+    if let Ok(core) = core::identity()
+        && let Ok(terminals) = core::snapshot(&[("aven.dispatch".into(), "1".into())])
+    {
+        let _ = watch::write_inventory(&path, &core, &terminals);
+    }
     println!(
         "admitted {} to OpenCode session {} (attempt {})",
         attempt.task_ref, attempt.session_id, attempt.attempt_id
@@ -1965,6 +2110,20 @@ fn active_sessions(sessions: &[String], active: &Value) -> Vec<String> {
         .collect()
 }
 fn authoritative_execution_state(current: &str, snapshot: &Value) -> String {
+    // A local admission checkpoint is not superseded by an API snapshot that
+    // has not observed the prompt yet. Downgrading it would strand a durable
+    // pending prompt and could make recovery submit it twice.
+    if matches!(
+        current,
+        "workspace-pending"
+            | "session-pending"
+            | "terminal-pending"
+            | "prompt-pending"
+            | "babysitter-session-pending"
+            | "babysitter-prompt-pending"
+    ) {
+        return current.into();
+    }
     match snapshot.pointer("/data/outcome").and_then(Value::as_str) {
         Some("succeeded") => "needs-review".into(),
         Some("failed") => "failed".into(),
@@ -2174,6 +2333,8 @@ fn reset(path: PathBuf, requested_task: Option<String>, yes: bool, dry_run: bool
     let existing_metadata = root.get("metadata").and_then(Value::as_object);
     for key in [
         "dispatch.backend",
+        "dispatch.core-id",
+        "dispatch.terminal",
         "dispatch.session-id",
         "dispatch.attempt-id",
         "dispatch.state",
@@ -2283,7 +2444,19 @@ fn list(path: PathBuf, running: bool) -> Result<()> {
             store_attempt(&mut store, attempt.clone());
         }
         store.save()?;
-        attempts.retain(|attempt| attempt.state == "running");
+        attempts.retain(|attempt| {
+            matches!(
+                attempt.state.as_str(),
+                "running"
+                    | "waiting"
+                    | "workspace-pending"
+                    | "session-pending"
+                    | "terminal-pending"
+                    | "prompt-pending"
+                    | "babysitter-session-pending"
+                    | "babysitter-prompt-pending"
+            )
+        });
     }
     println!("{}", serde_json::to_string_pretty(&attempts)?);
     Ok(())
@@ -2303,9 +2476,7 @@ fn interrupt(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     println!("interrupted owned OpenCode execution sessions; Aven task status was not changed");
     Ok(())
 }
-fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
-    let mut store = LockedStore::open(path.clone())?;
-    let mut attempt = find_attempt(&store, task, workflow)?.clone();
+fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -> Result<Attempt> {
     ensure_attempt_current(
         &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
         &attempt,
@@ -2313,12 +2484,12 @@ fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     refresh_attempt_execution_state(&mut attempt)?;
     // Persist authoritative execution state even when no Aven repair is due;
     // task acceptance remains exclusively under the task workflow.
-    store_attempt(&mut store, attempt.clone());
+    store_attempt(store, attempt.clone());
     store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees
-        && advance_worktree_phases(&mut attempt, &mut store)?
+        && advance_worktree_phases(&mut attempt, store)?
     {
-        store_attempt(&mut store, attempt.clone());
+        store_attempt(store, attempt.clone());
         store.save()?;
         println!("advanced cumulative worktree phases");
     }
@@ -2326,7 +2497,7 @@ fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
         match write_aven_links(&attempt.aven, &attempt) {
             Ok(()) => {
                 attempt.aven_update_pending = false;
-                store_attempt(&mut store, attempt.clone());
+                store_attempt(store, attempt.clone());
                 store.save()?;
                 println!("repaired pending Aven status, metadata, and handoff update");
             }
@@ -2341,28 +2512,53 @@ fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
         ),
         None,
     );
+    if let Ok(events) = log
+        && let Some(cursor) = events
+            .lines()
+            .filter_map(|line| line.strip_prefix("id: "))
+            .next_back()
+    {
+        attempt.log_cursor = cursor.to_owned();
+        store_attempt(store, attempt.clone());
+        store.save()?;
+        println!("replayed durable session log through cursor {cursor}");
+    }
+    Ok(attempt)
+}
+
+fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
+    let mut store = LockedStore::open(path)?;
+    let attempt = find_attempt(&store, task, workflow)?.clone();
+    let attempt = reconcile_attempt(&mut store, attempt)?;
     println!(
         "attempt {} state={} aven_update_pending={}",
         attempt.attempt_id, attempt.state, attempt.aven_update_pending
     );
-    match log {
-        Ok(events) => {
-            if let Some(cursor) = events
-                .lines()
-                .filter_map(|line| line.strip_prefix("id: "))
-                .last()
-            {
-                attempt.log_cursor = cursor.to_owned();
-                store_attempt(&mut store, attempt);
-                store.save()?;
-                println!("replayed durable session log through cursor {cursor}");
-            } else {
-                println!("durable session log is reachable; no new events");
-            }
-        }
-        Err(error) => println!("session log unavailable: {error:#}"),
-    };
     Ok(())
+}
+
+/// Bounded periodic reconciliation for changes Aven/OpenCode make without a
+/// core event. Stops at the first Aven/API outage instead of guessing.
+fn reconcile_all(path: &Path) -> Result<usize> {
+    let mut store = LockedStore::open(path.to_path_buf())?;
+    let attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
+    let mut reconciled = 0;
+    for attempt in attempts {
+        if attempt_is_legacy(&attempt) {
+            continue;
+        }
+        match reconcile_attempt(&mut store, attempt.clone()) {
+            Ok(_) => reconciled += 1,
+            Err(error) => eprintln!(
+                "supervision left {} ({}) unchanged: {error:#}",
+                attempt.task_ref, attempt.attempt_id
+            ),
+        }
+    }
+    if let Err(error) = watch::refresh_inventory(path) {
+        eprintln!("core inventory unavailable: {error:#}");
+    }
+    Ok(reconciled)
 }
 fn log_event(
     path: PathBuf,
@@ -2387,30 +2583,10 @@ fn log_event(
     Ok(())
 }
 fn git_head(directory: &Path) -> Result<String> {
-    run_in(
-        "git",
-        &["rev-parse".into(), "HEAD".into()],
-        None,
-        Some(directory),
-    )
-}
-fn dispatcher_runtime_file(directory: &Path, relative: &str) -> bool {
-    // Bundled agents are global definitions, not tolerated untracked output in
-    // a phase worktree. Every local file must remain visible to integration.
-    let _ = (directory, relative);
-    false
+    worktrees::head(directory)
 }
 fn worktree_is_integration_clean(directory: &Path) -> Result<bool> {
-    let status = run_in(
-        "git",
-        &["status".into(), "--porcelain".into()],
-        None,
-        Some(directory),
-    )?;
-    Ok(status.lines().all(|line| {
-        line.strip_prefix("?? ")
-            .is_some_and(|path| dispatcher_runtime_file(directory, path))
-    }))
+    worktrees::clean(directory)
 }
 fn phase_is_done_for(invocation: &Invocation, phase: &PhaseAttempt) -> Result<bool> {
     Ok(phase_task(
@@ -2474,6 +2650,47 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
     let mut changed = false;
     for index in 0..attempt.phases.len() {
         let mut phase = attempt.phases[index].clone();
+        if phase.state == "prompt-pending" {
+            // The predecessor integration is already durable and the prompt ID
+            // was checkpointed before admission. Re-admit the exact same ID;
+            // OpenCode treats it as the same durable message.
+            if phase.prompt_id.is_empty() {
+                phase.prompt_id = identifier("msg");
+            }
+            if phase.pending_prompt.is_empty() {
+                let task = phase_task(
+                    &attempt.aven,
+                    &EpicPhase {
+                        task_id: phase.task_id.clone(),
+                        task_ref: phase.task_ref.clone(),
+                        title: phase.title.clone(),
+                    },
+                )?;
+                phase.pending_prompt = phase_prompt(&task, &phase, &attempt.task_ref, None)?;
+            }
+            attempt.phases[index] = phase.clone();
+            store_attempt(store, attempt.clone());
+            store.save()?;
+            let admission = opencode(
+                "POST",
+                &format!("/api/session/{}/prompt", phase.session_id),
+                Some(json!({
+                    "id": phase.prompt_id,
+                    "text": phase.pending_prompt,
+                    "resume": true,
+                })),
+            )?;
+            if field(&admission, "/data/id")? != phase.prompt_id {
+                bail!("OpenCode admitted an unexpected recovered phase message id");
+            }
+            phase.state = "running".into();
+            phase.pending_prompt.clear();
+            attempt.phases[index] = phase;
+            changed = true;
+            store_attempt(store, attempt.clone());
+            store.save()?;
+            break;
+        }
         if phase.state == "integrated" {
             let phase_commit = git_head(Path::new(&phase.worktree))?;
             let coordinator_commit = git_head(Path::new(&attempt.worktree))?;
@@ -2511,12 +2728,7 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
         }
         let commit = git_head(Path::new(&phase.worktree))?;
         if git_head(root)? != commit {
-            run_in(
-                "git",
-                &["merge".into(), "--ff-only".into(), phase.branch.clone()],
-                None,
-                Some(root),
-            )?;
+            worktrees::merge_ff(root, &phase.branch)?;
         }
         attempt.phases[index].commit = commit;
         attempt.phases[index].integrated_commit = git_head(root)?;
@@ -2545,17 +2757,13 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
                 next.task_ref
             );
         }
-        run_in(
-            "git",
-            &["merge".into(), "--ff-only".into(), attempt.branch.clone()],
-            None,
-            Some(next_directory),
-        )?;
+        worktrees::merge_ff(next_directory, &attempt.branch)?;
         // Re-read immediately before admission: a dependency may have been
         // added while the prior worker was integrating.
         let task = phase_is_eligible(&attempt.aven, &next, Some(&attempt.phases[index]))?;
         let mut admitted = next;
         admitted.prompt_id = identifier("msg");
+        admitted.pending_prompt = phase_prompt(&task, &admitted, &attempt.task_ref, None)?;
         admitted.state = "prompt-pending".into();
         attempt.phases[index + 1] = admitted.clone();
         store_attempt(store, attempt.clone());
@@ -2565,7 +2773,7 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
             &format!("/api/session/{}/prompt", admitted.session_id),
             Some(json!({
                 "id": admitted.prompt_id,
-                "text": phase_prompt(&task, &admitted, &attempt.task_ref, None)?,
+                "text": admitted.pending_prompt,
                 "resume": true,
             })),
         )?;
@@ -2573,6 +2781,7 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
             bail!("OpenCode admitted an unexpected successor phase message id");
         }
         admitted.state = "running".into();
+        admitted.pending_prompt.clear();
         attempt.phases[index + 1] = admitted;
         changed = true;
         break;
@@ -2601,16 +2810,344 @@ fn advance_worktree_phases(attempt: &mut Attempt, store: &mut LockedStore) -> Re
 fn doctor(path: &Path) -> Result<()> {
     println!("store: {}", path.display());
     let aven_version = run("aven", &["--version".into()], None)?;
+    let core = core::identity().context("herdr-core is required for dispatch")?;
+    let schema = core::run_text(&["schema".into()])?;
+    if !schema.contains("events.subscribe") || !schema.contains("terminal.send") {
+        bail!(
+            "herdr-core does not expose the events.subscribe and terminal.send capabilities this dispatcher requires"
+        );
+    }
     // `opencode api` intentionally truncates very large bodies, so probe a
     // small V2 endpoint rather than trying to parse its complete OpenAPI body.
     let sessions = opencode("GET", "/api/session?limit=1", None)?;
     if sessions.get("data").is_none() {
         bail!("OpenCode V2 session endpoint returned an unsupported response");
     }
+    let app = match app::status() {
+        app::Availability::Available => "herdr-app: available (optional navigation only)",
+        app::Availability::Unavailable(_) => {
+            "herdr-app: unavailable (headless dispatch remains supported)"
+        }
+    };
     println!(
-        "ready: {aven_version}; OpenCode V2 session API detected (prompt-ID support is checked on admission)"
+        "ready: {aven_version}; herdr-core {} core {}/{} with events.subscribe and terminal.send; OpenCode V2 session API detected; {app}",
+        core.version, core.name, core.id
     );
     Ok(())
+}
+fn message(
+    path: PathBuf,
+    task: &str,
+    workflow: Option<&str>,
+    role: &str,
+    text: &str,
+    wait: bool,
+) -> Result<()> {
+    let store = LockedStore::open(path)?;
+    let attempt = find_attempt(&store, task, workflow)?;
+    let terminal = match role {
+        "builder" => &attempt.terminal,
+        "coordinator" => &attempt.coordinator_terminal,
+        "babysitter" => &attempt.babysitter_terminal,
+        phase => {
+            let phase = phase.strip_prefix("phase:").unwrap_or(phase);
+            attempt
+                .phases
+                .iter()
+                .find(|candidate| {
+                    candidate.task_id == phase
+                        || candidate.task_ref == phase
+                        || candidate.task_id == format!("phase:{phase}")
+                })
+                .map(|candidate| &candidate.terminal)
+                .context("no phase terminal for that role")?
+        }
+    };
+    if terminal.is_empty() {
+        bail!(
+            "attempt {} has no herdr-core terminal for role {role}",
+            attempt.attempt_id
+        );
+    }
+    let core = core::identity()?;
+    if !terminal.matches_core(&core.id) {
+        bail!(
+            "terminal {} belongs to a different herdr-core identity; inspect before messaging",
+            terminal.address
+        );
+    }
+    let result = core::send_if_idle(&terminal.address, text, wait)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn pick(kind: &str) -> Result<()> {
+    let response = env::var("AVEN_DISPATCH_PICKER_RESPONSE")
+        .context("AVEN_DISPATCH_PICKER_RESPONSE is not set")?;
+    let choices = env::var("AVEN_DISPATCH_PICKER_CHOICES")
+        .context("AVEN_DISPATCH_PICKER_CHOICES is not set")?;
+    let ids =
+        env::var("AVEN_DISPATCH_PICKER_IDS").context("AVEN_DISPATCH_PICKER_IDS is not set")?;
+    let heading = match kind {
+        "agent" => "Select an OpenCode agent:",
+        "model" => "Select an OpenCode model:",
+        other => bail!("unknown picker kind: {other}"),
+    };
+    println!("{heading}\n\n{choices}\n\nChoice [1-], or q to cancel: ");
+    io::stdout().flush()?;
+    let mut choice = String::new();
+    let _ = io::stdin().read_line(&mut choice)?;
+    let selected = match choice.trim() {
+        "" | "q" | "Q" => "cancelled".to_owned(),
+        value => value
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| ids.lines().nth(index))
+            .map(str::to_owned)
+            .unwrap_or_else(|| "cancelled".into()),
+    };
+    let temporary = format!("{response}.new");
+    fs::write(&temporary, format!("{selected}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600));
+    }
+    fs::rename(&temporary, &response)?;
+    Ok(())
+}
+
+fn apply_terminal_fact(
+    store: &mut LockedStore,
+    core: &core::CoreIdentity,
+    terminal: &core::Terminal,
+    kind: &str,
+    seq: u64,
+) -> Result<Vec<String>> {
+    let matches = watch::find_attempt_for_terminal(&store.store, &core.id, &terminal.address)
+        .into_iter()
+        .map(|(attempt, roles)| (attempt_key(&attempt.task_id, &attempt.workflow), roles))
+        .collect::<Vec<_>>();
+    let mut keys = Vec::new();
+    for (key, roles) in matches {
+        let Some(mut attempt) = store.store.attempts.get(&key).cloned() else {
+            continue;
+        };
+        let recovery = match kind {
+            "finished" => "finished",
+            "lost" => "lost",
+            "removed" => "removed",
+            "restarted" if terminal.recovered_shell() => "recovered-shell",
+            _ if terminal.recovered_shell() => "recovered-shell",
+            "snapshot" if terminal.state == "finished" && terminal.reason == "holder_lost" => {
+                "lost"
+            }
+            "snapshot" if terminal.state == "finished" => "finished",
+            _ => "",
+        };
+        for role in roles {
+            attempt
+                .terminals
+                .insert(role, terminal.observe(core, seq, recovery));
+        }
+        attempt.core_id = core.id.clone();
+        attempt.core_name = core.name.clone();
+        attempt.last_event_seq = attempt.last_event_seq.max(seq);
+        store_attempt(store, attempt);
+        keys.push(key);
+    }
+    if !keys.is_empty() {
+        store.save()?;
+    }
+    Ok(keys)
+}
+
+fn reconcile_key(store: &mut LockedStore, key: &str) {
+    let Some(attempt) = store.store.attempts.get(key).cloned() else {
+        return;
+    };
+    if attempt_is_legacy(&attempt) {
+        return;
+    }
+    if let Err(error) = reconcile_attempt(store, attempt.clone()) {
+        eprintln!(
+            "supervision left {} ({}) unchanged: {error:#}",
+            attempt.task_ref, attempt.attempt_id
+        );
+    }
+}
+
+fn reconcile_keys(path: &Path, keys: &[String]) -> Result<()> {
+    let mut store = LockedStore::open(path.to_path_buf())?;
+    for key in keys {
+        reconcile_key(&mut store, key);
+    }
+    Ok(())
+}
+
+fn watch_command(
+    path: PathBuf,
+    once: bool,
+    stop: bool,
+    status: bool,
+    interval: u64,
+    reconcile_all_flag: bool,
+) -> Result<()> {
+    if status {
+        println!("{}", serde_json::to_string_pretty(&watch::status(&path))?);
+        return Ok(());
+    }
+    if stop {
+        println!("{}", watch::stop(&path)?);
+        return Ok(());
+    }
+    if once || reconcile_all_flag {
+        let reconciled = reconcile_all(&path)?;
+        println!("reconciled {reconciled} dispatch attempt(s)");
+        return Ok(());
+    }
+    let mut guard = watch::WatcherGuard::acquire(&path)?;
+    let core = core::identity()?;
+    guard.state.core_id = core.id.clone();
+    guard.state.core_name = core.name.clone();
+    watch::write_state(&path, &guard.state)?;
+    let labels = vec![("aven.dispatch".to_string(), "1".to_string())];
+    let mut stream: Option<core::EventStream> = None;
+    let mut last_periodic = std::time::Instant::now();
+    let interval = interval.max(15);
+    loop {
+        if stream.is_none() {
+            match core::EventStream::subscribe(&labels) {
+                Ok(next) => stream = Some(next),
+                Err(error) => {
+                    guard.error(&path, &format!("subscribe failed: {error:#}"))?;
+                    eprintln!("watcher could not subscribe to herdr-core events: {error:#}");
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            }
+        }
+        let event = match stream.as_mut() {
+            Some(stream) => stream.next(),
+            None => Ok(None),
+        };
+        match event {
+            Ok(Some(core::EventLine::Snapshot { seq, terminals })) => {
+                let mut store = LockedStore::open(path.clone())?;
+                let mut keys = Vec::new();
+                for value in terminals {
+                    if let Ok(terminal) = core::get(
+                        value
+                            .get("address")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    ) {
+                        keys.extend(apply_terminal_fact(
+                            &mut store, &core, &terminal, "snapshot", seq,
+                        )?);
+                    }
+                }
+                drop(store);
+                for key in keys {
+                    reconcile_keys(&path, &[key])?;
+                }
+                // Reconcile every durable attempt from the initial snapshot so
+                // a terminated phase or lost terminal surfaces even when it is
+                // no longer part of the live subscription.
+                let _ = reconcile_all(&path);
+                guard.state.last_seq = seq;
+                guard.record(&path, "snapshot")?;
+            }
+            Ok(Some(core::EventLine::Notification {
+                seq,
+                terminal,
+                kind,
+                data,
+            })) => {
+                let observed = core::get(&terminal).unwrap_or_else(|_| core::Terminal {
+                    address: terminal.clone(),
+                    name: String::new(),
+                    state: if kind == "removed" {
+                        "removed".into()
+                    } else {
+                        "unknown".into()
+                    },
+                    status: data
+                        .pointer("/status/state")
+                        .or_else(|| data.pointer("/state"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    status_kind: data
+                        .pointer("/status/kind")
+                        .or_else(|| data.pointer("/kind"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    program: data
+                        .pointer("/foreground/name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    reason: data
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    turn: data.get("turn").and_then(Value::as_u64).unwrap_or_default(),
+                    labels: Vec::new(),
+                    reported: false,
+                });
+                let mut store = LockedStore::open(path.clone())?;
+                let keys = apply_terminal_fact(&mut store, &core, &observed, &kind, seq)?;
+                drop(store);
+                if !matches!(kind.as_str(), "foreground" | "size" | "doc" | "title") {
+                    for key in keys {
+                        reconcile_keys(&path, &[key])?;
+                    }
+                }
+                guard.state.last_seq = seq;
+                if matches!(
+                    kind.as_str(),
+                    "created" | "finished" | "lost" | "restarted" | "removed"
+                ) {
+                    guard.record(&path, &kind)?;
+                }
+            }
+            Ok(Some(core::EventLine::Missed { seq, terminals })) => {
+                // Never trust a partial stream: drop it, record the gap, and
+                // start again from a fresh snapshot.
+                guard.state.gaps = guard.state.gaps.saturating_add(1);
+                guard.state.last_seq = seq;
+                guard.error(
+                    &path,
+                    &format!("missed events through seq {seq}; resubscribing"),
+                )?;
+                let _ = terminals;
+                stream = None;
+                let _ = reconcile_all(&path);
+            }
+            Ok(Some(core::EventLine::Heartbeat)) => {}
+            Ok(None) => {
+                stream = None;
+                guard.error(&path, "herdr-core event stream ended; reconnecting")?;
+                let _ = reconcile_all(&path);
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(error) => {
+                stream = None;
+                guard.error(&path, &format!("event stream error: {error:#}"))?;
+                eprintln!("watcher event stream error: {error:#}");
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+        if last_periodic.elapsed() >= Duration::from_secs(interval) {
+            let _ = reconcile_all(&path);
+            guard.record(&path, "periodic")?;
+            last_periodic = std::time::Instant::now();
+        }
+    }
 }
 
 fn is_interactive_cancellation(error: &anyhow::Error) -> bool {
@@ -2623,9 +3160,9 @@ fn is_interactive_cancellation(error: &anyhow::Error) -> bool {
 }
 
 fn show_terminal_error(error: &anyhow::Error) {
-    // Aven owns the only Herdr session-modal popup while a terminal command is
-    // running, so a nested error popup would fail with ui_busy. Keep the
-    // borrowed terminal visible instead, including the complete anyhow chain.
+    // Aven lends this command its terminal, so a nested error screen would
+    // compete for the same surface. Keep the borrowed terminal visible
+    // instead, including the complete anyhow chain.
     if env::var_os("AVEN_COMMAND_CONTEXT").is_none()
         || !io::stdin().is_terminal()
         || !io::stderr().is_terminal()
@@ -2653,6 +3190,7 @@ fn main() -> Result<()> {
             skills_dir,
             babysitter,
             mode,
+            relaunch,
         } => dispatch(
             path,
             dry_run,
@@ -2664,6 +3202,7 @@ fn main() -> Result<()> {
             skills_dir,
             babysitter,
             mode,
+            relaunch,
         ),
         Commands::Resume { task, workflow } => reconcile(path, &task, workflow.as_deref()),
         Commands::Status { task, workflow } => status(path, &task, workflow.as_deref()),
@@ -2676,6 +3215,21 @@ fn main() -> Result<()> {
             detail,
         } => log_event(path, &task, workflow.as_deref(), &event, &detail),
         Commands::Interrupt { task, workflow } => interrupt(path, &task, workflow.as_deref()),
+        Commands::Pick { kind } => pick(&kind),
+        Commands::Message {
+            task,
+            text,
+            role,
+            workflow,
+            wait,
+        } => message(path, &task, workflow.as_deref(), &role, &text, wait),
+        Commands::Watch {
+            once,
+            stop,
+            status,
+            interval,
+            reconcile_all,
+        } => watch_command(path, once, stop, status, interval, reconcile_all),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
         Commands::Doctor => doctor(&path),
     };
@@ -2781,15 +3335,21 @@ mod tests {
         );
     }
     #[test]
-    fn pane_command_admission_requires_the_shell_to_own_input() {
-        assert!(process_info_has_foreground_shell(
-            &json!({"result":{"process_info":{"shell_pid":42,"foreground_processes":[{"pid":42}]}}})
-        )
-        .unwrap());
-        assert!(!process_info_has_foreground_shell(
-            &json!({"result":{"process_info":{"shell_pid":42,"foreground_processes":[{"pid":99,"name":"opencode"}]}}})
-        )
-        .unwrap());
+    fn a_recovered_shell_is_not_resumed_agent_execution() {
+        let terminal = |program: &str| core::Terminal {
+            address: "t1".into(),
+            name: "aven-test".into(),
+            state: "live".into(),
+            status: String::new(),
+            status_kind: String::new(),
+            program: program.into(),
+            reason: String::new(),
+            turn: 0,
+            labels: Vec::new(),
+            reported: false,
+        };
+        assert!(terminal("zsh").recovered_shell());
+        assert!(!terminal("opencode").recovered_shell());
     }
     #[test]
     fn bundled_agent_definition_is_written_to_a_named_global_agent_path() {
@@ -2803,9 +3363,8 @@ mod tests {
     #[test]
     fn orchestrator_definition_monitors_every_phase_and_defers_final_integration() {
         assert!(ORCHESTRATOR_AGENT.contains("do not stop after the first worker"));
-        assert!(
-            ORCHESTRATOR_AGENT.contains("Run this coordination loop at least every 60 seconds")
-        );
+        assert!(ORCHESTRATOR_AGENT.contains("Prefer event- and wait-driven supervision"));
+        assert!(ORCHESTRATOR_AGENT.contains("hc wait <address> --timeout 180"));
         assert!(ORCHESTRATOR_AGENT.contains("aven-dispatch reconcile\n<root-ref>"));
         assert!(
             ORCHESTRATOR_AGENT.contains("every phase is\nintegrated and the root epic is `done`")
@@ -2910,9 +3469,11 @@ mod tests {
             branch: "app/phase-1".into(),
             worktree: "/phase-1".into(),
             worktree_created_by_attempt: true,
+            terminal: TerminalRef::default(),
             pane: "w1:p1".into(),
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
+            pending_prompt: String::new(),
             commit: String::new(),
             integrated_commit: String::new(),
             state: "running".into(),
@@ -2934,10 +3495,16 @@ mod tests {
         assert_eq!(branch("APP", "ABC123"), "APP/dispatch-abc123");
     }
     #[test]
-    fn automatic_worktree_cleanup_is_never_forced() {
-        let args = worktree_remove_args("w1");
-        assert_eq!(args, vec!["worktree", "remove", "--workspace", "w1"]);
-        assert!(!args.iter().any(|argument| argument == "--force"));
+    fn worktree_layout_matches_the_herdr_app_convention() {
+        let path =
+            worktrees::worktree_path("/repo/herdr-aven-plugin", "herdr-aven-plugin/dispatch-abc")
+                .unwrap();
+        assert_eq!(
+            path,
+            worktrees::root()
+                .join("herdr-aven-plugin")
+                .join("herdr-aven-plugin-dispatch-abc")
+        );
     }
     #[test]
     fn phase_metadata_accepts_planner_schema_and_legacy_alias() {
@@ -3047,24 +3614,46 @@ mod tests {
         );
     }
     #[test]
-    fn global_runtime_agents_are_not_ignored_as_worktree_output() {
-        let root = tempfile::tempdir().unwrap();
-        let agents = root.path().join(".opencode/agents");
-        fs::create_dir_all(&agents).unwrap();
-        fs::write(agents.join("orchestrator.md"), ORCHESTRATOR_AGENT).unwrap();
-        fs::write(agents.join("babysitter.md"), BABYSITTER_AGENT).unwrap();
-        assert!(!dispatcher_runtime_file(
-            root.path(),
-            ".opencode/agents/orchestrator.md"
+    fn worktree_inventory_parses_porcelain_entries() {
+        let trees = worktrees::parse_listing(
+            "worktree /repo/main\nHEAD deadbeef\nbranch refs/heads/main\n\nworktree /tmp/dispatch\nHEAD feedface\nbranch refs/heads/app/dispatch-task\n",
+        );
+        assert_eq!(trees.len(), 2);
+        assert_eq!(trees[0].path, "/repo/main");
+        assert_eq!(trees[1].branch_name(), Some("app/dispatch-task"));
+    }
+    #[test]
+    fn event_snapshot_and_notifications_are_parsed_without_guessing() {
+        let snapshot =
+            core::parse_event_line(r#"{"channel":null,"seq":4,"terminals":[]}"#).unwrap();
+        assert!(matches!(
+            snapshot,
+            Some(core::EventLine::Snapshot { seq: 4, .. })
         ));
-        assert!(!dispatcher_runtime_file(
-            root.path(),
-            ".opencode/agents/babysitter.md"
-        ));
-        fs::write(agents.join("unrelated.md"), "user output").unwrap();
-        assert!(!dispatcher_runtime_file(
-            root.path(),
-            ".opencode/agents/unrelated.md"
+        let notification = core::parse_event_line(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"data":{"exit_code":0,"reason":"exited"},"seq":9,"terminal":"t2","type":"finished"}}"#,
+        )
+        .unwrap();
+        match notification {
+            Some(core::EventLine::Notification {
+                seq,
+                terminal,
+                kind,
+                ..
+            }) => {
+                assert_eq!(seq, 9);
+                assert_eq!(terminal, "t2");
+                assert_eq!(kind, "finished");
+            }
+            other => panic!("unexpected event parse: {other:?}"),
+        }
+        let missed = core::parse_event_line(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"data":{"terminals":[]},"seq":12,"terminal":"","type":"missed"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            missed,
+            Some(core::EventLine::Missed { seq: 12, .. })
         ));
     }
     fn stored_attempt(task_id: &str, workflow: &str, state: &str) -> Attempt {
@@ -3076,6 +3665,10 @@ mod tests {
             branch: format!("app/dispatch-{task_id}"),
             worktree: String::new(),
             worktree_created_by_attempt: false,
+            backend: "hc".into(),
+            core_id: String::new(),
+            core_name: String::new(),
+            terminal: TerminalRef::default(),
             pane: String::new(),
             agent: String::new(),
             model: String::new(),
@@ -3083,8 +3676,11 @@ mod tests {
             coordinator_session_id: String::new(),
             coordinator_agent: String::new(),
             coordinator_model: String::new(),
+            coordinator_terminal: TerminalRef::default(),
             auto_permissions: false,
             phases: Vec::new(),
+            terminals: BTreeMap::new(),
+            last_event_seq: 0,
             session_id: format!("ses_{task_id}"),
             prompt_id: String::new(),
             pending_prompt: String::new(),
@@ -3094,6 +3690,7 @@ mod tests {
             log_task_ref: String::new(),
             generation: 0,
             babysitter: false,
+            babysitter_terminal: TerminalRef::default(),
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),
             babysitter_prompt_id: String::new(),
@@ -3345,6 +3942,10 @@ mod tests {
             branch: "app/dispatch-task-id".into(),
             worktree: "/worktree".into(),
             worktree_created_by_attempt: true,
+            backend: "hc".into(),
+            core_id: String::new(),
+            core_name: String::new(),
+            terminal: TerminalRef::default(),
             pane: "w1:p1".into(),
             agent: "build".into(),
             model: "provider/model".into(),
@@ -3352,8 +3953,11 @@ mod tests {
             coordinator_session_id: "ses_1".into(),
             coordinator_agent: "build".into(),
             coordinator_model: "provider/model".into(),
+            coordinator_terminal: TerminalRef::default(),
             auto_permissions: true,
             phases: Vec::new(),
+            terminals: BTreeMap::new(),
+            last_event_seq: 0,
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
             pending_prompt: String::new(),
@@ -3363,6 +3967,7 @@ mod tests {
             log_task_ref: "DL-1".into(),
             generation: 0,
             babysitter: false,
+            babysitter_terminal: TerminalRef::default(),
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),
             babysitter_prompt_id: String::new(),
@@ -3381,6 +3986,43 @@ mod tests {
         assert_eq!(record["detail"], "verified");
     }
     #[test]
+    fn legacy_attempt_normalization_is_repeatable_and_read_only() {
+        let mut attempt = stored_attempt("task", "implementation", "running");
+        attempt.backend = String::new();
+        attempt.pane = "w1:p1".into();
+        attempt.terminal = TerminalRef::default();
+        let first = normalize_attempt(attempt);
+        assert_eq!(first.backend, "herdr");
+        assert_eq!(first.pane, "w1:p1");
+        assert!(first.terminal.is_empty());
+        let second = normalize_attempt(first.clone());
+        assert_eq!(second.backend, first.backend);
+        assert_eq!(second.pane, first.pane);
+    }
+    #[test]
+    fn phase_prompt_bodies_are_durable_for_recovery() {
+        let phase = PhaseAttempt {
+            task_id: "phase-one".into(),
+            task_ref: "APP-P1".into(),
+            title: "first phase".into(),
+            branch: "app/phase-1".into(),
+            worktree: "/phase-1".into(),
+            worktree_created_by_attempt: true,
+            terminal: TerminalRef::default(),
+            pane: String::new(),
+            session_id: "ses_1".into(),
+            prompt_id: "msg_1".into(),
+            pending_prompt: "durable prompt".into(),
+            commit: String::new(),
+            integrated_commit: String::new(),
+            state: "prompt-pending".into(),
+        };
+        let encoded = serde_json::to_string(&phase).unwrap();
+        let decoded: PhaseAttempt = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.pending_prompt, "durable prompt");
+        assert_eq!(decoded.prompt_id, "msg_1");
+    }
+    #[test]
     fn reset_generation_defaults_to_zero_and_fences_stale_attempts() {
         let mut attempt = Attempt {
             task_id: "task-id".into(),
@@ -3390,6 +4032,10 @@ mod tests {
             branch: String::new(),
             worktree: String::new(),
             worktree_created_by_attempt: false,
+            backend: "hc".into(),
+            core_id: String::new(),
+            core_name: String::new(),
+            terminal: TerminalRef::default(),
             pane: String::new(),
             agent: String::new(),
             model: String::new(),
@@ -3397,8 +4043,11 @@ mod tests {
             coordinator_session_id: String::new(),
             coordinator_agent: String::new(),
             coordinator_model: String::new(),
+            coordinator_terminal: TerminalRef::default(),
             auto_permissions: false,
             phases: Vec::new(),
+            terminals: BTreeMap::new(),
+            last_event_seq: 0,
             session_id: String::new(),
             prompt_id: String::new(),
             pending_prompt: String::new(),
@@ -3408,6 +4057,7 @@ mod tests {
             log_task_ref: String::new(),
             generation: 0,
             babysitter: false,
+            babysitter_terminal: TerminalRef::default(),
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),
             babysitter_prompt_id: String::new(),

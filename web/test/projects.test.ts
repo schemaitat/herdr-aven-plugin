@@ -115,9 +115,9 @@ describe('leased project collection', () => {
       throw new Error('Unexpected topology read');
     });
     await read('fast'); const snapshot = await read('slow');
-    expect(calls.every(kind => ['list', 'context'].includes(kind))).toBe(true);
+    expect(calls.every(kind => ['list', 'context', 'app'].includes(kind))).toBe(true);
     expect(snapshot.scope.project).toBe('other'); expect(snapshot.nodes.some(node => node.kind === 'attempt')).toBe(false);
-    expect(snapshot.health.find(item => item.source === 'herdr')?.message).toContain('not reused');
+    expect(snapshot.health.find(item => item.source === 'worktrees')?.status).toBe('unavailable');
   });
   it('reads the shared central store for every configured project and links its accepted attempt, agent and session', async () => {
     const root = await mkdtemp(join(scratchRoot, 'explorer-project-store-'));
@@ -134,7 +134,7 @@ describe('leased project collection', () => {
         if (command.kind === 'context') return selectedData.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);
         throw new Error('Unexpected command');
       };
-      const base = { scope: { ...scope, cwd: startup }, primary: startup, storePath: central, projectCheckouts: new Map([['other', selected]]) };
+      const base = { scope: { ...scope, cwd: startup }, primary: startup, storePath: central, terminalsPath: join(central, '..', 'terminals.json'), projectCheckouts: new Map([['other', selected]]) };
       const read = createGraphReader(await projectConfig(base, 'other'), runner);
       await read('fast'); const selectedGraph = await read('slow');
       const attempt = selectedGraph.nodes.find(node => node.kind === 'attempt');

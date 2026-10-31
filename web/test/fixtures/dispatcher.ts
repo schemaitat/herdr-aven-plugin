@@ -11,12 +11,13 @@ export function dispatcherFixture(): DispatcherFixture {
     attempts: {
       'ROOT01:implementation': {
         task_id: 'ROOT01', task_ref: 'DEMO-ROOT', workflow: 'implementation', attempt_id: 'attempt1', generation: 0,
-        execution_mode: 'worktrees', session_id: 'ses_root', coordinator_session_id: 'ses_root', pane: 'w1:p1', agent: 'same-name', coordinator_agent: 'same-name', state: 'running', worktree: '/repo', branch: 'main', created_at: 12,
-        babysitter_session_id: 'ses_baby', babysitter_pane: 'w1:p2',
+        execution_mode: 'worktrees', backend: 'hc', core_id: 'core-1', core_name: 'local-core', session_id: 'ses_root', coordinator_session_id: 'ses_root', coordinator_terminal: { core_id: 'core-1', address: 't1', role: 'coordinator', created_by_attempt: true }, terminal: { core_id: 'core-1', address: 't1', role: 'builder', created_by_attempt: true }, pane: 'w1:p1', agent: 'same-name', coordinator_agent: 'same-name', state: 'running', worktree: '/repo', branch: 'main', created_at: 12,
+        terminals: { coordinator: { core_id: 'core-1', address: 't1', state: 'live', status: 'working', program: 'opencode', recovery: '', turn: 4 } },
+        babysitter_session_id: 'ses_baby', babysitter_pane: 'w1:p2', babysitter_terminal: { core_id: 'core-1', address: 't2', role: 'babysitter', created_by_attempt: true },
         pending_prompt: 'NEVER_EXPOSE_PROMPT', aven: { headers: 'NEVER_EXPOSE_CREDENTIAL', origin_cwd: '/private' },
-        phases: [{ task_id: 'TASK01', task_ref: 'DEMO-ONE', session_id: 'ses_worker', pane: 'w2:p1', branch: 'phase1', worktree: '/repo-phase1', state: 'running' }],
+        phases: [{ task_id: 'TASK01', task_ref: 'DEMO-ONE', session_id: 'ses_worker', pane: 'w2:p1', terminal: { core_id: 'core-1', address: 't3', role: 'phase', created_by_attempt: true }, branch: 'phase1', worktree: '/repo-phase1', state: 'running' }],
       },
-      'ROOT01:planning': { task_id: 'ROOT01', task_ref: 'DEMO-ROOT', workflow: 'planning', attempt_id: 'attemptPlan', generation: 0, session_id: 'ses_plan', agent: 'same-name', state: 'idle', created_at: 10 },
+      'ROOT01:planning': { task_id: 'ROOT01', task_ref: 'DEMO-ROOT', workflow: 'planning', attempt_id: 'attemptPlan', generation: 0, backend: 'herdr', pane: 'w0:p1', session_id: 'ses_plan', agent: 'same-name', state: 'idle', created_at: 10 },
     },
   };
 }
