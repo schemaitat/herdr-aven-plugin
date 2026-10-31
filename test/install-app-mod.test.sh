@@ -24,6 +24,9 @@ assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding 
 [ -f "$app_home/mods/aven-tasks/mod.json" ] || fail 'mod.json not installed'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-a": "mod.open:other"' 'conflicting key unchanged'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-c": "terminal.copy"' 'unrelated section preserved'
+assert_file_contains "$app_home/keys.json" '"mod:aven-tasks"' 'overlay key section installed'
+assert_file_contains "$app_home/keys.json" '"o": "aven-tasks.open"' 'overlay open key installed'
+assert_file_contains "$app_home/keys.json" '"a": "aven-tasks.add"' 'overlay add key installed'
 [ -f "$app_home/keys.json.aven-backup" ] || fail 'changed keys need a backup'
 
 before=$(cat "$app_home/keys.json")

@@ -14,6 +14,9 @@ assert_file_contains "$PLUGIN_ROOT/app/main.js" 'terminal.peek' 'mod reveals hid
 assert_file_contains "$PLUGIN_ROOT/app/main.js" 'aven-tui-' 'mod reuses a live Aven TUI terminal'
 assert_file_contains "$PLUGIN_ROOT/app/mod.json" '"place": "none"' 'mod does not take layout space'
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'mod.open:aven-tasks' 'mod opens from an app command'
+assert_file_contains "$PLUGIN_ROOT/app/keys.json" '"mod:aven-tasks"' 'overlay keys are scoped to the mod'
+assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.open' 'overlay has an open key'
+assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.add' 'overlay has an add key'
 
 [ ! -e "$PLUGIN_ROOT/herdr-plugin.toml" ] || fail 'legacy herdr plugin manifest must be retired'
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'

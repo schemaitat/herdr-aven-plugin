@@ -2,5 +2,11 @@
   "global": {
     "ctrl-shift-a": "mod.open:aven-tasks",
     "ctrl-shift-u": "mod.open:aven-tasks"
+  },
+  "mod:aven-tasks": {
+    "o": "aven-tasks.open",
+    "a": "aven-tasks.add",
+    "r": "aven-tasks.refresh",
+    "escape": "aven-tasks.close"
   }
 }

@@ -3,7 +3,7 @@
 // ends dispatched work, and a missing app never affects dispatch.
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { closeOverlay, focused, hc, props, run, theme } from "herdr";
+import { closeOverlay, focused, hc, nextCommand, props, run, theme } from "herdr";
 
 const base = (path) => (path ?? "").replace(/\/+$/, "").split("/").pop() || path || "~";
 
@@ -15,8 +15,26 @@ export default class AvenTasks extends View {
     this.closed = false;
     this.refreshing = false;
     this.cwd = focused()?.cwd ?? null;
+    this.handle = cx.focus_handle();
+    this.handle.focus();
     this.refresh(cx);
     this.tick(cx);
+    this.commands(cx);
+  }
+
+  commands(cx) {
+    cx.spawn(async () => {
+      for (;;) {
+        const command = await nextCommand();
+        if (this.closed) return;
+        const name = String(command).split(".").pop();
+        if (name === "open") await this.launch("tui", cx);
+        else if (name === "add") await this.launch("compose", cx);
+        else if (name === "refresh") await this.refresh(cx);
+        else if (name === "close") this.close();
+        else cx.notify();
+      }
+    });
   }
 
   close() {
@@ -110,10 +128,21 @@ export default class AvenTasks extends View {
       .gap(4)
       .bg(t.popover)
       .text_size(13)
+      .track_focus(this.handle)
+      .on_key_down((event, cx) => {
+        const key = event.key;
+        if (key === "escape") this.close();
+        else if (key === "o") this.launch("tui", cx);
+        else if (key === "a") this.launch("compose", cx);
+        else if (key === "r") this.refresh(cx);
+        else return;
+        cx.stop_propagation();
+        cx.notify();
+      })
       .child(h_flex().px(10).pb(6).items_center().child(div().flex_1().text_size(15).font_semibold().text_color(t.foreground).child("Aven tasks")).child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(this.action("Open aven", "tui", () => this.launch("tui", this.cx)))
-      .child(this.action("Add a task", "composer", () => this.launch("compose", this.cx)))
-      .child(this.action("Refresh terminals", "live", () => this.refresh(this.cx)))
+      .child(this.action("Open aven", "o", () => this.launch("tui", this.cx)))
+      .child(this.action("Add a task", "a", () => this.launch("compose", this.cx)))
+      .child(this.action("Refresh terminals", "r", () => this.refresh(this.cx)))
       .when(this.error, el => el.child(div().px(10).py(6).text_size(11).text_color(t.blocked).child(this.error)))
       .when(dispatch.length > 0, el => el.child(h_flex().px(10).pt(8).pb(3).text_size(11).font_semibold().text_color(t.dim).child("Live terminals")).children(dispatch.map(terminal => h_flex()
         .mx(6)

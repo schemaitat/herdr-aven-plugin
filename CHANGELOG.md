@@ -34,7 +34,8 @@
   Herdr keybinding installer with the repository-owned optional
   `app/` herdr-app mod. `scripts/install-app-mod.sh` installs only owned mod
   files, merges free keys, preserves unrelated settings, and never replaces an
-  existing binding.
+  existing binding. Inside the overlay, `o` opens the Aven TUI, `a` opens the
+  add-task composer, `r` refreshes terminals, and `Esc` closes it.
 - Dashboard sources now split herdr-core terminal facts, `hc exec` Git worktree
   inventory, and optional herdr-app placement. Terminals are entities distinct
   from legacy panes; core status, persisted execution state, OpenCode API

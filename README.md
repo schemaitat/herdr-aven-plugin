@@ -486,6 +486,10 @@ aven project create "My app" --path "$PWD"
 | Keys | Action |
 | --- | --- |
 | `ctrl-shift-a` | Open the Aven overlay (when the app mod is installed) |
+| `o` | In the overlay: open the Aven TUI |
+| `a` | In the overlay: open Aven's add-task composer |
+| `r` | In the overlay: refresh live terminals |
+| `Esc` | In the overlay: close it |
 | `z d` in Aven | Dispatch the selected task |
 | `z s` in Aven | Plan then implement the selected task |
 | `z p` in Aven | Turn the selected task idea into a durable implementation plan |
