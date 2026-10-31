@@ -508,14 +508,20 @@ command; the other dispatch bindings use uppercase `D`, `P`, `I`, `B`, and
 1. Select a task and press `z d`.
 2. Choose an agent by number in the existing Aven terminal, or in a dedicated
    herdr-core picker terminal when dispatched outside Aven. The picker appears
-   even with one agent. `q` cancels without creating a session or prompt.
-3. Worktree discovery, creation, cleanliness checks, and integration run through
+   even with one agent. In the terminal picker, press `/` and type to filter
+   live: Up/Down (or PageUp/PageDown) move, Enter selects, Esc clears the
+   search or cancels when it is empty, and Ctrl-C always cancels. `q` also
+   cancels when the search is not active, without creating a session or prompt.
+3. Choose a model from every model enabled by your currently configured
+   OpenCode providers. The same live `/` search applies, so the list stays
+   workable as more providers and models are configured.
+4. Worktree discovery, creation, cleanliness checks, and integration run through
    `hc exec --cwd <repo> git ...`. The dispatcher creates the OpenCode session,
    starts the OpenCode CLI in a dedicated herdr-core terminal, and submits the
    task through the OpenCode V2 API. If herdr-app is running, the worktree gets
    a sidebar space named for the task and the terminal is labelled into its
    tab, so it is visible immediately. Headless dispatch is unchanged.
-4. Aven records the handoff and marks the task `active`. Prompt admission does
+5. Aven records the handoff and marks the task `active`. Prompt admission does
    **not** mean the task is complete, and a core status word is not acceptance.
 
 Dispatch works from the primary checkout **or any linked worktree**. You do
@@ -586,10 +592,16 @@ overwritten.
 Installed commands ask for an agent, then a model. Planning (`z p`) puts the
 `plan` agent and latest Sol model first; plan-and-implement (`z s`) and
 implementation (`z i`) put the `build` agent and latest Terra model first. The
-picker remains interactive, so any visible agent or supported model can still
-be selected. Entering `q` at either picker cancels the dispatch and removes the
-newly created herdr-core worktree. Edit `aven-commands.yaml` to add commands or
-change CLI options. For example:
+picker remains interactive, so any visible agent or any model enabled by a
+configured OpenCode provider can still be selected. At either picker, press `/`
+and type to filter live by name or `provider/model` id; Up/Down move the
+highlight, Enter selects, and Esc clears the filter or cancels. `q` cancels
+while no search is active, and Ctrl-C always cancels. When the picker input is
+piped (tests or scripts), a `/query` line filters and a number selects from the
+filtered list. Entering `q` at either picker cancels the dispatch and removes
+the newly created herdr-core worktree. If OpenCode cannot list models, the
+picker falls back to the built-in choices so dispatch can continue. Edit
+`aven-commands.yaml` to add commands or change CLI options. For example:
 
 ```yaml
 - name: dispatch-custom

@@ -55,8 +55,8 @@ case " $* " in
   *" GET /api/session/ses_"*) if [ -n "${OPENCODE_OUTCOME:-}" ]; then printf '{"data":{"outcome":"%s"}}\n' "$OPENCODE_OUTCOME"; else printf '%s\n' '{"data":{}}'; fi ;;
   *" GET /api/session?limit=1 "*) printf '%s\n' '{"data":[]}' ;;
   *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-  *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":true},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":true}]}' ;;
-  *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":true},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":true}]}' ;;
+  *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":false},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":false}]}' ;;
+  *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-5.6-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":false},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
@@ -135,6 +135,17 @@ assert_contains "$(sqlite_json "$babysitter_store")" '"babysitter": true' 'babys
 assert_contains "$(sqlite_json "$babysitter_store")" '"role": "babysitter"' 'babysitter terminal ownership persisted'
 assert_file_contains "$work/opencode.log" 'ses_babysitter' 'babysitter API session created and admitted'
 assert_file_contains "$log" 'aven.role=babysitter' 'babysitter terminal carries its role label'
+addresses=$(python3 - "$babysitter_store" <<'PY'
+import json, sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    payload = json.loads(db.execute("SELECT payload FROM attempts LIMIT 1").fetchone()[0])
+print(payload["terminal"]["address"], payload["babysitter_terminal"]["address"])
+PY
+)
+builder_address=${addresses% *}
+babysitter_address=${addresses#* }
+assert_file_contains "$work/opencode.log" "herdr-core terminal $builder_address for task" 'babysitter prompt names the builder terminal'
+assert_file_lacks "$work/opencode.log" "herdr-core terminal $babysitter_address for task" 'babysitter prompt never names its own terminal'
 
 # A crash between durable prompt checkpoint and admission is recovered by
 # rebuilding the deterministic prompt and admitting once.

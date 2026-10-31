@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- List every chat model enabled by the configured OpenCode providers in the
+  dispatcher's model picker instead of a curated GitHub Copilot list. The
+  listing is scoped to the dispatch worktree and falls back to the built-in
+  choices if OpenCode cannot answer.
+- Let the agent and model pickers filter live as you type after `/`, with
+  arrow-key navigation and Enter to select. Piped input keeps the numbered
+  line protocol for scripts and tests.
+- Stop hiding the bundled `aven-babysitter` and `aven-orchestrator` profiles.
+  OpenCode's TUI cannot adopt a hidden session agent, so an attached terminal
+  showed `build` and silently switched the session agent on the next prompt.
+  Existing installed copies of the previous bundled form are upgraded in place;
+  user-edited files are still never overwritten.
+- Point the babysitter's supervision prompt at the builder terminal instead of
+  its own pane, which previously instructed it to supervise itself.
+
 ## 1.0.0
 
 - Migrate the dispatcher runtime from the retired `herdr` plugin interface to

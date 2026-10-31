@@ -1,19 +1,29 @@
 #!/bin/sh
 # aven-dispatch pick renders choices in its own terminal and returns the exact
-# selected id through a private response file.
+# selected id through a private response file. A /query prefix fuzzy-filters.
 set -eu
 . "$(dirname "$0")/helpers.sh"
 
 work=$(mkworkdir)
 response=$work/response
 export AVEN_DISPATCH_PICKER_RESPONSE=$response
-export AVEN_DISPATCH_PICKER_CHOICES='  1. Build (build)
-  2. Plan (plan)'
+export AVEN_DISPATCH_PICKER_NAMES='Build
+Plan
+Review'
 export AVEN_DISPATCH_PICKER_IDS='build
-plan'
+plan
+review'
 
 printf '2\n' | cargo run --quiet -- pick --kind agent >/dev/null
 assert_eq "$(cat "$response")" "plan" 'selected id is returned exactly'
+
+rm -f "$response"
+printf '/rev\n1\n' | cargo run --quiet -- pick --kind agent >/dev/null
+assert_eq "$(cat "$response")" "review" 'fuzzy search selects from the filtered list'
+
+rm -f "$response"
+printf '/zzz\n2\n' | cargo run --quiet -- pick --kind agent >/dev/null
+assert_eq "$(cat "$response")" "cancelled" 'out-of-range selection after no matches cancels'
 
 rm -f "$response"
 printf 'q\n' | cargo run --quiet -- pick --kind model >/dev/null

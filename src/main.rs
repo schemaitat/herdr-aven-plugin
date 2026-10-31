@@ -1,5 +1,11 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    execute, queue,
+    terminal::{self, ClearType},
+};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -493,7 +499,14 @@ struct PrimaryAgent {
     model: Option<String>,
 }
 fn is_legacy_dispatcher_agent(agent_id: &str) -> bool {
-    matches!(agent_id, "babysitter" | "orchestrator")
+    // The `aven-*` profiles are installed globally and must stay visible so an
+    // attached OpenCode TUI adopts the session agent instead of falling back to
+    // `build`, which would switch the session on the next prompt. They remain
+    // dispatcher-owned, so they are still excluded from the agent picker.
+    matches!(
+        agent_id,
+        "babysitter" | "orchestrator" | BABYSITTER_AGENT_ID | ORCHESTRATOR_AGENT_ID
+    )
 }
 
 fn global_opencode_agents_dir() -> Result<PathBuf> {
@@ -503,14 +516,27 @@ fn global_opencode_agents_dir() -> Result<PathBuf> {
         .context("cannot resolve XDG_CONFIG_HOME or HOME for global OpenCode agents")?;
     Ok(config_dir.join("opencode/agents"))
 }
+/// Older bundled profiles marked the dispatcher agents `hidden: true`. OpenCode's
+/// TUI cannot adopt a hidden session agent, so an attached terminal falls back
+/// to `build` and switches the session on the next prompt. Recognize that exact
+/// prior bundled form so upgrades replace it; any genuine edit still blocks.
+fn is_previous_bundled_agent(existing: &str, bundled: &str) -> bool {
+    existing.replace("hidden: true\n", "") == bundled
+}
 fn install_agent_definition(directory: &Path, agent_id: &str, contents: &str) -> Result<PathBuf> {
     let destination = directory.join(format!("{agent_id}.md"));
     if destination.exists() {
-        if fs::read_to_string(&destination)? != contents {
-            bail!(
-                "global OpenCode agent {} already exists with different contents; refusing to overwrite user configuration",
-                destination.display()
-            );
+        let existing = fs::read_to_string(&destination)?;
+        if existing != contents {
+            if !is_previous_bundled_agent(&existing, contents) {
+                bail!(
+                    "global OpenCode agent {} already exists with different contents; refusing to overwrite user configuration",
+                    destination.display()
+                );
+            }
+            fs::write(&destination, contents).with_context(|| {
+                format!("upgrade bundled OpenCode agent {}", destination.display())
+            })?;
         }
         return Ok(destination);
     }
@@ -564,39 +590,438 @@ fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
         .collect())
 }
 
+/// Every chat model from every currently configured provider. The API is
+/// scoped to the worktree so provider configuration merged for that location
+/// is included, exactly as session creation will resolve it.
+fn available_models(worktree: &str) -> Result<Vec<(String, String)>> {
+    let output = opencode_text_in("GET", "/api/model", None, Some(Path::new(worktree)))?;
+    let response: Value = serde_json::from_str(&output).context("OpenCode model list response")?;
+    let models = response
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .context("/data")?;
+    let mut choices = Vec::new();
+    for model in models {
+        // The endpoint defaults to chat models; an explicit decision or image
+        // model can never serve a session.
+        if model
+            .pointer("/type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind != "chat")
+        {
+            continue;
+        }
+        if model.pointer("/enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(provider) = model.pointer("/providerID").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(id) = model
+            .pointer("/id")
+            .and_then(Value::as_str)
+            .or_else(|| model.pointer("/modelID").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let name = model.pointer("/name").and_then(Value::as_str).unwrap_or(id);
+        let reference = format!("{provider}/{id}");
+        if choices.iter().any(|(_, candidate)| candidate == &reference) {
+            continue;
+        }
+        choices.push((name.to_owned(), reference));
+    }
+    Ok(choices)
+}
+
+/// Subsequence fuzzy match. Higher scores mean denser and earlier matches;
+/// `None` means the query is not a subsequence of the candidate.
+fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
+    let mut score = 0;
+    let mut previous = None;
+    let mut candidate = candidate.chars().flat_map(char::to_lowercase).enumerate();
+    for query_character in query.chars().flat_map(char::to_lowercase) {
+        if query_character.is_whitespace() {
+            continue;
+        }
+        let (index, _) = candidate
+            .by_ref()
+            .find(|(_, candidate)| *candidate == query_character)?;
+        score += match previous {
+            Some(previous) if index == previous + 1 => 3,
+            Some(_) => 1,
+            None => 2,
+        };
+        previous = Some(index);
+    }
+    Some(score)
+}
+
+fn fuzzy_matches<'a>(choices: &'a [(String, String)], query: &str) -> Vec<&'a (String, String)> {
+    let mut matches = choices
+        .iter()
+        .filter_map(|choice| {
+            fuzzy_score(query, &format!("{} {}", choice.0, choice.1)).map(|score| (score, choice))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|left| std::cmp::Reverse(left.0));
+    matches.into_iter().map(|(_, choice)| choice).collect()
+}
+
+/// Shared terminal chooser. On a TTY the list filters live as characters are
+/// typed after `/`, with arrow-key navigation; piped input keeps the numbered
+/// line protocol used by tests and scripts.
+fn choose_from(
+    heading: &str,
+    choices: &[(String, String)],
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    interactive: bool,
+) -> Result<Option<String>> {
+    if choices.is_empty() {
+        bail!("no choices are available");
+    }
+    if interactive {
+        choose_from_interactive(heading, choices, output)
+    } else {
+        choose_from_lines(heading, choices, input, output)
+    }
+}
+
+fn choose_from_lines(
+    heading: &str,
+    choices: &[(String, String)],
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<Option<String>> {
+    writeln!(output, "{heading}\n")?;
+    let mut query: Option<String> = None;
+    loop {
+        let visible = match query.as_deref() {
+            Some(query) => fuzzy_matches(choices, query),
+            None => choices.iter().collect(),
+        };
+        for (index, (name, id)) in visible.iter().enumerate() {
+            writeln!(output, "  {}. {name} ({id})", index + 1)?;
+        }
+        if let Some(query) = query.as_deref() {
+            writeln!(
+                output,
+                "\n  {} of {} choices match \"{query}\".",
+                visible.len(),
+                choices.len()
+            )?;
+        }
+        if visible.is_empty() {
+            write!(output, "\nType / and a new query, or q to cancel: ")?;
+        } else if query.is_some() {
+            write!(
+                output,
+                "\nChoice [1-{}] of {} matching, / to search again, or q to cancel: ",
+                visible.len(),
+                choices.len()
+            )?;
+        } else {
+            write!(
+                output,
+                "\nChoice [1-{}], / to fuzzy search, or q to cancel: ",
+                visible.len()
+            )?;
+        }
+        output.flush()?;
+        let mut choice = String::new();
+        if input.read_line(&mut choice)? == 0 {
+            return Ok(None);
+        }
+        let choice = choice.trim();
+        if matches!(choice, "" | "q" | "Q") {
+            return Ok(None);
+        }
+        if let Some(search) = choice.strip_prefix('/') {
+            let search = search.trim();
+            query = if search.is_empty() {
+                None
+            } else {
+                Some(search.to_lowercase())
+            };
+            continue;
+        }
+        if let Ok(index) = choice.parse::<usize>()
+            && let Some(id) = index
+                .checked_sub(1)
+                .and_then(|index| visible.get(index))
+                .map(|choice| choice.1.clone())
+        {
+            return Ok(Some(id));
+        }
+        if visible.is_empty() {
+            writeln!(
+                output,
+                "No matches; refine the search with / or q to cancel."
+            )?;
+        } else {
+            writeln!(output, "Enter a number from 1 to {}, or q.", visible.len())?;
+        }
+    }
+}
+
+/// Live-filter state. Kept separate from I/O so filtering and navigation can
+/// be tested without a terminal.
+#[derive(Default)]
+struct PickerState {
+    query: String,
+    searching: bool,
+    selected: usize,
+}
+
+impl PickerState {
+    fn visible<'a>(&self, choices: &'a [(String, String)]) -> Vec<&'a (String, String)> {
+        if self.query.is_empty() {
+            choices.iter().collect()
+        } else {
+            fuzzy_matches(choices, &self.query)
+        }
+    }
+
+    fn clamp(&mut self, count: usize) {
+        self.selected = self.selected.min(count.saturating_sub(1));
+    }
+
+    fn down(&mut self, count: usize) {
+        if count == 0 {
+            self.selected = 0;
+        } else {
+            self.selected = (self.selected + 1) % count;
+        }
+    }
+
+    fn up(&mut self, count: usize) {
+        if count == 0 {
+            self.selected = 0;
+        } else if self.selected == 0 {
+            self.selected = count - 1;
+        } else {
+            self.selected -= 1;
+        }
+    }
+
+    fn type_character(&mut self, character: char) {
+        self.query.push(character);
+        self.selected = 0;
+    }
+
+    fn backspace(&mut self) {
+        self.query.pop();
+        self.selected = 0;
+    }
+}
+
+/// Restores canonical input and echoing even when the picker exits early.
+struct RawMode;
+impl RawMode {
+    fn enter() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+fn choose_from_interactive(
+    heading: &str,
+    choices: &[(String, String)],
+    output: &mut impl Write,
+) -> Result<Option<String>> {
+    let raw = RawMode::enter().context("enable interactive picker input")?;
+    execute!(output, terminal::EnterAlternateScreen, cursor::Hide)
+        .context("enter picker screen")?;
+    let result = interactive_pick_loop(heading, choices, output);
+    let restored = execute!(output, cursor::Show, terminal::LeaveAlternateScreen)
+        .context("leave picker screen");
+    drop(raw);
+    match result {
+        Ok(selection) => {
+            restored?;
+            Ok(selection)
+        }
+        Err(error) => {
+            let _ = restored;
+            Err(error)
+        }
+    }
+}
+
+fn interactive_pick_loop(
+    heading: &str,
+    choices: &[(String, String)],
+    output: &mut impl Write,
+) -> Result<Option<String>> {
+    let mut state = PickerState::default();
+    loop {
+        let visible = state.visible(choices);
+        state.clamp(visible.len());
+        render_picker(output, heading, choices.len(), &visible, &state)?;
+        let Event::Key(key) = event::read().context("read picker input")? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+            KeyCode::Esc => {
+                if state.query.is_empty() {
+                    return Ok(None);
+                }
+                state.query.clear();
+                state.searching = false;
+                state.selected = 0;
+            }
+            KeyCode::Enter => {
+                if let Some(choice) = visible.get(state.selected) {
+                    return Ok(Some(choice.1.clone()));
+                }
+            }
+            KeyCode::Up => state.up(visible.len()),
+            KeyCode::Down => state.down(visible.len()),
+            KeyCode::PageUp => state.selected = state.selected.saturating_sub(10),
+            KeyCode::PageDown => {
+                state.selected = (state.selected + 10).min(visible.len().saturating_sub(1));
+            }
+            KeyCode::Home => state.selected = 0,
+            KeyCode::End => state.selected = visible.len().saturating_sub(1),
+            KeyCode::Backspace if state.searching => state.backspace(),
+            KeyCode::Char('/') if !state.searching => {
+                state.searching = true;
+                state.query.clear();
+                state.selected = 0;
+            }
+            KeyCode::Char(character)
+                if state.searching
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                state.type_character(character);
+            }
+            KeyCode::Char('q') if !state.searching => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+fn truncate_chars(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_owned();
+    }
+    value
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>()
+        + "…"
+}
+
+fn render_picker(
+    output: &mut impl Write,
+    heading: &str,
+    total: usize,
+    visible: &[&(String, String)],
+    state: &PickerState,
+) -> Result<()> {
+    let (columns, rows) = match terminal::size() {
+        Ok((columns, rows)) if columns > 0 && rows > 0 => (columns, rows),
+        _ => (80, 24),
+    };
+    let width = usize::from(columns.max(20));
+    let capacity = usize::from(rows).saturating_sub(6).max(1);
+    let start = if visible.len() <= capacity {
+        0
+    } else {
+        state
+            .selected
+            .saturating_sub(capacity / 2)
+            .min(visible.len() - capacity)
+    };
+    let end = (start + capacity).min(visible.len());
+    queue!(
+        output,
+        terminal::Clear(ClearType::All),
+        cursor::MoveTo(0, 0)
+    )?;
+    writeln!(output, "{heading}\r")?;
+    if state.searching {
+        writeln!(output, "  fuzzy: /{}\r", state.query)?;
+    } else {
+        writeln!(output, "  press / to fuzzy search\r")?;
+    }
+    writeln!(output, "  {} of {} choices\r", visible.len(), total)?;
+    if visible.is_empty() {
+        writeln!(output, "  no matches\r")?;
+    }
+    for (offset, (name, id)) in visible[start..end].iter().enumerate() {
+        let index = start + offset;
+        let line = truncate_chars(
+            &format!("{:>3}. {name} ({id})", index + 1),
+            width.saturating_sub(4),
+        );
+        if index == state.selected {
+            writeln!(output, "  \x1b[7m{line}\x1b[0m\r")?;
+        } else {
+            writeln!(output, "  {line}\r")?;
+        }
+    }
+    writeln!(
+        output,
+        "\r  Up/Down move · Enter select · / search · Esc clear/cancel\r"
+    )?;
+    output.flush()?;
+    Ok(())
+}
+
 fn choose_agent(
     agents: &[PrimaryAgent],
     input: &mut impl BufRead,
     output: &mut impl Write,
+    interactive: bool,
 ) -> Result<String> {
-    writeln!(output, "Select an OpenCode agent:\n")?;
-    for (index, agent) in agents.iter().enumerate() {
-        writeln!(output, "  {}. {} ({})", index + 1, agent.name, agent.id)?;
-    }
-    loop {
-        write!(output, "\nChoice [1-{}], or q to cancel: ", agents.len())?;
-        output.flush()?;
-        let mut choice = String::new();
-        if input.read_line(&mut choice)? == 0 || matches!(choice.trim(), "" | "q" | "Q") {
-            bail!("OpenCode agent selection was canceled");
-        }
-        if let Ok(index) = choice.trim().parse::<usize>()
-            && let Some(agent) = index.checked_sub(1).and_then(|index| agents.get(index))
-        {
-            return Ok(agent.id.clone());
-        }
-        writeln!(output, "Enter a number from 1 to {}, or q.", agents.len())?;
-    }
+    let choices = agents
+        .iter()
+        .map(|agent| (agent.name.clone(), agent.id.clone()))
+        .collect::<Vec<_>>();
+    choose_from(
+        "Select an OpenCode agent:",
+        &choices,
+        input,
+        output,
+        interactive,
+    )?
+    .context("OpenCode agent selection was canceled")
 }
 
-fn model_choices(configured: Option<&str>, preferred: Option<&str>) -> Vec<(String, String)> {
+fn model_name<'a>(model: &str, available: &'a [(String, String)]) -> Option<&'a str> {
+    available
+        .iter()
+        .find(|(_, candidate)| candidate == model)
+        .map(|(name, _)| name.as_str())
+        .or_else(|| {
+            MODEL_CHOICES
+                .iter()
+                .find(|(_, candidate)| *candidate == model)
+                .map(|(name, _)| *name)
+        })
+}
+
+fn model_choices(
+    configured: Option<&str>,
+    preferred: Option<&str>,
+    available: &[(String, String)],
+) -> Vec<(String, String)> {
     let mut choices = Vec::new();
     if let Some(model) = preferred.filter(|model| !model.is_empty()) {
-        let name = MODEL_CHOICES
-            .iter()
-            .find(|(_, candidate)| *candidate == model)
-            .map(|(name, _)| *name)
-            .unwrap_or(model);
+        let name = model_name(model, available).unwrap_or(model);
         choices.push((format!("Preferred ({name})"), model.to_owned()));
     }
     if let Some(model) = configured.filter(|model| !model.is_empty())
@@ -604,9 +1029,19 @@ fn model_choices(configured: Option<&str>, preferred: Option<&str>) -> Vec<(Stri
     {
         choices.push((format!("Agent default ({model})"), model.to_owned()));
     }
-    for (name, model) in MODEL_CHOICES {
-        if !choices.iter().any(|(_, choice)| choice == model) {
-            choices.push(((*name).to_owned(), (*model).to_owned()));
+    // All configured providers come from the API. The curated list is only a
+    // fallback for an older server or a transient listing failure.
+    let source = if available.is_empty() {
+        MODEL_CHOICES
+            .iter()
+            .map(|(name, model)| ((*name).to_owned(), (*model).to_owned()))
+            .collect::<Vec<_>>()
+    } else {
+        available.to_vec()
+    };
+    for (name, model) in source {
+        if !choices.iter().any(|(_, choice)| *choice == model) {
+            choices.push((name, model));
         }
     }
     choices
@@ -616,25 +1051,16 @@ fn choose_model(
     choices: &[(String, String)],
     input: &mut impl BufRead,
     output: &mut impl Write,
+    interactive: bool,
 ) -> Result<String> {
-    writeln!(output, "Select an OpenCode model:\n")?;
-    for (index, (name, model)) in choices.iter().enumerate() {
-        writeln!(output, "  {}. {} ({})", index + 1, name, model)?;
-    }
-    loop {
-        write!(output, "\nChoice [1-{}], or q to cancel: ", choices.len())?;
-        output.flush()?;
-        let mut choice = String::new();
-        if input.read_line(&mut choice)? == 0 || matches!(choice.trim(), "" | "q" | "Q") {
-            bail!("OpenCode model selection was canceled");
-        }
-        if let Ok(index) = choice.trim().parse::<usize>()
-            && let Some((_, model)) = index.checked_sub(1).and_then(|index| choices.get(index))
-        {
-            return Ok(model.clone());
-        }
-        writeln!(output, "Enter a number from 1 to {}, or q.", choices.len())?;
-    }
+    choose_from(
+        "Select an OpenCode model:",
+        choices,
+        input,
+        output,
+        interactive,
+    )?
+    .context("OpenCode model selection was canceled")
 }
 
 fn picker(kind: &str, choices: &[(String, String)], store_path: &Path) -> Result<String> {
@@ -646,10 +1072,9 @@ fn picker(kind: &str, choices: &[(String, String)], store_path: &Path) -> Result
         .map(|(_, id)| id.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    let choices_text = choices
+    let names = choices
         .iter()
-        .enumerate()
-        .map(|(index, (name, id))| format!("  {}. {} ({})", index + 1, name, id))
+        .map(|(name, _)| name.replace(['\n', '\r'], " "))
         .collect::<Vec<_>>()
         .join("\n");
     let id = identifier("pick");
@@ -680,7 +1105,7 @@ fn picker(kind: &str, choices: &[(String, String)], store_path: &Path) -> Result
                 "AVEN_DISPATCH_PICKER_RESPONSE".into(),
                 response_text.clone(),
             ),
-            ("AVEN_DISPATCH_PICKER_CHOICES".into(), choices_text),
+            ("AVEN_DISPATCH_PICKER_NAMES".into(), names),
             ("AVEN_DISPATCH_PICKER_IDS".into(), ids),
         ],
         argv: vec![
@@ -692,7 +1117,9 @@ fn picker(kind: &str, choices: &[(String, String)], store_path: &Path) -> Result
     })?;
     // Revealing the picker is optional; submission waits for its response file.
     let _ = app::peek(&terminal.address);
-    for tick in 0..1200u32 {
+    // Interactive search can legitimately take a while; liveness is still
+    // checked below, so this is only a backstop against a wedged terminal.
+    for tick in 0..18000u32 {
         if response.exists() {
             let selected = fs::read_to_string(&response)?.trim().to_owned();
             let _ = fs::remove_file(&response);
@@ -720,7 +1147,12 @@ fn select_model(choices: &[(String, String)], store_path: &Path) -> Result<Strin
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             bail!("Aven terminal dispatch requires an interactive terminal");
         }
-        return choose_model(choices, &mut io::stdin().lock(), &mut io::stdout().lock());
+        return choose_model(
+            choices,
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+            true,
+        );
     }
     let choices = choices
         .iter()
@@ -769,7 +1201,12 @@ fn select_agent(
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             bail!("Aven terminal dispatch requires an interactive terminal");
         }
-        return choose_agent(&agents, &mut io::stdin().lock(), &mut io::stdout().lock());
+        return choose_agent(
+            &agents,
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+            true,
+        );
     }
     let choices = agents
         .iter()
@@ -1038,15 +1475,16 @@ fn wait_for_global_agent(agent_id: &str) -> Result<()> {
     bail!("global bundled {agent_id} agent is not discoverable")
 }
 fn babysitter_message(attempt: &Attempt) -> String {
+    // The babysitter must watch the builder terminal, never its own pane. The
+    // builder address is the one recorded for the build session above.
+    let builder_terminal = if attempt.terminal.address.is_empty() {
+        "its builder terminal"
+    } else {
+        attempt.terminal.address.as_str()
+    };
     format!(
         "Supervise build OpenCode session {} in herdr-core terminal {} for task {}. Begin the 60-second monitoring protocol now and stay with it until the task is verified resolved.",
-        attempt.session_id,
-        if attempt.babysitter_terminal.is_empty() {
-            &attempt.terminal.address
-        } else {
-            &attempt.babysitter_terminal.address
-        },
-        attempt.task_ref
+        attempt.session_id, builder_terminal, attempt.task_ref
     )
 }
 fn admit_babysitter(attempt: &mut Attempt, store: &mut LockedStore) -> Result<()> {
@@ -1900,8 +2338,21 @@ fn dispatch(
             Ok(configured) => configured,
             Err(error) => return Err(fail_provisioning(&attempt, error, &path)),
         };
+        let available = match available_models(&attempt.worktree) {
+            Ok(models) => models,
+            Err(error) => {
+                eprintln!(
+                    "warning: could not list configured OpenCode models; using built-in choices: {error:#}"
+                );
+                Vec::new()
+            }
+        };
         attempt.model = match select_model(
-            &model_choices(configured.as_deref(), preferred_model.as_deref()),
+            &model_choices(
+                configured.as_deref(),
+                preferred_model.as_deref(),
+                &available,
+            ),
             &path,
         ) {
             Ok(model) => model,
@@ -2909,8 +3360,8 @@ fn message(
 fn pick(kind: &str) -> Result<()> {
     let response = env::var("AVEN_DISPATCH_PICKER_RESPONSE")
         .context("AVEN_DISPATCH_PICKER_RESPONSE is not set")?;
-    let choices = env::var("AVEN_DISPATCH_PICKER_CHOICES")
-        .context("AVEN_DISPATCH_PICKER_CHOICES is not set")?;
+    let names =
+        env::var("AVEN_DISPATCH_PICKER_NAMES").context("AVEN_DISPATCH_PICKER_NAMES is not set")?;
     let ids =
         env::var("AVEN_DISPATCH_PICKER_IDS").context("AVEN_DISPATCH_PICKER_IDS is not set")?;
     let heading = match kind {
@@ -2918,19 +3369,22 @@ fn pick(kind: &str) -> Result<()> {
         "model" => "Select an OpenCode model:",
         other => bail!("unknown picker kind: {other}"),
     };
-    println!("{heading}\n\n{choices}\n\nChoice [1-], or q to cancel: ");
-    io::stdout().flush()?;
-    let mut choice = String::new();
-    let _ = io::stdin().read_line(&mut choice)?;
-    let selected = match choice.trim() {
-        "" | "q" | "Q" => "cancelled".to_owned(),
-        value => value
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| ids.lines().nth(index))
-            .map(str::to_owned)
-            .unwrap_or_else(|| "cancelled".into()),
+    let choices = names
+        .lines()
+        .zip(ids.lines())
+        .map(|(name, id)| (name.to_owned(), id.to_owned()))
+        .collect::<Vec<_>>();
+    let selected = if choices.is_empty() {
+        "cancelled".to_owned()
+    } else {
+        choose_from(
+            heading,
+            &choices,
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+            io::stdin().is_terminal() && io::stdout().is_terminal(),
+        )?
+        .unwrap_or_else(|| "cancelled".into())
     };
     let temporary = format!("{response}.new");
     fs::write(&temporary, format!("{selected}\n"))?;
@@ -3275,21 +3729,29 @@ mod tests {
             model: Some("github-copilot/gpt-5.6-terra".into()),
         }];
         let mut output = Vec::new();
-        assert!(choose_agent(&agents, &mut io::Cursor::new(""), &mut output).is_err());
+        assert!(choose_agent(&agents, &mut io::Cursor::new(""), &mut output, false).is_err());
         assert!(
             String::from_utf8(output)
                 .unwrap()
                 .contains("1. Build (build)")
         );
         assert_eq!(
-            choose_agent(&agents, &mut io::Cursor::new("0\n2\n1\n"), &mut Vec::new()).unwrap(),
+            choose_agent(
+                &agents,
+                &mut io::Cursor::new("0\n2\n1\n"),
+                &mut Vec::new(),
+                false
+            )
+            .unwrap(),
             "build"
         );
-        assert!(choose_agent(&agents, &mut io::Cursor::new("q\n"), &mut Vec::new()).is_err());
+        assert!(
+            choose_agent(&agents, &mut io::Cursor::new("q\n"), &mut Vec::new(), false).is_err()
+        );
     }
     #[test]
     fn configured_model_is_first_and_model_choice_requires_input() {
-        let choices = model_choices(Some("github-copilot/gpt-5.6-terra"), None);
+        let choices = model_choices(Some("github-copilot/gpt-5.6-terra"), None, &[]);
         assert_eq!(
             choices.first(),
             Some(&(
@@ -3298,19 +3760,133 @@ mod tests {
             ))
         );
         assert_eq!(
-            choose_model(&choices, &mut io::Cursor::new("0\n2\n"), &mut Vec::new()).unwrap(),
+            choose_model(
+                &choices,
+                &mut io::Cursor::new("0\n2\n"),
+                &mut Vec::new(),
+                false
+            )
+            .unwrap(),
             "github-copilot/gpt-6.1-sol"
         );
-        assert!(choose_model(&choices, &mut io::Cursor::new("q\n"), &mut Vec::new()).is_err());
+        assert!(
+            choose_model(
+                &choices,
+                &mut io::Cursor::new("q\n"),
+                &mut Vec::new(),
+                false
+            )
+            .is_err()
+        );
     }
     #[test]
     fn preferred_model_precedes_the_agent_default() {
         let choices = model_choices(
             Some("github-copilot/gpt-5.6-terra"),
             Some("github-copilot/gpt-6.1-sol"),
+            &[],
         );
         assert_eq!(choices[0].1, "github-copilot/gpt-6.1-sol");
         assert_eq!(choices[1].1, "github-copilot/gpt-5.6-terra");
+    }
+    #[test]
+    fn configured_provider_models_are_all_available() {
+        let available = vec![
+            (
+                "GPT-6.1 Terra".into(),
+                "github-copilot/gpt-6.1-terra".into(),
+            ),
+            (
+                "DeepSeek V4.1 Flash".into(),
+                "opencode-go/deepseek-v4.1-flash".into(),
+            ),
+        ];
+        let choices = model_choices(Some("github-copilot/gpt-6.1-terra"), None, &available);
+        assert_eq!(choices[0].1, "github-copilot/gpt-6.1-terra");
+        assert!(
+            choices
+                .iter()
+                .any(|(_, model)| model == "opencode-go/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            choose_model(
+                &choices,
+                &mut io::Cursor::new("/flash\n1\n"),
+                &mut Vec::new(),
+                false
+            )
+            .unwrap(),
+            "opencode-go/deepseek-v4.1-flash"
+        );
+    }
+    #[test]
+    fn fuzzy_search_filters_and_ranks_choices() {
+        let choices = vec![
+            (
+                "GPT-6.1 Sol".to_owned(),
+                "github-copilot/gpt-6.1-sol".to_owned(),
+            ),
+            (
+                "Claude Sonnet".to_owned(),
+                "github-copilot/claude-sonnet-5.5".to_owned(),
+            ),
+            (
+                "DeepSeek V4.1 Flash".to_owned(),
+                "opencode-go/deepseek-v4.1-flash".to_owned(),
+            ),
+        ];
+        let matches = fuzzy_matches(&choices, "dsf");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].1, "opencode-go/deepseek-v4.1-flash");
+        assert_eq!(fuzzy_matches(&choices, "clsn")[0].0, "Claude Sonnet");
+        assert!(fuzzy_matches(&choices, "zzz").is_empty());
+        assert_eq!(
+            choose_model(
+                &choices,
+                &mut io::Cursor::new("/sol\n1\n"),
+                &mut Vec::new(),
+                false
+            )
+            .unwrap(),
+            "github-copilot/gpt-6.1-sol"
+        );
+    }
+    #[test]
+    fn picker_state_filters_live_and_navigates() {
+        let choices = vec![
+            (
+                "GPT-6.1 Sol".to_owned(),
+                "github-copilot/gpt-6.1-sol".to_owned(),
+            ),
+            (
+                "Claude Sonnet".to_owned(),
+                "github-copilot/claude-sonnet-5.5".to_owned(),
+            ),
+            (
+                "DeepSeek V4.1 Flash".to_owned(),
+                "opencode-go/deepseek-v4.1-flash".to_owned(),
+            ),
+        ];
+        let mut state = PickerState {
+            searching: true,
+            ..PickerState::default()
+        };
+        for character in "flash".chars() {
+            state.type_character(character);
+        }
+        let visible = state.visible(&choices);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].1, "opencode-go/deepseek-v4.1-flash");
+        for _ in 0.."flash".len() {
+            state.backspace();
+        }
+        assert_eq!(state.visible(&choices).len(), choices.len());
+        state.down(3);
+        assert_eq!(state.selected, 1);
+        state.up(3);
+        assert_eq!(state.selected, 0);
+        state.up(3);
+        assert_eq!(state.selected, 2);
     }
     #[test]
     fn planning_and_implementation_have_separate_attempt_keys() {
@@ -3386,6 +3962,30 @@ mod tests {
         assert_eq!(destination, agents.join("aven-babysitter.md"));
     }
     #[test]
+    fn previous_bundled_agent_is_upgraded_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("opencode/agents");
+        fs::create_dir_all(&agents).unwrap();
+        let destination = agents.join("aven-babysitter.md");
+        let previous = BABYSITTER_AGENT.replace("mode: primary\n", "mode: primary\nhidden: true\n");
+        fs::write(&destination, &previous).unwrap();
+        install_agent_definition(&agents, BABYSITTER_AGENT_ID, BABYSITTER_AGENT).unwrap();
+        assert_eq!(fs::read_to_string(&destination).unwrap(), BABYSITTER_AGENT);
+    }
+    #[test]
+    fn differing_user_agent_is_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("opencode/agents");
+        fs::create_dir_all(&agents).unwrap();
+        let destination = agents.join("aven-babysitter.md");
+        fs::write(&destination, "user edit").unwrap();
+        let error = install_agent_definition(&agents, BABYSITTER_AGENT_ID, BABYSITTER_AGENT)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refusing to overwrite user configuration"));
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "user edit");
+    }
+    #[test]
     fn orchestrator_definition_monitors_every_phase_and_defers_final_integration() {
         assert!(ORCHESTRATOR_AGENT.contains("do not stop after the first worker"));
         assert!(ORCHESTRATOR_AGENT.contains("Prefer event- and wait-driven supervision"));
@@ -3418,8 +4018,31 @@ mod tests {
     fn legacy_dispatcher_agent_ids_are_not_selectable() {
         assert!(is_legacy_dispatcher_agent("babysitter"));
         assert!(is_legacy_dispatcher_agent("orchestrator"));
-        assert!(!is_legacy_dispatcher_agent("aven-babysitter"));
+        assert!(is_legacy_dispatcher_agent("aven-babysitter"));
+        assert!(is_legacy_dispatcher_agent("aven-orchestrator"));
         assert!(!is_legacy_dispatcher_agent("build"));
+    }
+    #[test]
+    fn babysitter_message_names_the_builder_terminal_only() {
+        let attempt: Attempt = serde_json::from_value(json!({
+            "task_id": "task",
+            "task_ref": "APP-1",
+            "workflow": "implementation",
+            "attempt_id": "att",
+            "branch": "branch",
+            "worktree": "/tmp",
+            "session_id": "ses_builder",
+            "prompt_id": "msg",
+            "state": "running",
+            "terminal": {"address": "t1"},
+            "babysitter_terminal": {"address": "t2"},
+            "aven": {},
+            "created_at": 0
+        }))
+        .unwrap();
+        let message = babysitter_message(&attempt);
+        assert!(message.contains("session ses_builder in herdr-core terminal t1"));
+        assert!(!message.contains("terminal t2"));
     }
     #[test]
     fn namespaced_skill_is_loaded_below_the_skills_root() {

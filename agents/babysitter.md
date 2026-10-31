@@ -1,7 +1,6 @@
 ---
 description: Autonomously supervise a herdr-core-managed build agent until its task is resolved
 mode: primary
-hidden: true
 model: github-copilot/gpt-6-luna
 steps: 1000
 ---
