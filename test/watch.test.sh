@@ -19,6 +19,7 @@ export HC_FIXTURE_CORE_NAME=fixture
 export HC_FIXTURE_FOLLOW=1
 export HC_FIXTURE_EVENTS=$state/events.ndjson
 export HC_BIN=$PLUGIN_ROOT/test/hc_fixture.py
+export HERDR_APP_BIN=$fake/herdr-app
 export AVEN_WORKTREE_ROOT=$work/worktrees
 export XDG_CONFIG_HOME=$work/config
 mkdir -p "$work/config"
@@ -47,6 +48,10 @@ case " $* " in
   *" GET /api/session?limit=1 "*) printf '%s\n' '{"data":[]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
+EOF
+cat > "$fake/herdr-app" <<'EOF'
+#!/bin/sh
+exit 1
 EOF
 chmod +x "$fake"/*
 

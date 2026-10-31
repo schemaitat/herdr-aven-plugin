@@ -27,6 +27,10 @@
 - Persist worktree ownership intent and the attempt reservation before pickers
   or OpenCode side effects, and remove exactly that reservation when
   provisioning fails.
+- When herdr-app is available, every dispatched worktree gets a sidebar space
+  named for the task. The attempt terminal is labelled with that space/tab so
+  it appears immediately; headless dispatch is unchanged when the app is
+  absent.
 - Add `dispatch --relaunch` for an explicit, safe migration of a legacy Herdr
   attempt's durable OpenCode session. Normal dispatch refuses legacy records
   rather than reinterpreting pane ids as core terminal addresses.

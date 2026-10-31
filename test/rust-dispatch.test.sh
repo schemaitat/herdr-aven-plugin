@@ -20,6 +20,7 @@ export HC_FIXTURE_LOG=$log
 export HC_FIXTURE_CORE_ID=fixture-core
 export HC_FIXTURE_CORE_NAME=fixture
 export HC_BIN=$PLUGIN_ROOT/test/hc_fixture.py
+export HERDR_APP_BIN=$fake/herdr-app
 export AVEN_WORKTREE_ROOT=$work/worktrees
 export XDG_CONFIG_HOME=$work/config
 mkdir -p "$work/config"
@@ -59,6 +60,31 @@ case " $* " in
   *) printf '%s\n' '{"data":[]}' ;;
 esac
 EOF
+cat > "$fake/herdr-app" <<'EOF'
+#!/bin/sh
+[ "${FAKE_APP:-}" = 1 ] || exit 1
+case "${1:-}" in
+  status) exit 0 ;;
+  ls)
+    if [ -f "$FAKE_APP_STATE" ]; then
+      folder=$(cat "$FAKE_APP_STATE")
+      printf '{"spaces":[{"id":"s1","name":"task","folder":"%s","tabs":[{"id":"tb1","active":true,"terminals":[{"terminal":"t-placeholder"}]}]}]}\n' "$folder"
+    else
+      printf '{"spaces":[]}\n'
+    fi
+    ;;
+  do)
+    printf 'app %s\n' "$*" >> "$FAKE_APP_LOG"
+    case " $* " in
+      *" space.new "*) folder=; while [ "$#" -gt 0 ]; do [ "$1" = --folder ] && { folder=$2; break; }; shift; done; printf '%s' "$folder" > "$FAKE_APP_STATE" ;;
+    esac
+    printf '{}\n'
+    ;;
+  *) exit 0 ;;
+esac
+EOF
+export FAKE_APP_STATE=$work/app-space
+export FAKE_APP_LOG=$work/app.log
 chmod +x "$fake"/*
 
 export AVEN_LOG=$work/aven.log
@@ -202,6 +228,16 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --onc
 assert_file_contains "$work/watch-once" 'reconciled' 'watch --once reconciles persisted attempts'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --status > "$work/watch-status"
 assert_file_contains "$work/watch-status" '"store"' 'watcher status reports its store'
+
+# With herdr-app available, a dispatched worktree gets a sidebar space and the
+# attempt terminal is labelled into that space's tab.
+app_store=$work/app.sqlite
+FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra <<EOF >/dev/null
+$context
+EOF
+assert_file_contains "$work/app.log" 'space.new' 'dispatch creates a worktree space in herdr-app'
+assert_file_contains "$log" 'herdr.space=s1' 'attempt terminal is labelled into the worktree space'
+assert_file_contains "$log" 'herdr.tab=tb1' 'attempt terminal is labelled into the worktree tab'
 
 # Reset invalidates execution while preserving Aven plan/status.
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reset APP-1 --yes > "$work/reset"

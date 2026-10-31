@@ -1097,7 +1097,7 @@ fn start_babysitter(
     store.save()?;
     let worktree = attempt.worktree.clone();
     let session_id = attempt.babysitter_session_id.clone();
-    launch_and_record(
+    let terminal = launch_and_record(
         attempt,
         "babysitter",
         &worktree,
@@ -1105,6 +1105,11 @@ fn start_babysitter(
         store_path,
         store,
     )?;
+    let _ = app::show_worktree(
+        &terminal.address,
+        &worktree,
+        &format!("Babysit {}", attempt.task_ref),
+    );
     admit_babysitter(attempt, store)
 }
 fn bundled_skill(skill: Option<String>, skills_dir: Option<PathBuf>) -> Result<Option<String>> {
@@ -1306,6 +1311,11 @@ fn provision_phase_worktrees(
         attempt.core_id = core.id.clone();
         attempt.core_name = core.name.clone();
         attempt.phases[index].terminal = terminal_ref_for(&core, &terminal, "phase", true);
+        let _ = app::show_worktree(
+            &terminal.address,
+            &resource.path,
+            &format!("{} {}", task.task_ref, task.title),
+        );
         attempt.terminals.insert(
             format!("phase:{}", task.task_id),
             terminal.observe(
@@ -1685,7 +1695,7 @@ fn dispatch(
         };
         let session_id = reopened.session_id.clone();
         let worktree = reopened.worktree.clone();
-        launch_and_record(
+        let terminal = launch_and_record(
             &mut reopened,
             role,
             &worktree,
@@ -1693,6 +1703,11 @@ fn dispatch(
             &path,
             &mut store,
         )?;
+        let _ = app::show_worktree(
+            &terminal.address,
+            &worktree,
+            &format!("{} {}", reopened.task_ref, selected.task.title),
+        );
         if reopened.babysitter {
             if reopened.babysitter_session_id.is_empty() {
                 // A prior dispatch can fail during babysitter discovery after
@@ -1954,6 +1969,11 @@ fn dispatch(
         &path,
         &mut store,
     )?;
+    let _ = app::show_worktree(
+        &terminal.address,
+        &worktree,
+        &format!("{} {}", attempt.task_ref, selected.task.title),
+    );
     attempt.state = "prompt-pending".into();
     let topology = (attempt.execution_mode == ExecutionMode::Worktrees)
         .then(|| coordinator_topology(&attempt));

@@ -383,6 +383,14 @@ pub(crate) fn get(address: &str) -> Result<Terminal> {
     parse_terminal(&value)
 }
 
+pub(crate) fn label(address: &str, labels: &[(String, String)]) -> Result<Terminal> {
+    let mut args = vec!["label".into(), address.into(), "--json".into()];
+    for (key, value) in labels {
+        args.push(format!("{key}={value}"));
+    }
+    parse_terminal(&run_json(&args)?)
+}
+
 pub(crate) fn kill(address: &str) -> Result<Terminal> {
     parse_terminal(&run_json(&[
         "kill".into(),

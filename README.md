@@ -512,7 +512,9 @@ command; the other dispatch bindings use uppercase `D`, `P`, `I`, `B`, and
 3. Worktree discovery, creation, cleanliness checks, and integration run through
    `hc exec --cwd <repo> git ...`. The dispatcher creates the OpenCode session,
    starts the OpenCode CLI in a dedicated herdr-core terminal, and submits the
-   task through the OpenCode V2 API.
+   task through the OpenCode V2 API. If herdr-app is running, the worktree gets
+   a sidebar space named for the task and the terminal is labelled into its
+   tab, so it is visible immediately. Headless dispatch is unchanged.
 4. Aven records the handoff and marks the task `active`. Prompt admission does
    **not** mean the task is complete, and a core status word is not acceptance.
 
