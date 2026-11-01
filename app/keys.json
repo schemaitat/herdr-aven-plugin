@@ -6,6 +6,7 @@
   "mod:aven-tasks": {
     "o": "aven-tasks.open",
     "a": "aven-tasks.add",
+    "i": "aven-tasks.inspect",
     "r": "aven-tasks.refresh",
     "escape": "aven-tasks.close"
   }

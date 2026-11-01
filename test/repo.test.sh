@@ -28,6 +28,9 @@ for agent in agents/babysitter.md agents/orchestrator.md; do
   assert_contains "$body" 'herdr-core'
   assert_not_contains "$body" 'herdr pane'
   assert_not_contains "$body" 'herdr status'
+  # Hidden primary agents cannot be adopted by an attached OpenCode TUI, which
+  # would show `build` and switch the session agent on the next prompt.
+  assert_not_contains "$body" 'hidden: true'
 done
 
 printf 'repo ok\n'

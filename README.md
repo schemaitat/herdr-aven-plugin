@@ -36,6 +36,53 @@ For the dashboard, install Node 24 LTS and run `just ui-install` once.
 
 ## Getting started
 
+### Dispatcher inspector
+
+```sh
+aven-dispatch tui --project HAP
+just tui
+```
+
+The inspector is a keyboard-driven, read-only k9s-style view of the same
+scoped snapshot used by diagnostics. It shows overview, task/epic, attempt,
+session/agent and herdr-core terminal tables, with worktree placement, source
+health and provenance in details. Aven acceptance, persisted dispatcher state,
+OpenCode API activity and terminal observations remain separate; missing,
+stale, capped or contradictory evidence is labelled accordingly.
+
+Keys: `j`/`k` or arrows move, `PgUp`/`PgDn` page, `Home`/`End` jump, `/` searches
+labels/refs/IDs, `:` selects `overview`, `tasks`, `attempts`, `sessions` or
+`terminals`, `f` cycles a state filter, `e` toggles epic-only, `S` reverses
+sort, `i` opens details, `Enter` focuses the selected resource's explicitly
+owned terminal (or opens a chooser), `r` refreshes, `?` opens help, `Esc`
+closes/cancels the active surface, and `q`/Ctrl+C quits.
+
+Aven/dispatcher reads refresh about every five seconds and herdr-core/API reads
+about every two. Each lane has at most one read in flight, refresh requests
+coalesce, and failed refreshes retain last-good rows as visibly stale. Live API
+activity expires after 4.5 seconds and becomes unknown rather than idle. Reads
+are bounded (500 tasks per list, 80 context admissions per cycle, 2,000
+attempts, 64 linked sessions, 4,000 terminals, 4 MiB responses, four workers,
+four-second timeouts) and never migrate or mutate the dispatcher store.
+
+Enter resolves only explicitly persisted terminal ownership from an attempt,
+phase, session or terminal row. Multiple candidates open an in-TUI chooser;
+cancellation performs no focus call. Immediately before revealing the target,
+the inspector revalidates the herdr-core identity, exact terminal liveness and
+ownership labels, then asks the optional herdr-app to focus or peek that exact
+terminal. Missing, replaced, moved-to-another-core, timed-out or errored
+targets fail visibly without fallback, input forwarding or Aven/store mutation.
+Standalone inspection keeps running after a successful focus.
+
+Diagnostics:
+
+```sh
+aven-dispatch inspect --json
+```
+
+The optional herdr-app mod adds a **Dispatcher inspector** action (`i`) that
+starts the same TUI in a dedicated `aven-inspector-*` terminal and reveals it.
+
 ### Optional read-only local dashboard
 
 The separate `web/` package requires **Node 24 LTS and npm**; terminal plugin
@@ -508,14 +555,20 @@ command; the other dispatch bindings use uppercase `D`, `P`, `I`, `B`, and
 1. Select a task and press `z d`.
 2. Choose an agent by number in the existing Aven terminal, or in a dedicated
    herdr-core picker terminal when dispatched outside Aven. The picker appears
-   even with one agent. `q` cancels without creating a session or prompt.
-3. Worktree discovery, creation, cleanliness checks, and integration run through
+   even with one agent. In the terminal picker, press `/` and type to filter
+   live: Up/Down (or PageUp/PageDown) move, Enter selects, Esc clears the
+   search or cancels when it is empty, and Ctrl-C always cancels. `q` also
+   cancels when the search is not active, without creating a session or prompt.
+3. Choose a model from every model enabled by your currently configured
+   OpenCode providers. The same live `/` search applies, so the list stays
+   workable as more providers and models are configured.
+4. Worktree discovery, creation, cleanliness checks, and integration run through
    `hc exec --cwd <repo> git ...`. The dispatcher creates the OpenCode session,
    starts the OpenCode CLI in a dedicated herdr-core terminal, and submits the
    task through the OpenCode V2 API. If herdr-app is running, the worktree gets
    a sidebar space named for the task and the terminal is labelled into its
    tab, so it is visible immediately. Headless dispatch is unchanged.
-4. Aven records the handoff and marks the task `active`. Prompt admission does
+5. Aven records the handoff and marks the task `active`. Prompt admission does
    **not** mean the task is complete, and a core status word is not acceptance.
 
 Dispatch works from the primary checkout **or any linked worktree**. You do
@@ -602,14 +655,21 @@ overwritten.
 Installed commands ask for an agent, then a model. Planning (`z p`) puts the
 `plan` agent and latest Sol model first; plan-and-implement (`z s`) and
 implementation (`z i`) put the `build` agent and latest Terra model first. The
-picker remains interactive, so any visible agent or supported model can still
-be selected. Entering `q` at either picker cancels the dispatch and removes the
-newly created herdr-core worktree. Edit `aven-commands.yaml` to add commands or
-change CLI options. `--model` / `AVEN_DISPATCH_MODEL` selects the build or
-phase worker. The optional babysitter and the worktree coordinator have
-independent `--babysitter-model` and `--orchestrator-model` overrides, so
-supervision can use a different model without changing worker behavior; all
-three apply only when the corresponding session is created. For example:
+picker remains interactive, so any visible agent or any model enabled by a
+configured OpenCode provider can still be selected. At either picker, press `/`
+and type to filter live by name or `provider/model` id; Up/Down move the
+highlight, Enter selects, and Esc clears the filter or cancels. `q` cancels
+while no search is active, and Ctrl-C always cancels. When the picker input is
+piped (tests or scripts), a `/query` line filters and a number selects from the
+filtered list. Entering `q` at either picker cancels the dispatch and removes
+the newly created herdr-core worktree. If OpenCode cannot list models, the
+picker falls back to the built-in choices so dispatch can continue. Edit
+`aven-commands.yaml` to add commands or change CLI options. `--model` /
+`AVEN_DISPATCH_MODEL` selects the build or phase worker. The optional babysitter
+and the worktree coordinator have independent `--babysitter-model` and
+`--orchestrator-model` overrides, so supervision can use a different model
+without changing worker behavior; all three apply only when the corresponding
+session is created. For example:
 
 ```yaml
 - name: dispatch-custom
@@ -727,6 +787,7 @@ retained approved plan can be dispatched again without duplicate planning.
 just fmt       # Check Rust formatting
 just check     # Compile checks
 just test      # Rust unit tests and shell/integration fixtures
+just test-tui  # Inspector rendering, stalled-source, terminal and focus-effect PTY checks
 just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
 just app-check # herdr-app check app
 just ui-check  # Dashboard TypeScript
