@@ -1444,7 +1444,11 @@ fn launch_opencode_terminal(
             "AVEN_DISPATCH_STORE".into(),
             store_path.to_string_lossy().to_string(),
         )],
-        argv: vec!["opencode".into(), "--session".into(), session_id.into()],
+        argv: vec![
+            process::opencode_binary()?,
+            "--session".into(),
+            session_id.into(),
+        ],
     })?;
     Ok((core, terminal, true))
 }

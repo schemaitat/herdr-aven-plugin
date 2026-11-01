@@ -23,6 +23,13 @@
   ref and records whether the panel was created, so re-dispatch never
   duplicates it. The empty shell started by `space.new` is removed once the
   attempt terminal is adopted. Aven and dispatcher data stay read-only.
+- Resolve the OpenCode executable before launching it and pass the absolute path
+  to herdr-core. A core started by the desktop app can have a smaller `PATH`
+  that omits `~/.opencode/bin`, which previously made the agent terminal exit
+  127 even though the dispatcher's API calls worked. The dispatcher now checks
+  `OPENCODE_BIN`, the first `opencode` on `PATH`, `~/.opencode/bin`,
+  `~/.local/bin`, standard bin directories, and reports those locations if none
+  exist.
 
 ## 1.0.0
 

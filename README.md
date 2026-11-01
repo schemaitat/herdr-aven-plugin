@@ -646,6 +646,7 @@ deterministic task worktree branch.
 | `AVEN_DISPATCH_ORCHESTRATOR_MODEL` | Worktree coordinator model as `provider/model[#variant]`; also accepts `--orchestrator-model`; defaults to `github-copilot/gpt-6-luna` and applies only in `worktrees` mode |
 | `AVEN_WORKTREE_ROOT` | Worktree root override; defaults to `~/.herdr/worktrees` |
 | `HC_BIN` | herdr-core executable override; defaults to `hc` |
+| `OPENCODE_BIN` | OpenCode executable override; defaults to the first `opencode` on `PATH`, then `~/.opencode/bin`, `~/.local/bin`, and the standard bin directories |
 | `HERDR_APP_BIN` | herdr-app executable override; defaults to `herdr-app` |
 | `HC_SESSION` | Isolated herdr-core session for integration tests; never set it for normal work |
 

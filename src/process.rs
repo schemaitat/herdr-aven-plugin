@@ -341,6 +341,63 @@ pub(crate) fn opencode_in(
 pub(crate) fn opencode_text(method: &str, path: &str, data: Option<Value>) -> Result<String> {
     opencode_text_in(method, path, data, None)
 }
+
+/// Resolve the OpenCode executable in the dispatcher's environment. herdr-core
+/// may run with a smaller `PATH` than the dispatcher (for example when the
+/// desktop app starts the core), so terminal launches must not rely on the
+/// core's `PATH`. `OPENCODE_BIN` is the explicit override, `PATH` selects
+/// normally, and the usual install locations are the fallback when a
+/// core-launched dispatcher inherits only the core's minimal environment.
+pub(crate) fn opencode_binary() -> Result<String> {
+    if let Some(binary) = env::var_os("OPENCODE_BIN").filter(|value| !value.is_empty()) {
+        return Ok(binary.to_string_lossy().into_owned());
+    }
+    let name = if cfg!(windows) {
+        "opencode.exe"
+    } else {
+        "opencode"
+    };
+    if let Some(found) = executable_in(env::var_os("PATH").as_deref(), "opencode") {
+        return Ok(found.to_string_lossy().into_owned());
+    }
+    let mut searched = vec!["PATH".to_owned()];
+    let mut candidates = Vec::new();
+    if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".opencode/bin").join(name));
+        candidates.push(home.join(".local/bin").join(name));
+        candidates.push(home.join("bin").join(name));
+    }
+    if let Some(bin) = env::var_os("XDG_BIN_HOME").filter(|value| !value.is_empty()) {
+        candidates.push(PathBuf::from(bin).join(name));
+    }
+    candidates.extend(
+        ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"]
+            .iter()
+            .map(|directory| Path::new(directory).join(name)),
+    );
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+        searched.push(candidate.display().to_string());
+    }
+    bail!(
+        "cannot find the OpenCode executable; set OPENCODE_BIN or install OpenCode (searched: {})",
+        searched.join(", ")
+    )
+}
+
+fn executable_in(path: Option<&OsStr>, name: &str) -> Option<PathBuf> {
+    let name = if cfg!(windows) && !name.ends_with(".exe") {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    env::split_paths(path?)
+        .map(|directory| directory.join(&name))
+        .find(|candidate| candidate.is_file())
+}
 pub(crate) fn header_value(value: &str) -> String {
     value
         .bytes()
@@ -374,7 +431,8 @@ pub(crate) fn opencode_text_in(
     if let Some(data) = data {
         args.extend(["--data".into(), serde_json::to_string(&data)?]);
     }
-    run_in("opencode", &args, None, directory)
+    let program = opencode_binary()?;
+    run_in(&program, &args, None, directory)
 }
 pub(crate) fn field<'a>(value: &'a Value, pointer: &str) -> Result<&'a str> {
     value
@@ -519,4 +577,24 @@ pub(crate) fn read_only_store_payloads(path: &Path, limit: usize) -> Result<Vec<
         }
     }
     Ok(payloads)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_executable_from_the_dispatcher_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join(if cfg!(windows) {
+            "opencode.exe"
+        } else {
+            "opencode"
+        });
+        std::fs::write(&binary, b"").unwrap();
+        let path = env::join_paths([dir.path()]).unwrap();
+        assert_eq!(executable_in(Some(&path), "opencode"), Some(binary));
+        assert_eq!(executable_in(Some(&path), "missing"), None);
+        assert_eq!(executable_in(None, "opencode"), None);
+    }
 }

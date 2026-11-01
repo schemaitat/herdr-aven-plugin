@@ -108,6 +108,7 @@ worktree=$work/worktrees/repo/app-dispatch-immutable-task
 assert_file_contains "$log" '"exec"' 'worktree operations use hc exec'
 assert_file_contains "$log" '"worktree", "add"' 'hc exec runs git worktree add'
 assert_file_contains "$log" '"run"' 'agent launch uses hc run'
+assert_file_contains "$log" "$fake/opencode" 'terminal launch uses the resolved OpenCode executable'
 assert_file_contains "$log" '--outlive-parent' 'dispatch terminals outlive the short-lived dispatcher'
 assert_file_contains "$log" '--no-parent' 'dispatch terminals are not tied to a popup process'
 assert_file_contains "$log" 'AVEN_DISPATCH_STORE=' 'terminal inherits the central store'
