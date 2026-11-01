@@ -382,3 +382,141 @@ pub(crate) fn field<'a>(value: &'a Value, pointer: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .context(pointer.to_owned())
 }
+
+/// Run a read-only source command with a hard deadline and a combined
+/// stdout/stderr byte cap. Inspector collection never uses the unbounded
+/// lifecycle runner: a stalled Aven/hc call must not freeze the caller.
+pub(crate) fn run_bounded(
+    program: &str,
+    args: &[String],
+    directory: Option<&Path>,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<String> {
+    use std::{
+        io::Read,
+        process::Stdio,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Instant,
+    };
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("start {program}"))?;
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take().context("capture source stdout")?;
+    let stderr = child.stderr.take().context("capture source stderr")?;
+    let read = |mut stream: Box<dyn Read + Send>, overflow: Arc<AtomicBool>| {
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if output.len() + count > max_bytes {
+                            output.extend_from_slice(
+                                &chunk[..max_bytes.saturating_sub(output.len())],
+                            );
+                            overflow.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        output.extend_from_slice(&chunk[..count]);
+                    }
+                    Err(_) => break,
+                }
+            }
+            output
+        })
+    };
+    let stdout = read(Box::new(stdout), Arc::clone(&overflow));
+    let stderr = read(Box::new(stderr), Arc::clone(&overflow));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if overflow.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{program} exceeded the {max_bytes}-byte source output limit");
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{program} timed out after {} ms", timeout.as_millis());
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    if overflow.load(Ordering::SeqCst) {
+        bail!("{program} exceeded the {max_bytes}-byte source output limit");
+    }
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        bail!("{} failed: {}", program, detail.trim());
+    }
+    String::from_utf8(stdout)
+        .map(|value| value.trim().to_owned())
+        .with_context(|| format!("{program} returned non-UTF-8 output"))
+}
+
+/// Read dispatcher attempt payloads without creating directories, configuring
+/// SQLite or migrating the schema. Inspector paths must never enter
+/// [`LockedStore::open`].
+pub(crate) fn read_only_store_payloads(path: &Path, limit: usize) -> Result<Vec<String>> {
+    if !path.exists() {
+        bail!("dispatcher store {} does not exist", path.display());
+    }
+    if !path.is_file() {
+        bail!("dispatcher store {} is not a file", path.display());
+    }
+    let connection = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("open dispatcher store {} read-only", path.display()))?;
+    connection.busy_timeout(Duration::from_millis(1000))?;
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > SCHEMA_VERSION {
+        bail!(
+            "dispatcher store schema version {version} is newer than supported version {SCHEMA_VERSION}"
+        );
+    }
+    if version == 0 {
+        let table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attempts'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if table.is_none() {
+            bail!("dispatcher store schema version 0 has no attempts table");
+        }
+    }
+    let mut statement = connection
+        .prepare("SELECT payload FROM attempts ORDER BY created_at, task_id, workflow LIMIT ?1")?;
+    let rows = statement.query_map([(limit + 1) as i64], |row| row.get::<_, String>(0))?;
+    let mut payloads = Vec::new();
+    for row in rows {
+        payloads.push(row?);
+        if payloads.len() > limit {
+            bail!("dispatcher store exceeds the {limit}-attempt limit");
+        }
+    }
+    Ok(payloads)
+}

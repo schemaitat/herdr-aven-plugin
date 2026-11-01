@@ -36,6 +36,53 @@ For the dashboard, install Node 24 LTS and run `just ui-install` once.
 
 ## Getting started
 
+### Dispatcher inspector
+
+```sh
+aven-dispatch tui --project HAP
+just tui
+```
+
+The inspector is a keyboard-driven, read-only k9s-style view of the same
+scoped snapshot used by diagnostics. It shows overview, task/epic, attempt,
+session/agent and herdr-core terminal tables, with worktree placement, source
+health and provenance in details. Aven acceptance, persisted dispatcher state,
+OpenCode API activity and terminal observations remain separate; missing,
+stale, capped or contradictory evidence is labelled accordingly.
+
+Keys: `j`/`k` or arrows move, `PgUp`/`PgDn` page, `Home`/`End` jump, `/` searches
+labels/refs/IDs, `:` selects `overview`, `tasks`, `attempts`, `sessions` or
+`terminals`, `f` cycles a state filter, `e` toggles epic-only, `S` reverses
+sort, `i` opens details, `Enter` focuses the selected resource's explicitly
+owned terminal (or opens a chooser), `r` refreshes, `?` opens help, `Esc`
+closes/cancels the active surface, and `q`/Ctrl+C quits.
+
+Aven/dispatcher reads refresh about every five seconds and herdr-core/API reads
+about every two. Each lane has at most one read in flight, refresh requests
+coalesce, and failed refreshes retain last-good rows as visibly stale. Live API
+activity expires after 4.5 seconds and becomes unknown rather than idle. Reads
+are bounded (500 tasks per list, 80 context admissions per cycle, 2,000
+attempts, 64 linked sessions, 4,000 terminals, 4 MiB responses, four workers,
+four-second timeouts) and never migrate or mutate the dispatcher store.
+
+Enter resolves only explicitly persisted terminal ownership from an attempt,
+phase, session or terminal row. Multiple candidates open an in-TUI chooser;
+cancellation performs no focus call. Immediately before revealing the target,
+the inspector revalidates the herdr-core identity, exact terminal liveness and
+ownership labels, then asks the optional herdr-app to focus or peek that exact
+terminal. Missing, replaced, moved-to-another-core, timed-out or errored
+targets fail visibly without fallback, input forwarding or Aven/store mutation.
+Standalone inspection keeps running after a successful focus.
+
+Diagnostics:
+
+```sh
+aven-dispatch inspect --json
+```
+
+The optional herdr-app mod adds a **Dispatcher inspector** action (`i`) that
+starts the same TUI in a dedicated `aven-inspector-*` terminal and reveals it.
+
 ### Optional read-only local dashboard
 
 The separate `web/` package requires **Node 24 LTS and npm**; terminal plugin
@@ -705,6 +752,7 @@ retained approved plan can be dispatched again without duplicate planning.
 just fmt       # Check Rust formatting
 just check     # Compile checks
 just test      # Rust unit tests and shell/integration fixtures
+just test-tui  # Inspector rendering, stalled-source, terminal and focus-effect PTY checks
 just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
 just app-check # herdr-app check app
 just ui-check  # Dashboard TypeScript

@@ -17,8 +17,10 @@ use std::{
 
 mod app;
 mod core;
+mod inspect;
 mod model;
 mod process;
+mod tui;
 mod watch;
 mod worktrees;
 
@@ -164,6 +166,33 @@ enum Commands {
         /// Print the reset inventory without changing Aven, the store, or sessions.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Open the keyboard-driven read-only dispatcher inspector.
+    Tui {
+        /// Aven project key; inferred from the repository when omitted.
+        #[arg(long)]
+        project: Option<String>,
+        /// Aven workspace key; defaults to the Aven default workspace.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Directory used to infer the project and repository.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Read a scoped, sanitized correlation snapshot without mutating state.
+    Inspect {
+        /// Aven project key; inferred from the repository when omitted.
+        #[arg(long)]
+        project: Option<String>,
+        /// Aven workspace key; defaults to the Aven default workspace.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Directory used to infer the project and repository.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Print the immutable snapshot as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Validate local Aven and OpenCode V2 capabilities without mutation.
     Doctor,
@@ -3710,6 +3739,28 @@ fn main() -> Result<()> {
             reconcile_all,
         } => watch_command(path, once, stop, status, interval, reconcile_all),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
+        Commands::Inspect {
+            project,
+            workspace,
+            cwd,
+            json,
+        } => inspect::run(inspect::Args {
+            project,
+            workspace,
+            cwd,
+            store: path,
+            json,
+        }),
+        Commands::Tui {
+            project,
+            workspace,
+            cwd,
+        } => tui::run(tui::Args {
+            project,
+            workspace,
+            cwd,
+            store: path,
+        }),
         Commands::Doctor => doctor(&path),
     };
     if let Err(error) = &result {

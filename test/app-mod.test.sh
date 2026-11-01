@@ -17,6 +17,9 @@ assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'mod.open:aven-tasks' 'mod ope
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" '"mod:aven-tasks"' 'overlay keys are scoped to the mod'
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.open' 'overlay has an open key'
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.add' 'overlay has an add key'
+assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.inspect' 'overlay has an inspector key'
+assert_file_contains "$PLUGIN_ROOT/app/main.js" 'aven-inspector-' 'mod reuses a live inspector terminal'
+assert_file_contains "$PLUGIN_ROOT/app/main.js" '"aven-dispatch", "tui"' 'mod launches the Rust inspector'
 
 [ ! -e "$PLUGIN_ROOT/herdr-plugin.toml" ] || fail 'legacy herdr plugin manifest must be retired'
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'
