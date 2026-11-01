@@ -1610,6 +1610,8 @@ fn start_babysitter(
         &terminal.address,
         &worktree,
         &format!("Babysit {}", attempt.task_ref),
+        &attempt.task_ref,
+        &mut attempt.aven_panel,
     );
     admit_babysitter(attempt, store)
 }
@@ -1786,6 +1788,7 @@ fn provision_phase_worktrees(
             worktree_created_by_attempt: resource.created_by_attempt,
             terminal: TerminalRef::default(),
             pane: String::new(),
+            aven_panel: false,
             session_id: session_id.clone(),
             prompt_id: String::new(),
             pending_prompt: String::new(),
@@ -1816,6 +1819,8 @@ fn provision_phase_worktrees(
             &terminal.address,
             &resource.path,
             &format!("{} {}", task.task_ref, task.title),
+            &task.task_ref,
+            &mut attempt.phases[index].aven_panel,
         );
         attempt.terminals.insert(
             format!("phase:{}", task.task_id),
@@ -2210,6 +2215,8 @@ fn dispatch(
             &terminal.address,
             &worktree,
             &format!("{} {}", reopened.task_ref, selected.task.title),
+            &reopened.task_ref,
+            &mut reopened.aven_panel,
         );
         if reopened.babysitter {
             if reopened.babysitter_session_id.is_empty() {
@@ -2314,6 +2321,7 @@ fn dispatch(
         core_name: String::new(),
         terminal: TerminalRef::default(),
         pane: String::new(),
+        aven_panel: false,
         agent: agent.unwrap_or_default(),
         model: model.unwrap_or_default(),
         execution_mode,
@@ -2488,6 +2496,8 @@ fn dispatch(
         &terminal.address,
         &worktree,
         &format!("{} {}", attempt.task_ref, selected.task.title),
+        &attempt.task_ref,
+        &mut attempt.aven_panel,
     );
     attempt.state = "prompt-pending".into();
     let topology = (attempt.execution_mode == ExecutionMode::Worktrees)
@@ -4330,6 +4340,7 @@ mod tests {
             worktree_created_by_attempt: true,
             terminal: TerminalRef::default(),
             pane: "w1:p1".into(),
+            aven_panel: false,
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
             pending_prompt: String::new(),
@@ -4529,6 +4540,7 @@ mod tests {
             core_name: String::new(),
             terminal: TerminalRef::default(),
             pane: String::new(),
+            aven_panel: false,
             agent: String::new(),
             model: String::new(),
             execution_mode: ExecutionMode::SingleSession,
@@ -4807,6 +4819,7 @@ mod tests {
             core_name: String::new(),
             terminal: TerminalRef::default(),
             pane: "w1:p1".into(),
+            aven_panel: false,
             agent: "build".into(),
             model: "provider/model".into(),
             execution_mode: ExecutionMode::SingleSession,
@@ -4871,6 +4884,7 @@ mod tests {
             worktree_created_by_attempt: true,
             terminal: TerminalRef::default(),
             pane: String::new(),
+            aven_panel: false,
             session_id: "ses_1".into(),
             prompt_id: "msg_1".into(),
             pending_prompt: "durable prompt".into(),
@@ -4898,6 +4912,7 @@ mod tests {
             core_name: String::new(),
             terminal: TerminalRef::default(),
             pane: String::new(),
+            aven_panel: false,
             agent: String::new(),
             model: String::new(),
             execution_mode: ExecutionMode::SingleSession,

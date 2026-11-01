@@ -57,8 +57,10 @@ else
 fi
 
 app_home=${HERDR_APP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-app}
-if [ -f "$app_home/mods/aven-tasks/main.js" ]; then
-  row app-mod "installed"
+if [ -f "$app_home/mods/aven-tasks/main.js" ] && [ -f "$app_home/mods/aven-worktree/main.js" ]; then
+  row app-mod "installed (overlay + worktree panel)"
+elif [ -f "$app_home/mods/aven-tasks/main.js" ] || [ -f "$app_home/mods/aven-worktree/main.js" ]; then
+  row app-mod "partially installed (re-run just install-app-mod)"
 else
   row app-mod "not installed (optional)"
 fi

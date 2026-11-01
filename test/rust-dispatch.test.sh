@@ -68,7 +68,11 @@ case "${1:-}" in
   ls)
     if [ -f "$FAKE_APP_STATE" ]; then
       folder=$(cat "$FAKE_APP_STATE")
-      printf '{"spaces":[{"id":"s1","name":"task","folder":"%s","tabs":[{"id":"tb1","active":true,"terminals":[{"terminal":"t-placeholder"}]}]}]}\n' "$folder"
+      addr=$(python3 -c 'import json,sys
+lines=open(sys.argv[1]).read().splitlines()
+labels=[json.loads(line) for line in lines if line.startswith("[\"label\"")]
+print(labels[-1][1] if labels else "t1")' "$HC_FIXTURE_LOG" 2>/dev/null || printf 't1')
+      printf '{"spaces":[{"id":"s1","name":"task","folder":"%s","tabs":[{"id":"tb1","active":true,"terminals":[{"terminal":"t-shell","pane":"p-shell"},{"terminal":"%s","pane":"p-agent"}]}]}]}\n' "$folder" "$addr"
     else
       printf '{"spaces":[]}\n'
     fi
@@ -76,9 +80,9 @@ case "${1:-}" in
   do)
     printf 'app %s\n' "$*" >> "$FAKE_APP_LOG"
     case " $* " in
-      *" space.new "*) folder=; while [ "$#" -gt 0 ]; do [ "$1" = --folder ] && { folder=$2; break; }; shift; done; printf '%s' "$folder" > "$FAKE_APP_STATE" ;;
+      *" space.new "*) folder=; while [ "$#" -gt 0 ]; do [ "$1" = --folder ] && { folder=$2; break; }; shift; done; printf '%s' "$folder" > "$FAKE_APP_STATE"; printf '{"space":"s1","tab":"tb1","terminal":"t-shell"}\n' ;;
+      *) printf '{}\n' ;;
     esac
-    printf '{}\n'
     ;;
   *) exit 0 ;;
 esac
@@ -343,6 +347,13 @@ FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet
 $context
 EOF
 assert_file_contains "$work/app.log" 'space.new' 'dispatch creates a worktree space in herdr-app'
+assert_file_contains "$work/app.log" 'pane.split' 'dispatch splits the agent pane for Aven'
+assert_file_contains "$work/app.log" 'aven-worktree' 'the split uses the worktree panel mod'
+assert_file_contains "$work/app.log" '"pane":"p-agent"' 'the split targets the adopted attempt terminal'
+assert_file_contains "$work/app.log" '"ref":"APP-1"' 'the panel is pinned to the selected task'
+assert_eq "$(grep -c 'pane.split' "$work/app.log")" 1 'the Aven panel is created once'
+assert_file_contains "$log" '"kill"' 'the placeholder shell is removed after the split'
+assert_file_contains "$log" '"t-shell"' 'the removed terminal is the space.new placeholder'
 assert_file_contains "$log" 'herdr.space=s1' 'attempt terminal is labelled into the worktree space'
 assert_file_contains "$log" 'herdr.tab=tb1' 'attempt terminal is labelled into the worktree tab'
 

@@ -180,6 +180,10 @@ pub(crate) struct Attempt {
     /// Legacy Herdr pane id, retained as historical evidence for old attempts.
     #[serde(default)]
     pub(crate) pane: String,
+    /// True once the optional herdr-app worktree space carries the Aven panel
+    /// pane. App placement is presentation only and never gates dispatch.
+    #[serde(default)]
+    pub(crate) aven_panel: bool,
     #[serde(default)]
     pub(crate) agent: String,
     #[serde(default)]
@@ -266,6 +270,9 @@ pub(crate) struct PhaseAttempt {
     pub(crate) terminal: TerminalRef,
     /// Legacy Herdr pane id, retained as historical evidence.
     pub(crate) pane: String,
+    /// True once this phase's herdr-app worktree space carries the Aven panel.
+    #[serde(default)]
+    pub(crate) aven_panel: bool,
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
     /// Durable prompt body for crash-safe re-admission with the same message id.

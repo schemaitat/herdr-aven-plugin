@@ -14,7 +14,7 @@ custom-command `terminal` execution support, Git, OpenCode V2, and Rust/Cargo.
 Keep `aven`, `hc`, `opencode`, and Cargo's bin directory on `PATH`.
 `herdr-app` is optional. Tested with herdr-core 0.1.15.
 
-Install the dispatcher, Aven commands, and the optional app mod:
+Install the dispatcher, Aven commands, and the optional app mods:
 
 ```sh
 git clone https://github.com/schemaitat/herdr-aven-plugin
@@ -23,11 +23,12 @@ just install
 ```
 
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
-commands, installs `mods/aven-tasks` into `$HERDR_APP_HOME` (or
-`~/.config/herdr-app`), and reports readiness with `just doctor`. The app mod
-is optional; when `herdr-app` is absent the same dispatch, supervision, and
-recovery work headlessly. The installer preserves unrelated app settings and
-never overwrites an existing key binding.
+commands, installs `mods/aven-tasks` and `mods/aven-worktree` into
+`$HERDR_APP_HOME` (or `~/.config/herdr-app`), and reports readiness with
+`just doctor`. The app mods are optional; when `herdr-app` is absent the same
+dispatch, supervision, and recovery work headlessly. The installer preserves
+unrelated app settings and never overwrites an existing key binding. Re-run
+`just install-app-mod` after an upgrade to add the Aven worktree panel.
 
 There is no legacy `herdr` plugin manifest, popup entrypoint, or keybinding
 installer to install. The retired runtime is not started or migrated in place.
@@ -524,6 +525,16 @@ chord is free. You can also run the same actions from the app command palette
 (`mod.open:aven-tasks`). Headless use needs neither the app nor the mod:
 `aven tui -p` works in any terminal.
 
+The companion `aven-worktree` panel is installed with the same command. Every
+dispatched worktree space opens an **Aven** pane beside the agent showing the
+root epic, its phases and progress, the current task, and the persisted
+dispatcher state, with buttons to open the Aven TUI or the dispatcher inspector
+and a row that peeks the attempt terminal. The panel is created once per
+worktree and remembers that in the persisted attempt. If you close it, reopen it
+for the focused space with `herdr-app do mod.open --name aven-worktree` (or the
+command palette's mod picker). It is read-only: it never changes tasks, prompts,
+or dispatch state.
+
 If needed, map the checkout to an Aven project:
 
 ```sh
@@ -566,8 +577,13 @@ command; the other dispatch bindings use uppercase `D`, `P`, `I`, `B`, and
    `hc exec --cwd <repo> git ...`. The dispatcher creates the OpenCode session,
    starts the OpenCode CLI in a dedicated herdr-core terminal, and submits the
    task through the OpenCode V2 API. If herdr-app is running, the worktree gets
-   a sidebar space named for the task and the terminal is labelled into its
-   tab, so it is visible immediately. Headless dispatch is unchanged.
+   a sidebar space named for the task, the terminal is labelled into its tab,
+   and an **Aven** pane opens beside the agent with the root epic, phase
+   progress, the current task, and the persisted dispatcher/agent state.
+   Headless dispatch is unchanged. The panel reads Aven and
+   `aven-dispatch list` only; it never edits tasks, dispatches, or prompts.
+   The empty shell `space.new` starts is removed once the attempt terminal is
+   adopted, so the space holds the agent and Aven.
 5. Aven records the handoff and marks the task `active`. Prompt admission does
    **not** mean the task is complete, and a core status word is not acceptance.
 
@@ -789,7 +805,7 @@ just check     # Compile checks
 just test      # Rust unit tests and shell/integration fixtures
 just test-tui  # Inspector rendering, stalled-source, terminal and focus-effect PTY checks
 just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
-just app-check # herdr-app check app
+just app-check # herdr-app check app and app/aven-worktree
 just ui-check  # Dashboard TypeScript
 just ui-test   # Dashboard unit tests
 ```
@@ -816,8 +832,8 @@ The Rust dispatcher keeps its internal boundaries deliberately small:
 - `src/worktrees.rs` owns every Git worktree operation through `hc exec`.
 - `src/watch.rs` owns watcher ownership, durable supervision state, terminal
   correlation, and the bounded dashboard inventory.
-- `src/app.rs` owns optional herdr-app focus/peek only; it is never on the
-  dispatch path.
+- `src/app.rs` owns optional herdr-app focus, peek, space, and Aven-panel
+  placement; every call is bounded and never gates dispatch.
 
 This separation is intentionally not a framework: add a module only when a
 shared concern has a clear owner.

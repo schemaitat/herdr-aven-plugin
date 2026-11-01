@@ -16,6 +16,13 @@
   user-edited files are still never overwritten.
 - Point the babysitter's supervision prompt at the builder terminal instead of
   its own pane, which previously instructed it to supervise itself.
+- Add the optional `aven-worktree` herdr-app panel. Each dispatched worktree
+  space now opens an **Aven** pane beside the agent terminal showing the root
+  epic, phase progress, the current task, the persisted dispatcher/agent state,
+  and a click-to-peek attempt terminal. The dispatcher passes the immutable task
+  ref and records whether the panel was created, so re-dispatch never
+  duplicates it. The empty shell started by `space.new` is removed once the
+  attempt terminal is adopted. Aven and dispatcher data stay read-only.
 
 ## 1.0.0
 

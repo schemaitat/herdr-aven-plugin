@@ -1,7 +1,7 @@
 default:
     @just --list
 
-# Install the dispatcher, the Aven commands, the optional herdr-app mod, and
+# Install the dispatcher, the Aven commands, the optional herdr-app mods, and
 # report readiness. No legacy herdr plugin/runtime is installed.
 install:
     cargo install --path . --force
@@ -59,6 +59,7 @@ watch-stop:
 
 app-check:
     herdr-app check app
+    herdr-app check app/aven-worktree
 
 # Optional local read-only dashboard (Node 24 LTS).
 ui-install:
