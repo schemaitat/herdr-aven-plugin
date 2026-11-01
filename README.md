@@ -533,15 +533,29 @@ overarching ADR and specification throughout implementation and reset; phases
 never replace or demote it. `z i` enforces the same marker before changing code, so it will
 direct you to plan first rather than infer an incomplete plan.
 Babysitting is available only for the implementation workflows: `z S` for
-plan-then-implement and `z b` for implementation of an existing plan.
+plan-then-implement and `z b` for implementation of an existing plan. The
+babysitter session uses `github-copilot/gpt-6-luna` by default; select a
+different supervisor model independently of the build/phase worker with
+`--babysitter-model provider/model[#variant]` or
+`AVEN_DISPATCH_BABYSITTER_MODEL`. The effective model is persisted with the
+attempt, so a missing babysitter session is recreated with the original choice
+even when a different override is supplied on reopen. Overrides apply when the
+babysitter session is created; reopening never changes the model of an
+already-created session. The bundled `aven-babysitter.md` frontmatter keeps
+Luna as its direct-use default.
 
 For every plan, select the **root epic** and run `z s` or `z i` once.
 Implementation supports `single-session` (the compatible default),
 `subsessions`, and `worktrees`; use `--mode` for unattended dispatch. Worktree
 mode creates one coordinator worktree plus one dedicated worker worktree for
-each ordered phase. It always uses the bundled fixed-Luna, 1000-step
-coordinator in the coordinator worktree while the chosen agent/model applies
-only to phase workers. The first ready phase is admitted immediately;
+each ordered phase. The coordinator uses the bundled `aven-orchestrator` agent
+(1000 steps) with `github-copilot/gpt-6-luna` by default; override it
+independently with `--orchestrator-model provider/model[#variant]` or
+`AVEN_DISPATCH_ORCHESTRATOR_MODEL`. The chosen agent/model applies only to
+phase workers, and the effective coordinator model is recorded as
+`coordinator_model` on the attempt. Overrides apply when the coordinator
+session is created; reopening preserves the existing session's model. The
+first ready phase is admitted immediately;
 successors remain provisioned until their predecessors are verified and
 integrated. Reopened attempts retain their saved mode rather than silently
 changing topology.
@@ -559,6 +573,8 @@ deterministic task worktree branch.
 | `AVEN_CONFIG_DIR` | Aven config directory; otherwise `$XDG_CONFIG_HOME/aven` or `~/.config/aven` |
 | `AVEN_COMMANDS_FILE` | Extra-command YAML; defaults to this plugin's `aven-commands.yaml` |
 | `AVEN_DISPATCH_STORE` | Dispatcher SQLite store override; also accepts `--store` |
+| `AVEN_DISPATCH_BABYSITTER_MODEL` | Babysitter session model as `provider/model[#variant]`; also accepts `--babysitter-model`; defaults to `github-copilot/gpt-6-luna` |
+| `AVEN_DISPATCH_ORCHESTRATOR_MODEL` | Worktree coordinator model as `provider/model[#variant]`; also accepts `--orchestrator-model`; defaults to `github-copilot/gpt-6-luna` and applies only in `worktrees` mode |
 | `AVEN_WORKTREE_ROOT` | Worktree root override; defaults to `~/.herdr/worktrees` |
 | `HC_BIN` | herdr-core executable override; defaults to `hc` |
 | `HERDR_APP_BIN` | herdr-app executable override; defaults to `herdr-app` |
@@ -589,7 +605,11 @@ implementation (`z i`) put the `build` agent and latest Terra model first. The
 picker remains interactive, so any visible agent or supported model can still
 be selected. Entering `q` at either picker cancels the dispatch and removes the
 newly created herdr-core worktree. Edit `aven-commands.yaml` to add commands or
-change CLI options. For example:
+change CLI options. `--model` / `AVEN_DISPATCH_MODEL` selects the build or
+phase worker. The optional babysitter and the worktree coordinator have
+independent `--babysitter-model` and `--orchestrator-model` overrides, so
+supervision can use a different model without changing worker behavior; all
+three apply only when the corresponding session is created. For example:
 
 ```yaml
 - name: dispatch-custom
@@ -607,6 +627,20 @@ Use `--agent select` for the picker or `--agent <id>` to bypass it; use
 **`execution: terminal`** for picker commands: Aven passes task JSON through
 `AVEN_COMMAND_CONTEXT` and lends its terminal to the picker. Outside Aven the
 dispatcher opens a dedicated herdr-core picker terminal instead.
+
+An implementation command can also select the optional babysitter model without
+touching the worker model:
+
+```yaml
+- name: implement-with-supervisor
+  description: Implement an existing plan with an adjacent babysitter
+  program: aven-dispatch
+  args: [dispatch, --agent, build, --model, provider/worker, --skill, aven/sdd-implement, --babysitter, --babysitter-model, provider/supervisor]
+  keys: [z 2]
+  target: focused
+  execution: terminal
+  on_success: quit
+```
 
 Use `--skill aven/sdd-plan-implement --skills-dir /path/to/plugin/skills` for the bundled
 plan-and-implement workflow, `--skill aven/sdd-plan` for planning only, or

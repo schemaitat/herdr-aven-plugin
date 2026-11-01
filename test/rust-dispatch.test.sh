@@ -132,9 +132,68 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_store" cargo run --quiet -- 
 $context
 EOF
 assert_contains "$(sqlite_json "$babysitter_store")" '"babysitter": true' 'babysitter opt-in persisted'
+assert_contains "$(sqlite_json "$babysitter_store")" '"babysitter_model": "github-copilot/gpt-6-luna"' 'default babysitter model persisted'
 assert_contains "$(sqlite_json "$babysitter_store")" '"role": "babysitter"' 'babysitter terminal ownership persisted'
 assert_file_contains "$work/opencode.log" 'ses_babysitter' 'babysitter API session created and admitted'
 assert_file_contains "$log" 'aven.role=babysitter' 'babysitter terminal carries its role label'
+grep -F '"agent":"aven-babysitter","location"' "$work/opencode.log" | grep -F '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' >/dev/null \
+  || fail 'default babysitter session uses Luna'
+grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' >/dev/null \
+  || fail 'builder keeps its selected model'
+
+# An explicit babysitter override changes only the babysitter payload and is
+# persisted for later recovery.
+override_store=$work/babysitter-override.sqlite
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter --babysitter-model github-copilot/gpt-5.5 <<EOF >/dev/null
+$context
+EOF
+assert_contains "$(sqlite_json "$override_store")" '"babysitter_model": "github-copilot/gpt-5.5"' 'babysitter override persisted'
+grep -F '"agent":"aven-babysitter","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-5.5","providerID":"github-copilot"}' >/dev/null \
+  || fail 'configured babysitter session uses its override'
+grep -F '"agent":"build","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' >/dev/null \
+  || fail 'babysitter override leaves the builder model unchanged'
+
+# The environment variable is an equivalent configuration surface.
+env_store=$work/babysitter-env.sqlite
+AVEN_DISPATCH_BABYSITTER_MODEL=github-copilot/gpt-6-astra PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$env_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter <<EOF >/dev/null
+$context
+EOF
+assert_contains "$(sqlite_json "$env_store")" '"babysitter_model": "github-copilot/gpt-6-astra"' 'babysitter model environment variable persisted'
+grep -F '"agent":"aven-babysitter","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-6-astra","providerID":"github-copilot"}' >/dev/null \
+  || fail 'babysitter model environment variable selects the session model'
+
+# Reopening after a failed sidecar launch reuses the saved model rather than a
+# newly supplied override.
+python3 - "$override_store" <<'PY2'
+import json, sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    task_id, workflow, payload = db.execute("SELECT task_id, workflow, payload FROM attempts").fetchone()
+    attempt = json.loads(payload)
+    attempt["babysitter_session_id"] = ""
+    attempt["babysitter_terminal"] = {}
+    attempt["terminals"].pop("babysitter", None)
+    attempt["state"] = "running"
+    db.execute("UPDATE attempts SET payload = ? WHERE task_id = ? AND workflow = ?", (json.dumps(attempt), task_id, workflow))
+    db.commit()
+PY2
+babysitter_sessions=$(grep -c '"agent":"aven-babysitter"' "$work/opencode.log")
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter --babysitter-model github-copilot/gpt-6.1-sol <<EOF > "$work/babysitter-reopen"
+$context
+EOF
+assert_eq "$(grep -c '"agent":"aven-babysitter"' "$work/opencode.log")" "$((babysitter_sessions + 1))" 'missing babysitter sidecar is recreated on reopen'
+grep -F '"agent":"aven-babysitter","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-5.5","providerID":"github-copilot"}' >/dev/null \
+  || fail 'missing-sidecar retry reuses the saved babysitter model'
+
+# Invalid model syntax fails through the existing model_ref validation path.
+invalid_store=$work/babysitter-invalid.sqlite
+set +e
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter --babysitter-model not-a-model <<EOF > "$work/babysitter-invalid" 2>&1
+$context
+EOF
+rc=$?
+set -e
+assert_eq "$rc" "1" 'invalid babysitter model fails session creation'
+assert_file_contains "$work/babysitter-invalid" 'must use provider/model form' 'invalid babysitter model uses the model_ref validation path'
 
 # A crash between durable prompt checkpoint and admission is recovered by
 # rebuilding the deterministic prompt and admitting once.
@@ -209,6 +268,7 @@ assert_eq "$rc" "1" 'legacy attempt requires explicit relaunch'
 assert_file_contains "$work/legacy" 'retired herdr runtime' 'legacy refusal explains the migration'
 
 # Cumulative worktrees: coordinator plus one worker checkout per ordered phase.
+assert_file_lacks "$work/opencode.log" '"agent":"aven-orchestrator"' 'non-worktree dispatch does not create an orchestrator'
 cumulative_store=$work/cumulative.sqlite
 cumulative_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"epic-task","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-2","task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"}}}}'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
@@ -222,6 +282,41 @@ assert_file_contains "$log" 'app/dispatch-epic-task-phase-02' 'second phase bran
 assert_contains "$(sqlite_json "$cumulative_store")" '"state": "provisioned"' 'blocked successor stays provisioned'
 assert_contains "$(sqlite_json "$cumulative_store")" '"state": "running"' 'first phase is admitted'
 assert_contains "$(sqlite_json "$cumulative_store")" '"role": "phase"' 'phase terminal ownership persisted'
+
+# The worktree coordinator defaults to Luna while each phase worker keeps the
+# selected worker model.
+grep -F '"agent":"aven-orchestrator","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-6-luna","providerID":"github-copilot"}' >/dev/null \
+  || fail 'worktree coordinator defaults to Luna'
+assert_contains "$(sqlite_json "$cumulative_store")" '"coordinator_model": "github-copilot/gpt-6-luna"' 'default coordinator model persisted'
+for phase in phase-01 phase-02; do
+  grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F "app-dispatch-epic-task-$phase" | tail -n 1 | grep -F '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' >/dev/null \
+    || fail "phase worker $phase keeps the selected worker model"
+done
+
+# An orchestrator override changes only the coordinator payload and persists
+# through coordinator_model.
+orchestrator_store=$work/orchestrator-override.sqlite
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$orchestrator_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model github-copilot/gpt-5.5 <<EOF >/dev/null
+$cumulative_context
+EOF
+assert_contains "$(sqlite_json "$orchestrator_store")" '"coordinator_model": "github-copilot/gpt-5.5"' 'coordinator override persisted'
+grep -F '"agent":"aven-orchestrator","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-5.5","providerID":"github-copilot"}' >/dev/null \
+  || fail 'configured coordinator session uses its override'
+for phase in phase-01 phase-02; do
+  grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F "app-dispatch-epic-task-$phase" | tail -n 1 | grep -F '"model":{"id":"gpt-5.6-terra","providerID":"github-copilot"}' >/dev/null \
+    || fail "coordinator override leaves phase worker $phase on the worker model"
+done
+
+# Invalid coordinator syntax fails through the shared model_ref validation path.
+invalid_orchestrator_store=$work/orchestrator-invalid.sqlite
+set +e
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_orchestrator_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model not-a-model <<EOF > "$work/orchestrator-invalid" 2>&1
+$cumulative_context
+EOF
+rc=$?
+set -e
+assert_eq "$rc" "1" 'invalid orchestrator model fails session creation'
+assert_file_contains "$work/orchestrator-invalid" 'must use provider/model form' 'invalid orchestrator model uses the model_ref validation path'
 
 # Bounded reconcile and watcher status are explicit, repeatable operations.
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --once > "$work/watch-once"

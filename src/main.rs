@@ -64,6 +64,12 @@ enum Commands {
         /// Create an adjacent API-owned babysitter session for this build agent.
         #[arg(long)]
         babysitter: bool,
+        /// Babysitter OpenCode model in provider/model form (or AVEN_DISPATCH_BABYSITTER_MODEL).
+        #[arg(long, env = "AVEN_DISPATCH_BABYSITTER_MODEL")]
+        babysitter_model: Option<String>,
+        /// Worktree coordinator model in provider/model form (or AVEN_DISPATCH_ORCHESTRATOR_MODEL).
+        #[arg(long, env = "AVEN_DISPATCH_ORCHESTRATOR_MODEL")]
+        orchestrator_model: Option<String>,
         /// Implementation topology; legacy dispatches default to single-session.
         #[arg(long, value_enum)]
         mode: Option<ExecutionMode>,
@@ -408,6 +414,27 @@ fn has_worked_out_multi_phase_plan(task: &Value) -> bool {
             .and_then(Value::as_str)
             == Some("multi-phase")
 }
+/// Effective babysitter model. An override is only meaningful when the
+/// optional babysitter session will be created; attempts without one keep no
+/// babysitter model at all.
+fn resolve_babysitter_model(babysitter: bool, configured: Option<String>) -> String {
+    if !babysitter {
+        return String::new();
+    }
+    configured
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(|| BABYSITTER_MODEL.to_owned())
+}
+/// Effective worktree coordinator model. Only worktree-mode dispatches create
+/// an orchestrator; every other topology keeps the worker as its root session.
+fn resolve_orchestrator_model(mode: ExecutionMode, configured: Option<String>) -> String {
+    if mode != ExecutionMode::Worktrees {
+        return String::new();
+    }
+    configured
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(|| ORCHESTRATOR_MODEL.to_owned())
+}
 fn model_ref(model: Option<&str>) -> Result<Value> {
     let Some(model) = model.filter(|model| !model.is_empty()) else {
         return Ok(Value::Null);
@@ -474,6 +501,7 @@ const BABYSITTER_AGENT: &str = include_str!("../agents/babysitter.md");
 const ORCHESTRATOR_AGENT: &str = include_str!("../agents/orchestrator.md");
 const BABYSITTER_AGENT_ID: &str = "aven-babysitter";
 const ORCHESTRATOR_AGENT_ID: &str = "aven-orchestrator";
+const BABYSITTER_MODEL: &str = "github-copilot/gpt-6-luna";
 const ORCHESTRATOR_MODEL: &str = "github-copilot/gpt-6-luna";
 const MODEL_CHOICES: &[(&str, &str)] = &[
     ("Latest Sol", "github-copilot/gpt-6.1-sol"),
@@ -1087,7 +1115,13 @@ fn start_babysitter(
             "title": format!("Babysit {}", attempt.task_ref),
             "location": {"directory": attempt.worktree},
             "agent": BABYSITTER_AGENT_ID,
-            "model": model_ref(Some("github-copilot/gpt-6-luna"))?,
+            // Empty means a record created before the field existed: keep the
+            // historical Luna default rather than borrowing the worker model.
+            "model": model_ref(Some(if attempt.babysitter_model.is_empty() {
+                BABYSITTER_MODEL
+            } else {
+                attempt.babysitter_model.as_str()
+            }))?,
             "permissions": [{"action": "*", "resource": "*", "effect": "allow"}],
         })),
     )?;
@@ -1535,6 +1569,8 @@ fn dispatch(
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
     babysitter: bool,
+    babysitter_model: Option<String>,
+    orchestrator_model: Option<String>,
     requested_mode: Option<ExecutionMode>,
     relaunch: bool,
 ) -> Result<()> {
@@ -1797,6 +1833,7 @@ fn dispatch(
     // not retain the process-wide store lock while they are visible.
     drop(store);
     let execution_mode = select_mode(requested_mode, workflow)?;
+    let orchestrator_model = resolve_orchestrator_model(execution_mode, orchestrator_model);
     let mut attempt = Attempt {
         task_id: selected.task.id.clone(),
         task_ref: selected.reference().to_owned(),
@@ -1830,6 +1867,7 @@ fn dispatch(
         log_task_ref: String::new(),
         generation,
         babysitter,
+        babysitter_model: resolve_babysitter_model(babysitter, babysitter_model),
         babysitter_terminal: TerminalRef::default(),
         babysitter_pane: String::new(),
         babysitter_session_id: String::new(),
@@ -1920,10 +1958,7 @@ fn dispatch(
         store.save()?;
     }
     let (session_agent, session_model) = if attempt.execution_mode == ExecutionMode::Worktrees {
-        (
-            ORCHESTRATOR_AGENT_ID.to_owned(),
-            ORCHESTRATOR_MODEL.to_owned(),
-        )
+        (ORCHESTRATOR_AGENT_ID.to_owned(), orchestrator_model)
     } else {
         (attempt.agent.clone(), attempt.model.clone())
     };
@@ -3214,6 +3249,8 @@ fn main() -> Result<()> {
             skill,
             skills_dir,
             babysitter,
+            babysitter_model,
+            orchestrator_model,
             mode,
             relaunch,
         } => dispatch(
@@ -3226,6 +3263,8 @@ fn main() -> Result<()> {
             skill,
             skills_dir,
             babysitter,
+            babysitter_model,
+            orchestrator_model,
             mode,
             relaunch,
         ),
@@ -3351,6 +3390,120 @@ mod tests {
             json!({"providerID": "provider", "id": "model", "variant": "fast"})
         );
         assert!(model_ref(Some("missing-provider")).is_err());
+        assert!(model_ref(Some("provider/")).is_err());
+        assert!(model_ref(Some("provider/model#")).is_err());
+    }
+    #[test]
+    fn babysitter_model_option_is_independent_from_the_worker_model() {
+        let cli = Cli::try_parse_from([
+            "aven-dispatch",
+            "dispatch",
+            "--agent",
+            "build",
+            "--model",
+            "provider/worker",
+            "--babysitter",
+            "--babysitter-model",
+            "provider/supervisor#fast",
+        ])
+        .unwrap();
+        let Commands::Dispatch {
+            model,
+            babysitter,
+            babysitter_model,
+            ..
+        } = cli.command
+        else {
+            panic!("expected dispatch command");
+        };
+        assert_eq!(model.as_deref(), Some("provider/worker"));
+        assert!(babysitter);
+        assert_eq!(
+            babysitter_model.as_deref(),
+            Some("provider/supervisor#fast")
+        );
+    }
+    #[test]
+    fn babysitter_model_resolves_luna_only_for_enabled_attempts() {
+        assert_eq!(
+            resolve_babysitter_model(true, None),
+            "github-copilot/gpt-6-luna"
+        );
+        assert_eq!(
+            resolve_babysitter_model(true, Some("provider/supervisor".into())),
+            "provider/supervisor"
+        );
+        assert_eq!(resolve_babysitter_model(false, None), "");
+        assert_eq!(
+            resolve_babysitter_model(false, Some("provider/supervisor".into())),
+            ""
+        );
+    }
+    #[test]
+    fn orchestrator_model_option_is_independent_from_the_worker_model() {
+        let cli = Cli::try_parse_from([
+            "aven-dispatch",
+            "dispatch",
+            "--agent",
+            "build",
+            "--model",
+            "provider/worker",
+            "--mode",
+            "worktrees",
+            "--orchestrator-model",
+            "provider/coordinator#fast",
+        ])
+        .unwrap();
+        let Commands::Dispatch {
+            model,
+            orchestrator_model,
+            ..
+        } = cli.command
+        else {
+            panic!("expected dispatch command");
+        };
+        assert_eq!(model.as_deref(), Some("provider/worker"));
+        assert_eq!(
+            orchestrator_model.as_deref(),
+            Some("provider/coordinator#fast")
+        );
+    }
+    #[test]
+    fn orchestrator_model_resolves_luna_only_for_worktree_mode() {
+        assert_eq!(
+            resolve_orchestrator_model(ExecutionMode::Worktrees, None),
+            "github-copilot/gpt-6-luna"
+        );
+        assert_eq!(
+            resolve_orchestrator_model(
+                ExecutionMode::Worktrees,
+                Some("provider/coordinator".into())
+            ),
+            "provider/coordinator"
+        );
+        assert_eq!(
+            resolve_orchestrator_model(ExecutionMode::SingleSession, None),
+            ""
+        );
+        assert_eq!(
+            resolve_orchestrator_model(
+                ExecutionMode::Subsessions,
+                Some("provider/coordinator".into())
+            ),
+            ""
+        );
+    }
+    #[test]
+    fn attempts_without_a_babysitter_model_keep_the_legacy_fallback() {
+        let attempt = stored_attempt("task", "implementation", "running");
+        let mut value = serde_json::to_value(&attempt).unwrap();
+        value.as_object_mut().unwrap().remove("babysitter_model");
+        let decoded: Attempt = serde_json::from_value(value).unwrap();
+        assert!(decoded.babysitter_model.is_empty());
+        assert_eq!(
+            resolve_babysitter_model(true, Some(decoded.babysitter_model)),
+            "github-copilot/gpt-6-luna"
+        );
     }
     #[test]
     fn worktree_location_header_value_is_url_encoded() {
@@ -3387,6 +3540,13 @@ mod tests {
     }
     #[test]
     fn orchestrator_definition_monitors_every_phase_and_defers_final_integration() {
+        assert!(ORCHESTRATOR_AGENT.starts_with(
+            "---\ndescription: Autonomously coordinate an approved Aven epic through cumulative worktrees\nmode: primary\nhidden: true\nmodel: github-copilot/gpt-6-luna\nsteps: 1000\n---"
+        ));
+        assert!(!ORCHESTRATOR_AGENT.contains("fixed Luna"));
+        assert!(ORCHESTRATOR_AGENT.contains(
+            "your own coordinator\nagent and model come from the dispatch configuration"
+        ));
         assert!(ORCHESTRATOR_AGENT.contains("do not stop after the first worker"));
         assert!(ORCHESTRATOR_AGENT.contains("Prefer event- and wait-driven supervision"));
         assert!(ORCHESTRATOR_AGENT.contains("hc wait <address> --timeout 180"));
@@ -3715,6 +3875,7 @@ mod tests {
             log_task_ref: String::new(),
             generation: 0,
             babysitter: false,
+            babysitter_model: String::new(),
             babysitter_terminal: TerminalRef::default(),
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),
@@ -3992,6 +4153,7 @@ mod tests {
             log_task_ref: "DL-1".into(),
             generation: 0,
             babysitter: false,
+            babysitter_model: String::new(),
             babysitter_terminal: TerminalRef::default(),
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),
@@ -4082,6 +4244,7 @@ mod tests {
             log_task_ref: String::new(),
             generation: 0,
             babysitter: false,
+            babysitter_model: String::new(),
             babysitter_terminal: TerminalRef::default(),
             babysitter_pane: String::new(),
             babysitter_session_id: String::new(),

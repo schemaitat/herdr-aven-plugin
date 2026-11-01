@@ -221,6 +221,10 @@ pub(crate) struct Attempt {
     pub(crate) generation: u64,
     #[serde(default)]
     pub(crate) babysitter: bool,
+    /// Effective OpenCode model for the optional babysitter session. Empty on
+    /// records created before this field existed; those keep the Luna default.
+    #[serde(default)]
+    pub(crate) babysitter_model: String,
     #[serde(default)]
     pub(crate) babysitter_terminal: TerminalRef,
     #[serde(default)]
