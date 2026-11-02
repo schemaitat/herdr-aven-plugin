@@ -78,6 +78,7 @@ function attemptTerminals(attempt) {
 export default class AvenWorktree extends View {
   init(_props, cx) {
     this.state = { loading: true };
+    this.view = "plan";
     this.refreshing = false;
     this.refresh(cx);
     // Aven status changes through notes, phases and reviews outside this
@@ -300,6 +301,22 @@ export default class AvenWorktree extends View {
       .child(div().text_size(11.5).child(text));
   }
 
+  tab(t, id, text) {
+    const selected = this.view === id;
+    return h_flex()
+      .id(`aven-worktree-tab-${id}`)
+      .h(28)
+      .px(9)
+      .rounded(6)
+      .items_center()
+      .cursor_pointer()
+      .bg(selected ? t.selected : t.raised)
+      .text_color(selected ? t.foreground : t.muted)
+      .hover((style) => style.bg(t.hover).text_color(t.foreground))
+      .on_click((_event, cx) => { this.view = id; this.notify(cx); })
+      .child(div().text_size(11.5).font_semibold().child(text));
+  }
+
   progress(t, done, total) {
     const pct = total ? Math.round((done / total) * 100) : 0;
     return h_flex()
@@ -474,8 +491,16 @@ export default class AvenWorktree extends View {
           .hover((style) => style.bg(t.hover).text_color(t.foreground))
           .on_click((_event, cx) => this.refresh(cx))
           .child(div().text_size(13).text_color(t.dim).child("⟳"))))
-      .child(div().h(1).flex_none().w_full().bg(t.border))
-      .child(v_flex()
+       .child(div().h(1).flex_none().w_full().bg(t.border))
+       .child(h_flex()
+         .h(40)
+         .px(11)
+         .gap(6)
+         .flex_none()
+         .items_center()
+         .child(this.tab(t, "plan", "Plan"))
+         .child(this.tab(t, "implementation", "Implementation")))
+       .child(v_flex()
         .flex_1()
         .min_h(0)
         .p(11)
@@ -488,22 +513,24 @@ export default class AvenWorktree extends View {
           .gap(5)
           .child(div().text_size(12).font_semibold().text_color(t.blocked).child("Aven is unavailable"))
           .child(div().text_size(11.5).text_color(t.dim).child(state.error))))
-        .when(Boolean(epic), (el) => el.child(epic))
-        .when(Boolean(taskBlock), (el) => el.child(taskBlock))
-        .when(Boolean(phases), (el) => el.child(phases))
-        .when(Boolean(dispatch), (el) => el.child(dispatch))
-        .when(Boolean(details), (el) => el.child(details))
-        .child(h_flex()
-          .gap(6)
-          .pt(2)
-          .when(Boolean(state.task?.ref), (el) => el.child(
-            this.button(t, "yank-id", this.copiedRef === state.task.ref ? "ID copied" : "Yank ID", (_event, cx) => this.copyTaskRef(cx)),
-          ))
-          .when(Boolean(state.task?.ref), (el) => el.child(
-            this.button(t, "open-task", "Open task", (_event, cx) => this.openTask(cx)),
-          ))
-          .child(this.button(t, "open", "Open Aven", (_event, cx) => this.openAven(cx)))
-          .child(this.button(t, "inspect", "Inspector", (_event, cx) => this.openInspector(cx))))
-      );
+         .when(this.view === "plan", (el) => el
+           .when(Boolean(epic), (section) => section.child(epic))
+           .when(Boolean(taskBlock), (section) => section.child(taskBlock))
+           .when(Boolean(phases), (section) => section.child(phases)))
+         .when(this.view === "implementation", (el) => el
+           .when(Boolean(dispatch), (section) => section.child(dispatch))
+           .when(Boolean(details), (section) => section.child(details))
+           .child(h_flex()
+             .gap(6)
+             .pt(2)
+             .when(Boolean(state.task?.ref), (section) => section.child(
+               this.button(t, "yank-id", this.copiedRef === state.task.ref ? "ID copied" : "Yank ID", (_event, cx) => this.copyTaskRef(cx)),
+             ))
+             .when(Boolean(state.task?.ref), (section) => section.child(
+               this.button(t, "open-task", "Open task", (_event, cx) => this.openTask(cx)),
+             ))
+             .child(this.button(t, "open", "Open Aven", (_event, cx) => this.openAven(cx)))
+             .child(this.button(t, "inspect", "Inspector", (_event, cx) => this.openInspector(cx)))))
+       );
   }
 }

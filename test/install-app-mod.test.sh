@@ -25,6 +25,8 @@ assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding 
 [ -f "$app_home/mods/aven-tasks/mod.json" ] || fail 'mod.json not installed'
 [ -f "$app_home/mods/aven-worktree/main.js" ] || fail 'worktree panel main.js not installed'
 [ -f "$app_home/mods/aven-worktree/mod.json" ] || fail 'worktree panel mod.json not installed'
+assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "plan", "Plan")' 'plan tab installed'
+assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "implementation", "Implementation")' 'implementation tab installed'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-a": "mod.open:other"' 'conflicting key unchanged'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-c": "terminal.copy"' 'unrelated section preserved'
 assert_file_contains "$app_home/keys.json" '"mod:aven-tasks"' 'overlay key section installed'
