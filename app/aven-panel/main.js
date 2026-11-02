@@ -37,7 +37,7 @@ export default class AvenPanel extends View {
     const focus = focused();
     // A space's folder is only the default for new terminals. Its visible
     // terminal can be in a nested checkout (or the space can point at $HOME).
-    return focus?.space === space?.id && focus.cwd ? focus.cwd : (space?.folder || this.cwd());
+    return focus?.space === space?.id && focus.cwd ? focus.cwd : (this.cwd() || space?.folder || "");
   }
 
   async worktreeFolder(folder) {
@@ -164,7 +164,7 @@ export default class AvenPanel extends View {
     this.pendingLaunches.add(identity);
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.space()?.folder || this.cwd());
+        const cwd = await this.rootFolder(this.spaceCwd(this.space()));
         const name = `${prefix}${Date.now().toString(36)}`;
         const started = await hc(["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name,
           ...(cwd ? ["--cwd", cwd] : []), "--", "aven", "--workspace", workspace, "tui", epic.ref]);
