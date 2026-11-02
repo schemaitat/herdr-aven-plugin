@@ -39,6 +39,8 @@ cat > "$fake/aven" <<'EOF'
 printf 'aven %s\n' "$*" >> "$AVEN_LOG"
 case " $* " in
   *" context APP-1 --json "*) printf '%s\n' '{"task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}' ;;
+  *" context APP-3 --json "*) printf '%s\n' '{"task":{"id":"bulk-task","title":"second selected task"},"project":{"key":"app"}}' ;;
+  *" context APP-4 --json "*) printf '%s\n' '{"task":{"id":"wrong-task","title":"stale target"},"project":{"key":"app"}}' ;;
   *" context APP-2 --json "*) printf '%s\n' '{"task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"phase-two","ref":"APP-P2","title":"second phase"},{"id":"phase-one","ref":"APP-P1","title":"first phase"}]}' ;;
   *" context APP-P1 --json "*) printf '%s\n' '{"task":{"id":"phase-one","title":"first phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"1"},"dependencies":{"depends_on":[],"depends_on_open":0}}' ;;
   *" context APP-P2 --json "*) printf '%s\n' '{"task":{"id":"phase-two","title":"second phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"2"},"dependencies":{"depends_on":[{"task_id":"phase-one"}],"depends_on_open":1}}' ;;
@@ -95,6 +97,7 @@ export AVEN_LOG=$work/aven.log
 export OPENCODE_LOG=$work/opencode.log
 
 context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}}}'
+bulk_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"bulk-task","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}}}'
 
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
 $context
@@ -120,6 +123,42 @@ assert_contains "$(sqlite_json "$store")" '"backend": "hc"' 'backend persisted'
 assert_contains "$(sqlite_json "$store")" '"core_id": "fixture-core"' 'durable core identity persisted'
 assert_contains "$(sqlite_json "$store")" '"address": "t1"' 'terminal address persisted before reuse'
 [ ! -e "$work/.aven-dispatch" ] || fail 'no legacy JSON store'
+
+# A selected-task batch preserves target order and admits one independent
+# worktree/session/prompt per target.
+bulk_store=$work/bulk.sqlite
+before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$bulk_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+$bulk_context
+EOF
+after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+assert_eq "$after" "$((before + 2))" 'bulk dispatch admits every selected target'
+[ -d "$work/worktrees/repo/app-dispatch-immutable-task" ] || fail 'bulk dispatch creates first selected worktree'
+[ -d "$work/worktrees/repo/app-dispatch-bulk-task" ] || fail 'bulk dispatch creates second selected worktree'
+
+# Malformed batches are rejected during preflight before a worktree or session
+# can be created for any selected task.
+before=$(wc -l < "$work/opencode.log")
+set +e
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/invalid-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra <<EOF >/dev/null 2>&1
+{"version":1,"invocation":{"origin_cwd":"$repo"},"targeting":{"targets":[{"id":"duplicate","ref":"APP-1"},{"id":"duplicate","ref":"APP-3"}]}}
+EOF
+rc=$?
+set -e
+assert_eq "$rc" "1" 'duplicate selected targets fail preflight'
+assert_eq "$(wc -l < "$work/opencode.log")" "$before" 'invalid batch has no OpenCode side effects'
+
+# Every target is re-read before the first target is admitted, so a stale ID in
+# a later selection is also rejected without partially dispatching the batch.
+before=$(wc -l < "$work/opencode.log")
+set +e
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/stale-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra <<EOF >/dev/null 2>&1
+{"version":1,"invocation":{"origin_cwd":"$repo"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"expected-task","ref":"APP-4"}]}}
+EOF
+rc=$?
+set -e
+assert_eq "$rc" "1" 'stale selected target fails preflight'
+assert_eq "$(wc -l < "$work/opencode.log")" "$before" 'stale batch has no partial dispatch'
 
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/reopen"

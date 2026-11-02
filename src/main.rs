@@ -213,16 +213,25 @@ fn parse_context(text: &str) -> Result<CommandContext> {
             context.version
         );
     }
-    if context.targeting.targets.len() != 1 {
-        bail!(
-            "one-task dispatch requires exactly one targeting.targets entry (got {})",
-            context.targeting.targets.len()
-        );
+    if context.targeting.targets.is_empty() {
+        bail!("dispatch requires at least one targeting.targets entry");
     }
-    if context.targeting.targets[0].id.is_empty()
-        || context.targeting.targets[0].reference().is_empty()
+    let mut target_ids = BTreeSet::new();
+    for target in &context.targeting.targets {
+        if target.id.is_empty() || target.reference().is_empty() {
+            bail!("Aven target is missing immutable id or ref");
+        }
+        if !target_ids.insert(&target.id) {
+            bail!(
+                "Aven command context contains duplicate target id {}",
+                target.id
+            );
+        }
+    }
+    if let Some(selected) = context.selection.primary.as_ref()
+        && !target_ids.contains(&selected.task.id)
     {
-        bail!("Aven target is missing immutable id or ref");
+        bail!("selection.primary does not belong to targeting.targets");
     }
     Ok(context)
 }
@@ -232,12 +241,45 @@ fn selected_for(context: &CommandContext) -> Result<&Selected> {
         .primary
         .as_ref()
         .context("command context lacks selection.primary task details")?;
-    if selected.task.id != context.targeting.targets[0].id {
+    if !context
+        .targeting
+        .targets
+        .iter()
+        .any(|target| target.id == selected.task.id)
+    {
         bail!(
-            "selection.primary does not match targeting.targets; refusing focused-selection dispatch"
+            "selection.primary does not belong to targeting.targets; refusing focused-selection operation"
         );
     }
     Ok(selected)
+}
+fn selected_target(context: &CommandContext, target: &model::Target) -> Result<(Selected, Value)> {
+    let task = refresh_task_by_ref(&context.invocation, target.reference())?;
+    if task.pointer("/task/id").and_then(Value::as_str) != Some(target.id.as_str()) {
+        bail!("Aven re-read returned a different task; refusing dispatch");
+    }
+    let title = task
+        .pointer("/task/title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let project = task
+        .pointer("/project/key")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    Ok((
+        Selected {
+            reference: target.reference().to_owned(),
+            short_ref: String::new(),
+            task: model::SelectedTask {
+                id: target.id.clone(),
+                title,
+            },
+            project: model::Project { key: project },
+        },
+        task,
+    ))
 }
 fn branch(project: &str, task_id: &str) -> String {
     format!(
@@ -1279,18 +1321,6 @@ fn configured_agent_model(worktree: &str, agent_id: &str) -> Result<Option<Strin
         .and_then(|agent| agent.model))
 }
 
-fn refresh_task(context: &CommandContext, selected: &Selected) -> Result<Value> {
-    let output = aven(
-        &context.invocation,
-        &["context", selected.reference(), "--json"],
-        None,
-    )?;
-    let task: Value = serde_json::from_str(&output).context("Aven context --json output")?;
-    if task.pointer("/task/id").and_then(Value::as_str) != Some(selected.task.id.as_str()) {
-        bail!("Aven re-read returned a different task; refusing dispatch");
-    }
-    Ok(task)
-}
 fn refresh_task_by_ref(invocation: &Invocation, reference: &str) -> Result<Value> {
     let output = aven(invocation, &["context", reference, "--json"], None)?;
     serde_json::from_str(&output).context("Aven context --json output")
@@ -2035,7 +2065,7 @@ fn write_debug_event(attempt: &Attempt, event: &str, detail: &str) -> Option<Val
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dispatch(
+fn dispatch_one(
     path: PathBuf,
     dry_run: bool,
     agent: Option<String>,
@@ -2049,17 +2079,10 @@ fn dispatch(
     orchestrator_model: Option<String>,
     requested_mode: Option<ExecutionMode>,
     relaunch: bool,
+    context: &CommandContext,
+    selected: &Selected,
+    task: Value,
 ) -> Result<()> {
-    let input = if let Some(context) = env::var_os("AVEN_COMMAND_CONTEXT") {
-        fs::read_to_string(context).context("read Aven terminal command context")?
-    } else {
-        let mut input = String::new();
-        io::stdin().read_to_string(&mut input)?;
-        input
-    };
-    let context = parse_context(&input)?;
-    let selected = selected_for(&context)?;
-    let task = refresh_task(&context, selected)?;
     if reset_incomplete(&task) {
         bail!("task reset is incomplete; rerun aven-dispatch reset instead of admitting work");
     }
@@ -2559,6 +2582,61 @@ fn dispatch(
     );
     if attempt.aven_update_pending {
         println!("Aven update pending; run reconcile before retrying dispatch");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch(
+    path: PathBuf,
+    dry_run: bool,
+    agent: Option<String>,
+    model: Option<String>,
+    preferred_agent: Option<String>,
+    preferred_model: Option<String>,
+    skill: Option<String>,
+    skills_dir: Option<PathBuf>,
+    babysitter: bool,
+    babysitter_model: Option<String>,
+    orchestrator_model: Option<String>,
+    requested_mode: Option<ExecutionMode>,
+    relaunch: bool,
+) -> Result<()> {
+    let input = if let Some(context) = env::var_os("AVEN_COMMAND_CONTEXT") {
+        fs::read_to_string(context).context("read Aven terminal command context")?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        input
+    };
+    let context = parse_context(&input)?;
+    // Validate every target against Aven before the first admission side effect
+    // so stale or inconsistent batch identities cannot partially dispatch.
+    let targets = context
+        .targeting
+        .targets
+        .iter()
+        .map(|target| selected_target(&context, target))
+        .collect::<Result<Vec<_>>>()?;
+    for (selected, task) in targets {
+        dispatch_one(
+            path.clone(),
+            dry_run,
+            agent.clone(),
+            model.clone(),
+            preferred_agent.clone(),
+            preferred_model.clone(),
+            skill.clone(),
+            skills_dir.clone(),
+            babysitter,
+            babysitter_model.clone(),
+            orchestrator_model.clone(),
+            requested_mode,
+            relaunch,
+            &context,
+            &selected,
+            task,
+        )?;
     }
     Ok(())
 }
@@ -4021,8 +4099,16 @@ mod tests {
     }
     #[test]
     fn targets_not_focused_selection_drive_validation() {
-        let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).unwrap();
-        assert!(selected_for(&context).is_err());
+        assert!(parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).is_err());
+    }
+    #[test]
+    fn multiple_targets_are_validated_in_supplied_order() {
+        let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"},{"id":"two","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-2","task":{"id":"two"}}}}"#).unwrap();
+        assert_eq!(context.targeting.targets.len(), 2);
+        assert_eq!(context.targeting.targets[0].reference(), "APP-1");
+        assert_eq!(context.targeting.targets[1].reference(), "APP-2");
+        assert_eq!(selected_for(&context).unwrap().task.id, "two");
+        assert!(parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"},{"id":"one","ref":"APP-2"}]}}"#).is_err());
     }
     #[test]
     fn model_option_becomes_an_opencode_model_ref() {
