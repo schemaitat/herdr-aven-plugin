@@ -184,6 +184,19 @@ export default class AvenWorktree extends View {
       .find((terminal) => terminal.core && (!folder || terminal.core.cwd === folder));
   }
 
+  copyTaskRef(cx) {
+    const ref = String(this.state.task?.ref ?? "").trim();
+    if (!ref) return;
+    cx.write_to_clipboard(ref);
+    this.copiedRef = ref;
+    this.notify(cx);
+    cx.timer.after(1500, () => {
+      if (this.copiedRef !== ref) return;
+      this.copiedRef = "";
+      this.notify(cx);
+    });
+  }
+
   async openAven(cx) {
     const folder = this.state.folder || this.space()?.folder;
     if (!folder) return;
@@ -456,6 +469,9 @@ export default class AvenWorktree extends View {
         .child(h_flex()
           .gap(6)
           .pt(2)
+          .when(Boolean(state.task?.ref), (el) => el.child(
+            this.button(t, "yank-id", this.copiedRef === state.task.ref ? "ID copied" : "Yank ID", (_event, cx) => this.copyTaskRef(cx)),
+          ))
           .child(this.button(t, "open", "Open Aven", (_event, cx) => this.openAven(cx)))
           .child(this.button(t, "inspect", "Inspector", (_event, cx) => this.openInspector(cx))))
       );

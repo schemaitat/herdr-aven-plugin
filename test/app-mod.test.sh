@@ -30,6 +30,9 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'aven-dispatch' 'w
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'aven", ["show"' 'worktree panel reads the epic and task from Aven'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'epic_children' 'worktree panel shows phase progress'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'terminal.peek' 'worktree panel reveals the attempt terminal'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'write_to_clipboard' 'worktree panel copies the displayed task ref through GPUI'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'yank-id' 'worktree panel exposes a task-ID yank control'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'ID copied' 'worktree panel confirms a copied task ID'
 
 [ ! -e "$PLUGIN_ROOT/herdr-plugin.toml" ] || fail 'legacy herdr plugin manifest must be retired'
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'
