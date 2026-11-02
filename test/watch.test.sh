@@ -56,7 +56,7 @@ EOF
 chmod +x "$fake"/*
 
 context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"watched task"},"project":{"key":"app"}}}}'
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null
 $context
 EOF
 

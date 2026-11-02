@@ -39,7 +39,7 @@
     - --preferred-agent
     - build
     - --preferred-model
-    - github-copilot/gpt-5.6-terra
+    - github-copilot/gpt-6.1-terra
     - --skill
     - aven/sdd-plan-implement
     - --skills-dir
@@ -89,7 +89,7 @@
     - --preferred-agent
     - build
     - --preferred-model
-    - github-copilot/gpt-5.6-terra
+    - github-copilot/gpt-6.1-terra
     - --skill
     - aven/sdd-implement
     - --skills-dir
@@ -113,7 +113,7 @@
     - --preferred-agent
     - build
     - --preferred-model
-    - github-copilot/gpt-5.6-terra
+    - github-copilot/gpt-6.1-terra
     - --skill
     - aven/sdd-plan-implement
     - --skills-dir
@@ -136,7 +136,7 @@
     - --preferred-agent
     - build
     - --preferred-model
-    - github-copilot/gpt-5.6-terra
+    - github-copilot/gpt-6.1-terra
     - --skill
     - aven/sdd-implement
     - --skills-dir

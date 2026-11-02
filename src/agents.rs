@@ -64,7 +64,7 @@ pub(crate) const BABYSITTER_MODEL: &str = "github-copilot/gpt-6-luna";
 pub(crate) const ORCHESTRATOR_MODEL: &str = "github-copilot/gpt-6-luna";
 const MODEL_CHOICES: &[(&str, &str)] = &[
     ("Latest Sol", "github-copilot/gpt-6.1-sol"),
-    ("Latest Terra", "github-copilot/gpt-5.6-terra"),
+    ("Latest Terra", "github-copilot/gpt-6.1-terra"),
     ("Latest GPT", "github-copilot/gpt-5.5"),
     ("GPT Astra", "github-copilot/gpt-6-astra"),
     ("GPT Luna", "github-copilot/gpt-6-luna"),
@@ -389,7 +389,7 @@ mod tests {
         let agents = vec![PrimaryAgent {
             id: "build".into(),
             name: "Build".into(),
-            model: Some("github-copilot/gpt-5.6-terra".into()),
+            model: Some("github-copilot/gpt-6.1-terra".into()),
         }];
         let mut output = Vec::new();
         assert!(choose_agent(&agents, &mut io::Cursor::new(""), &mut output, false).is_err());
@@ -414,12 +414,12 @@ mod tests {
     }
     #[test]
     fn configured_model_is_first_and_model_choice_requires_input() {
-        let choices = model_choices(Some("github-copilot/gpt-5.6-terra"), None, &[]);
+        let choices = model_choices(Some("github-copilot/gpt-6.1-terra"), None, &[]);
         assert_eq!(
             choices.first(),
             Some(&(
-                "Agent default (github-copilot/gpt-5.6-terra)".into(),
-                "github-copilot/gpt-5.6-terra".into()
+                "Agent default (github-copilot/gpt-6.1-terra)".into(),
+                "github-copilot/gpt-6.1-terra".into()
             ))
         );
         assert_eq!(
@@ -445,12 +445,12 @@ mod tests {
     #[test]
     fn preferred_model_precedes_the_agent_default() {
         let choices = model_choices(
-            Some("github-copilot/gpt-5.6-terra"),
+            Some("github-copilot/gpt-6.1-terra"),
             Some("github-copilot/gpt-6.1-sol"),
             &[],
         );
         assert_eq!(choices[0].1, "github-copilot/gpt-6.1-sol");
-        assert_eq!(choices[1].1, "github-copilot/gpt-5.6-terra");
+        assert_eq!(choices[1].1, "github-copilot/gpt-6.1-terra");
     }
     #[test]
     fn configured_provider_models_are_all_available() {
