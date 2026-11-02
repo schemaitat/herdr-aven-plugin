@@ -823,7 +823,8 @@ production. OpenCode and Aven are stubbed: no real agent runs, no tokens are
 spent, and user sessions/configs stay intact. `watch.test.sh` uses an isolated
 `HC_FIXTURE_STATE` and its own store, never the user's core or terminals.
 
-Main entrypoints: `src/main.rs` (dispatcher orchestration), `app/` (optional
+Main entrypoints: `src/main.rs` (CLI composition and final terminal error
+handling), `app/` (optional
 herdr-app mod), `scripts/install-aven-command.sh` (Aven commands),
 `scripts/install-app-mod.sh` (owned mod files and free-key merge), and
 `justfile` (the minimal working set).
@@ -832,8 +833,17 @@ The Rust dispatcher keeps its internal boundaries deliberately small:
 
 - `src/model.rs` owns Aven command-context parsing and the serde-backed
   dispatcher state model, including durable core/terminal identities.
-- `src/process.rs` owns OpenCode/Aven transport helpers and the central SQLite
-  store. Worktree Git is not here.
+- `src/agents.rs` and `src/picker.rs` own agent/model selection and terminal
+  picker mechanics.
+- `src/store.rs` owns durable SQLite state; `src/store/read_only.rs` owns the
+  non-mutating inspector reader.
+- `src/process.rs` owns bounded Aven/OpenCode/process transport helpers, not
+  central-store persistence. Worktree Git is not here.
+- `src/dispatch/` owns dispatcher command behavior: planning/admission,
+  runtime terminals/worktrees, Aven links, reset, supervision, and phases.
+- `src/inspect/sources/` owns bounded read-only source adapters (scope, Aven,
+  dispatcher store, herdr-core, and OpenCode); `sources/assemble.rs` owns pure
+  deterministic snapshot correlation and assembly.
 - `src/core.rs` owns the herdr-core CLI contract: identity, launches, facts,
   snapshots, safe event parsing, and guarded sends.
 - `src/worktrees.rs` owns every Git worktree operation through `hc exec`.
