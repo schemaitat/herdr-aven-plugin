@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reveal the Aven terminal on the first overlay attempt. herdr-app adopts a
+  terminal a moment after `hc run --bg` returns its address, so the overlay now
+  probes the peek with a bounded retry before closing, and reuses live core
+  terminals instead of a stale snapshot. This removes the intermittent
+  terminal-not-found error that always disappeared on the second try.
 - List every chat model enabled by the configured OpenCode providers in the
   dispatcher's model picker instead of a curated GitHub Copilot list. The
   listing is scoped to the dispatch worktree and falls back to the built-in

@@ -525,6 +525,11 @@ chord is free. You can also run the same actions from the app command palette
 (`mod.open:aven-tasks`). Headless use needs neither the app nor the mod:
 `aven tui -p` works in any terminal.
 
+The overlay waits briefly for herdr-app to adopt a terminal that `hc run` just
+started, so the first open reveals it instead of reporting that the terminal
+was not found. Pressing the key again while that terminal is still starting
+reuses it rather than opening a second Aven.
+
 The companion `aven-worktree` panel is installed with the same command. Every
 dispatched worktree space opens an **Aven** pane beside the agent showing the
 root epic, its phases and progress, the current task, and the persisted
