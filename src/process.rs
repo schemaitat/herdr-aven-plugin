@@ -1,225 +1,16 @@
-//! External command execution and the central dispatcher SQLite store.
+//! External command execution and transport helpers.
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
 use std::{
-    collections::BTreeSet,
     env,
     ffi::OsStr,
-    fs,
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::model::{Attempt, Invocation, Store, attempt_key};
-
-const SCHEMA_VERSION: i64 = 1;
-const UPSERT_ATTEMPT: &str = "INSERT INTO attempts (task_id, workflow, attempt_id, task_ref, state, generation, session_id, created_at, updated_at, payload)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-     ON CONFLICT(task_id, workflow) DO UPDATE SET
-       attempt_id = excluded.attempt_id,
-       task_ref = excluded.task_ref,
-       state = excluded.state,
-       generation = excluded.generation,
-       session_id = excluded.session_id,
-       created_at = excluded.created_at,
-       updated_at = excluded.updated_at,
-       payload = excluded.payload";
-
-pub(crate) fn store_attempt(store: &mut LockedStore, attempt: Attempt) {
-    store.put(attempt);
-}
-pub(crate) struct LockedStore {
-    connection: Connection,
-    // In-memory working set for the current command. Every mutation is
-    // checkpointed to SQLite by save(); rows are written individually so
-    // unrelated tasks/projects never serialize or overwrite each other.
-    pub(crate) store: Store,
-    dirty: BTreeSet<String>,
-}
-impl LockedStore {
-    pub(crate) fn open(path: PathBuf) -> Result<Self> {
-        let parent = path.parent().context("store path has no parent")?;
-        fs::create_dir_all(parent).context("create dispatcher state directory")?;
-        let connection = Connection::open(&path)
-            .with_context(|| format!("open dispatcher store {}", path.display()))?;
-        connection.busy_timeout(Duration::from_millis(5000))?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
-        migrate(&connection)?;
-        let mut store = Store::default();
-        {
-            let mut statement = connection
-                .prepare("SELECT payload FROM attempts ORDER BY created_at, task_id, workflow")?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            for row in rows {
-                let attempt: Attempt = serde_json::from_str(&row?)?;
-                let attempt = crate::model::normalize_attempt(attempt);
-                store
-                    .attempts
-                    .insert(attempt_key(&attempt.task_id, &attempt.workflow), attempt);
-            }
-        }
-        Ok(Self {
-            connection,
-            store,
-            dirty: BTreeSet::new(),
-        })
-    }
-    fn put(&mut self, attempt: Attempt) {
-        let key = attempt_key(&attempt.task_id, &attempt.workflow);
-        self.dirty.insert(key.clone());
-        self.store.attempts.insert(key, attempt);
-    }
-    pub(crate) fn save(&mut self) -> Result<()> {
-        if self.dirty.is_empty() {
-            return Ok(());
-        }
-        let keys = self.dirty.iter().cloned().collect::<Vec<_>>();
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        {
-            let mut statement = transaction.prepare_cached(UPSERT_ATTEMPT)?;
-            let updated_at = now();
-            for key in &keys {
-                let Some(attempt) = self.store.attempts.get(key) else {
-                    continue;
-                };
-                let payload = serde_json::to_string(attempt)?;
-                statement.execute(params![
-                    &attempt.task_id,
-                    &attempt.workflow,
-                    &attempt.attempt_id,
-                    &attempt.task_ref,
-                    &attempt.state,
-                    attempt.generation as i64,
-                    &attempt.session_id,
-                    attempt.created_at as i64,
-                    updated_at as i64,
-                    payload,
-                ])?;
-            }
-        }
-        transaction.commit()?;
-        self.dirty.clear();
-        Ok(())
-    }
-    /// Atomically reserve (task_id, workflow). Returns the existing attempt when
-    /// another dispatcher already owns that key.
-    pub(crate) fn reserve(&mut self, attempt: Attempt) -> Result<Option<Attempt>> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing = transaction
-            .query_row(
-                "SELECT payload FROM attempts WHERE task_id = ?1 AND workflow = ?2",
-                params![&attempt.task_id, &attempt.workflow],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        if let Some(payload) = existing {
-            transaction.commit()?;
-            let parsed: Attempt = serde_json::from_str(&payload)?;
-            self.store.attempts.insert(
-                attempt_key(&parsed.task_id, &parsed.workflow),
-                parsed.clone(),
-            );
-            return Ok(Some(parsed));
-        }
-        {
-            let mut statement = transaction.prepare_cached(UPSERT_ATTEMPT)?;
-            let payload = serde_json::to_string(&attempt)?;
-            statement.execute(params![
-                &attempt.task_id,
-                &attempt.workflow,
-                &attempt.attempt_id,
-                &attempt.task_ref,
-                &attempt.state,
-                attempt.generation as i64,
-                &attempt.session_id,
-                attempt.created_at as i64,
-                now() as i64,
-                payload,
-            ])?;
-        }
-        transaction.commit()?;
-        self.put(attempt);
-        Ok(None)
-    }
-    /// Remove exactly one reserved attempt after a failed provisioning step.
-    pub(crate) fn remove_attempt(&mut self, task_id: &str, workflow: &str) -> Result<usize> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let removed = transaction.execute(
-            "DELETE FROM attempts WHERE task_id = ?1 AND workflow = ?2",
-            params![task_id, workflow],
-        )?;
-        transaction.commit()?;
-        let key = attempt_key(task_id, workflow);
-        self.store.attempts.remove(&key);
-        self.dirty.remove(&key);
-        Ok(removed)
-    }
-    pub(crate) fn remove_attempts_for_task(&mut self, task_id: &str) -> Result<usize> {
-        let attempts = self
-            .store
-            .attempts
-            .values()
-            .filter(|attempt| attempt.task_id == task_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        if attempts.is_empty() {
-            return Ok(0);
-        }
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        {
-            let mut statement = transaction
-                .prepare_cached("DELETE FROM attempts WHERE task_id = ?1 AND workflow = ?2")?;
-            for attempt in &attempts {
-                statement.execute(params![&attempt.task_id, &attempt.workflow])?;
-            }
-        }
-        transaction.commit()?;
-        for attempt in &attempts {
-            let key = attempt_key(&attempt.task_id, &attempt.workflow);
-            self.store.attempts.remove(&key);
-            self.dirty.remove(&key);
-        }
-        Ok(attempts.len())
-    }
-}
-fn migrate(connection: &Connection) -> Result<()> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > SCHEMA_VERSION {
-        bail!(
-            "dispatcher store schema version {version} is newer than supported version {SCHEMA_VERSION}"
-        );
-    }
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS attempts (
-           task_id TEXT NOT NULL,
-           workflow TEXT NOT NULL,
-           attempt_id TEXT NOT NULL,
-           task_ref TEXT NOT NULL,
-           state TEXT NOT NULL,
-           generation INTEGER NOT NULL,
-           session_id TEXT NOT NULL,
-           created_at INTEGER NOT NULL,
-           updated_at INTEGER NOT NULL,
-           payload TEXT NOT NULL,
-           PRIMARY KEY (task_id, workflow)
-         );
-         CREATE INDEX IF NOT EXISTS attempts_task_ref ON attempts(task_ref);
-         PRAGMA user_version = 1;",
-    )?;
-    Ok(())
-}
+use crate::model::Invocation;
 
 pub(crate) fn now() -> u64 {
     SystemTime::now()
@@ -229,27 +20,6 @@ pub(crate) fn now() -> u64 {
 }
 pub(crate) fn identifier(prefix: &str) -> String {
     format!("{prefix}_{:x}", now())
-}
-/// Resolve the one central store shared by every checkout, worktree and
-/// project. `--store`/`AVEN_DISPATCH_STORE` still wins for tests and isolation.
-pub(crate) fn store_path(value: Option<PathBuf>) -> PathBuf {
-    value.unwrap_or_else(|| {
-        default_store_path(
-            env::var_os("XDG_STATE_HOME").as_deref(),
-            env::var_os("HOME").as_deref(),
-        )
-    })
-}
-pub(crate) fn default_store_path(xdg_state_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
-    let base = xdg_state_home
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            home.filter(|value| !value.is_empty())
-                .map(|value| PathBuf::from(value).join(".local/state"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".local/state"));
-    base.join("aven/dispatch.sqlite")
 }
 pub(crate) fn absolute_path(path: PathBuf) -> Result<PathBuf> {
     if path.is_absolute() {
@@ -530,53 +300,6 @@ pub(crate) fn run_bounded(
     String::from_utf8(stdout)
         .map(|value| value.trim().to_owned())
         .with_context(|| format!("{program} returned non-UTF-8 output"))
-}
-
-/// Read dispatcher attempt payloads without creating directories, configuring
-/// SQLite or migrating the schema. Inspector paths must never enter
-/// [`LockedStore::open`].
-pub(crate) fn read_only_store_payloads(path: &Path, limit: usize) -> Result<Vec<String>> {
-    if !path.exists() {
-        bail!("dispatcher store {} does not exist", path.display());
-    }
-    if !path.is_file() {
-        bail!("dispatcher store {} is not a file", path.display());
-    }
-    let connection = Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .with_context(|| format!("open dispatcher store {} read-only", path.display()))?;
-    connection.busy_timeout(Duration::from_millis(1000))?;
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > SCHEMA_VERSION {
-        bail!(
-            "dispatcher store schema version {version} is newer than supported version {SCHEMA_VERSION}"
-        );
-    }
-    if version == 0 {
-        let table: Option<String> = connection
-            .query_row(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attempts'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if table.is_none() {
-            bail!("dispatcher store schema version 0 has no attempts table");
-        }
-    }
-    let mut statement = connection
-        .prepare("SELECT payload FROM attempts ORDER BY created_at, task_id, workflow LIMIT ?1")?;
-    let rows = statement.query_map([(limit + 1) as i64], |row| row.get::<_, String>(0))?;
-    let mut payloads = Vec::new();
-    for row in rows {
-        payloads.push(row?);
-        if payloads.len() > limit {
-            bail!("dispatcher store exceeds the {limit}-attempt limit");
-        }
-    }
-    Ok(payloads)
 }
 
 #[cfg(test)]
