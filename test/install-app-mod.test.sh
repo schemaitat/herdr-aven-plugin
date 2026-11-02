@@ -20,6 +20,9 @@ chmod +x "$fake/herdr-app"
 out=$(PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh")
 assert_contains "$out" "installed: mods/aven-tasks" "overlay mod installed"
 assert_contains "$out" "installed: mods/aven-worktree" "worktree panel mod installed"
+assert_contains "$out" "installed: mods/aven-panel" "browser mod installed"
+assert_contains "$out" "installed: mods/aven-panel-tabs" "selector mod installed"
+assert_contains "$out" "installed: layouts/aven-right.json" "right layout installed"
 assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding is preserved"
 [ -f "$app_home/mods/aven-tasks/main.js" ] || fail 'mod main.js not installed'
 [ -f "$app_home/mods/aven-tasks/mod.json" ] || fail 'mod.json not installed'
@@ -27,6 +30,9 @@ assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding 
 [ -f "$app_home/mods/aven-worktree/mod.json" ] || fail 'worktree panel mod.json not installed'
 assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "plan", "Plan")' 'plan tab installed'
 assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "implementation", "Implementation")' 'implementation tab installed'
+[ -f "$app_home/mods/aven-panel/main.js" ] || fail 'browser main.js not installed'
+[ -f "$app_home/mods/aven-panel-tabs/main.js" ] || fail 'selector main.js not installed'
+[ -f "$app_home/layouts/aven-right.json" ] || fail 'layout not installed'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-a": "mod.open:other"' 'conflicting key unchanged'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-c": "terminal.copy"' 'unrelated section preserved'
 assert_file_contains "$app_home/keys.json" '"mod:aven-tasks"' 'overlay key section installed'
@@ -42,5 +48,52 @@ fresh=$work/fresh
 mkdir -p "$fresh"
 PATH="$fake:$PATH" HERDR_APP_HOME=$fresh sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" --no-keys >/dev/null
 [ ! -e "$fresh/keys.json" ] || fail '--no-keys must not write keys.json'
+[ -f "$fresh/mods/aven-panel/main.js" ] || fail '--no-keys must still install browser'
+[ -f "$fresh/mods/aven-panel-tabs/main.js" ] || fail '--no-keys must still install selector'
+[ -f "$fresh/layouts/aven-right.json" ] || fail '--no-keys must still install layout'
+
+foreign=$work/foreign
+mkdir -p "$foreign/mods/aven-panel" "$foreign/layouts"
+printf 'not ours\n' > "$foreign/mods/aven-panel/main.js"
+if PATH="$fake:$PATH" HERDR_APP_HOME=$foreign sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" >/tmp/install-foreign.log 2>&1; then
+  fail 'foreign mod collision must fail'
+fi
+assert_file_contains /tmp/install-foreign.log 'refusing to overwrite foreign asset' 'foreign mod collision is reported'
+assert_file_contains "$foreign/mods/aven-panel/main.js" 'not ours' 'foreign mod stays unchanged'
+
+foreign_layout=$work/foreign-layout
+mkdir -p "$foreign_layout/layouts"
+printf '{}\n' > "$foreign_layout/layouts/aven-right.json"
+if PATH="$fake:$PATH" HERDR_APP_HOME=$foreign_layout sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" >/tmp/install-layout-foreign.log 2>&1; then
+  fail 'foreign layout collision must fail'
+fi
+assert_file_contains /tmp/install-layout-foreign.log 'refusing to overwrite foreign asset' 'foreign layout collision is reported'
+
+# The top-level route must retain the default desktop installation even when
+# Cargo and the unrelated command installer are represented by test doubles.
+top=$work/top
+mkdir -p "$top/bin" "$top/home"
+cat > "$top/bin/cargo" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$top/bin/aven" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  --version) printf 'aven fake\n' ;;
+  project) printf '[]\n' ;;
+esac
+EOF
+cat > "$top/bin/hc" <<'EOF'
+#!/bin/sh
+case "${1:-}" in --version) printf 'hc fake\n' ;; server) exit 1 ;; esac
+EOF
+cp "$fake/herdr-app" "$top/bin/herdr-app"
+chmod +x "$top/bin"/*
+top_out=$(PATH="$top/bin:$PATH" HOME="$top/home" XDG_CONFIG_HOME="$top/home/config" HERDR_APP_HOME="$top/home/herdr" just install)
+assert_contains "$top_out" 'installed: layouts/aven-right.json' 'top-level install includes right layout'
+[ -f "$top/home/herdr/mods/aven-panel/main.js" ] || fail 'top-level install browser missing'
+[ -f "$top/home/herdr/mods/aven-panel-tabs/main.js" ] || fail 'top-level install selector missing'
+[ -f "$top/home/herdr/layouts/aven-right.json" ] || fail 'top-level install layout missing'
 
 printf 'install app mod ok\n'

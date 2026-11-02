@@ -23,12 +23,17 @@ just install
 ```
 
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
-commands, installs `mods/aven-tasks` and `mods/aven-worktree` into
+commands, installs `mods/aven-tasks`, `mods/aven-worktree`, `mods/aven-panel`,
+`mods/aven-panel-tabs`, and the personal `layouts/aven-right.json` into
 `$HERDR_APP_HOME` (or `~/.config/herdr-app`), and reports readiness with
 `just doctor`. The app mods are optional; when `herdr-app` is absent the same
 dispatch, supervision, and recovery work headlessly. The installer preserves
 unrelated app settings and never overwrites an existing key binding. Re-run
-`just install-app-mod` after an upgrade to add the Aven worktree panel.
+`just install-app-mod` after an upgrade to refresh owned assets. Both commands
+install the Aven-right assets by default, including with `--no-keys`, but never
+select a layout, open a panel, or change panel preferences. A foreign asset
+named `aven-right`, `aven-panel`, or `aven-panel-tabs` is refused rather than
+overwritten.
 
 There is no legacy `herdr` plugin manifest, popup entrypoint, or keybinding
 installer to install. The retired runtime is not started or migrated in place.
@@ -541,6 +546,33 @@ for the focused space with `herdr-app do mod.open --name aven-worktree` (or the
 command palette's mod picker). It is read-only: it never changes tasks, prompts,
 or dispatch state.
 
+### Aven right-side panel
+
+Select **Aven right** explicitly from Herdr's layout picker (or run
+`herdr-app do layout.switch --name aven-right`). It is a personal copy of the
+Herdr 0.1.12 main composition: Spaces and Agents stay on the left, while the
+right stack offers **Files**, **Changes**, and **Aven**. Clicking the active
+selector closes the stack; clicking another selector reveals that child. The
+selector remembers only an explicit valid choice per space in its own mod-local
+storage. A new space starts with the panel hidden, and the shipped main layout's
+panel preference is neither read nor changed.
+
+The Aven panel is read-only. It lists nondeleted open epics (inbox, backlog,
+todo, active), including future-available epics, from every project in the
+explicit local `default` workspace. It merges normal open-epic and per-project
+upcoming reads, deduplicates canonical IDs, orders valid `created_at` values
+newest first (stable ID ties; invalid dates last), and labels loading, empty,
+stale, errors, and incomplete coverage separately. A list cap, malformed data,
+timeout, or project failure is never displayed as a complete empty list.
+
+Only clicking an epic starts or reveals its exact `aven --workspace default tui
+<ref>` terminal. The panel reuses only a live terminal with the same workspace
+and canonical epic identity, suppresses duplicate launches while one is pending,
+and does not kill a terminal when the panel closes. Polling is gentle (about ten
+seconds, never overlapping) and cannot select or open a panel. Native app review
+requires an isolated `HERDR_APP_HOME` **and** isolated core/window; do not use a
+personal active app/core as a test target.
+
 If needed, map the checkout to an Aven project:
 
 ```sh
@@ -812,7 +844,8 @@ just check     # Compile checks
 just test      # Rust unit tests and shell/integration fixtures
 just test-tui  # Inspector rendering, stalled-source, terminal and focus-effect PTY checks
 just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
-just app-check # herdr-app check app and app/aven-worktree
+just app-test  # Node 24 behavioral fixtures for Aven right-panel model/tabs
+just app-check # herdr-app check all optional Aven mods
 just ui-check  # Dashboard TypeScript
 just ui-test   # Dashboard unit tests
 ```

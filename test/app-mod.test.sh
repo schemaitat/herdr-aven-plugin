@@ -9,6 +9,13 @@ set -eu
 [ -f "$PLUGIN_ROOT/app/keys.json" ] || fail 'missing app/keys.json'
 [ -f "$PLUGIN_ROOT/app/aven-worktree/main.js" ] || fail 'missing app/aven-worktree/main.js'
 [ -f "$PLUGIN_ROOT/app/aven-worktree/mod.json" ] || fail 'missing app/aven-worktree/mod.json'
+[ -f "$PLUGIN_ROOT/app/aven-panel/main.js" ] || fail 'missing app/aven-panel/main.js'
+[ -f "$PLUGIN_ROOT/app/aven-panel/logic.js" ] || fail 'missing app/aven-panel/logic.js'
+[ -f "$PLUGIN_ROOT/app/aven-panel/mod.json" ] || fail 'missing app/aven-panel/mod.json'
+[ -f "$PLUGIN_ROOT/app/aven-panel-tabs/main.js" ] || fail 'missing app/aven-panel-tabs/main.js'
+[ -f "$PLUGIN_ROOT/app/aven-panel-tabs/logic.js" ] || fail 'missing app/aven-panel-tabs/logic.js'
+[ -f "$PLUGIN_ROOT/app/aven-panel-tabs/mod.json" ] || fail 'missing app/aven-panel-tabs/mod.json'
+[ -f "$PLUGIN_ROOT/app/layouts/aven-right.json" ] || fail 'missing app/layouts/aven-right.json'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" '--outlive-parent' 'mod terminals outlive the window'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" '--no-parent' 'mod terminals are not tied to the app'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" 'terminal.peek' 'mod reveals a terminal instead of owning it'
@@ -40,13 +47,22 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'open-task' 'workt
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" '"Open task"' 'worktree panel labels the task opener'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" '"aven", "tui", ref' 'task opener starts Aven at the displayed task'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'aven-task-' 'task opener uses task-specific terminals'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel/logic.js" '"--workspace", workspace' 'browser and popup use explicit workspace'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel/logic.js" '"--outlive-parent"' 'epic popup survives panel close'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel/main.js" 'terminal.peek' 'epic popup is explicitly revealed'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel/main.js" 'pendingLaunches' 'rapid epic activation is deduplicated'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel/logic.js" '"--upcoming"' 'scheduled epics have a separate query lane'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel-tabs/logic.js" 'herdr-aven-plugin.aven-panel-tabs.v1' 'tabs use isolated panel state'
+assert_file_contains "$PLUGIN_ROOT/app/aven-panel-tabs/main.js" 'selector("aven", "Aven"' 'tabs expose the Aven selector'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"aven-panel-tabs"' 'owned layout selects the owned tabs mod'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"id": "aven"' 'owned layout has Aven stack child'
 
 [ ! -e "$PLUGIN_ROOT/herdr-plugin.toml" ] || fail 'legacy herdr plugin manifest must be retired'
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'
 [ ! -e "$PLUGIN_ROOT/scripts/install-keybindings.sh" ] || fail 'legacy herdr keybinding installer must be retired'
 
 if command -v herdr-app >/dev/null 2>&1; then
-  for mod in app app/aven-worktree; do
+  for mod in app app/aven-worktree app/aven-panel app/aven-panel-tabs; do
     if herdr-app check "$PLUGIN_ROOT/$mod" >/tmp/app-check.log 2>&1; then
       assert_file_contains /tmp/app-check.log 'check passed' "herdr-app accepts $mod"
     else

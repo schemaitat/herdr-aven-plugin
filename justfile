@@ -60,6 +60,13 @@ watch-stop:
 app-check:
     herdr-app check app
     herdr-app check app/aven-worktree
+    herdr-app check app/aven-panel
+    herdr-app check app/aven-panel-tabs
+
+# Node 24 is a development-only dependency for deterministic desktop-mod tests.
+app-test:
+    node test/aven-panel.test.mjs
+    node test/aven-panel-tabs.test.mjs
 
 # Optional local read-only dashboard (Node 24 LTS).
 ui-install:
