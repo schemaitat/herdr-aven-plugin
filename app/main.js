@@ -88,9 +88,12 @@ export default class AvenTasks extends View {
   async reveal(terminal) {
     const address = typeof terminal === "string" ? terminal : terminal?.address;
     if (!address) return;
-    const ready = await this.revealReady(address);
+    await this.revealReady(address);
     this.close();
-    if (!ready) run("terminal.peek", { terminal: address });
+    // The CLI probe confirms that Herdr adopted the terminal, but does not
+    // transfer this overlay's in-app keyboard focus. Repeat the reveal through
+    // the app command so the Aven TUI owns input as it becomes visible.
+    run("terminal.peek", { terminal: address });
   }
 
   async revealReady(address) {
@@ -185,6 +188,9 @@ export default class AvenTasks extends View {
       .bg(t.popover)
       .text_size(13)
       .track_focus(this.handle)
+      // Layout completes after the overlay attaches and can take focus. Reclaim
+      // it on the first size notification so its key handlers work immediately.
+      .on_size_change((_size, _cx) => { if (!this.closed) this.handle.focus(); })
       .on_key_down((event, cx) => {
         const key = event.key;
         if (key === "escape") this.close();
