@@ -8,6 +8,8 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+const AVEN_METADATA_VALUE_LIMIT: usize = 4096;
+
 // Admission/reopen task validation and reset-generation fencing.
 pub(crate) fn refresh_task_by_ref(invocation: &Invocation, reference: &str) -> Result<Value> {
     let output = aven(invocation, &["context", reference, "--json"], None)?;
@@ -90,6 +92,7 @@ pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Re
     // separate sessions while sharing the selected task's worktree branch.
     let current = refresh_task_by_ref(invocation, &attempt.task_ref)?;
     ensure_attempt_current(&current, attempt)?;
+    let snapshot = serialize_aven_attempt_snapshot(attempt)?;
     let metadata = vec![
         "dispatch.backend=hc".to_owned(),
         format!("dispatch.session-id={}", attempt.session_id),
@@ -106,11 +109,7 @@ pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Re
         format!("dispatch.state={}", attempt.state),
         format!("dispatch.workflow={}", attempt.workflow),
         format!("dispatch.branch={}", attempt.branch),
-        format!(
-            "dispatch.attempt.{}={}",
-            attempt.workflow,
-            serde_json::to_string(&aven_attempt_snapshot(attempt))?
-        ),
+        format!("dispatch.attempt.{}={}", attempt.workflow, snapshot),
     ];
     let current_status = current
         .pointer("/task/status")
@@ -160,11 +159,28 @@ pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Re
 pub(crate) fn aven_attempt_snapshot(attempt: &Attempt) -> Attempt {
     let mut snapshot = attempt.clone();
     // The full prompt is retained in the dispatcher store for recovery, but
-    // after admission it is not needed in Aven's size-limited metadata.
-    if matches!(snapshot.state.as_str(), "needs-review" | "completed") {
+    // after admission it is not needed in Aven's size-limited metadata. Keep
+    // pending and unknown states intact: they may still need the exact body
+    // to recover an admission without submitting a different prompt.
+    if matches!(
+        snapshot.state.as_str(),
+        "running" | "waiting" | "interrupted" | "failed" | "needs-review" | "completed"
+    ) {
         snapshot.pending_prompt.clear();
     }
     snapshot
+}
+
+fn serialize_aven_attempt_snapshot(attempt: &Attempt) -> Result<String> {
+    let snapshot = serde_json::to_string(&aven_attempt_snapshot(attempt))?;
+    if snapshot.len() > AVEN_METADATA_VALUE_LIMIT {
+        bail!(
+            "dispatcher snapshot is {} UTF-8 bytes, exceeding Aven's {}-byte metadata limit; pending prompt and full attempt remain in the dispatcher store",
+            snapshot.len(),
+            AVEN_METADATA_VALUE_LIMIT
+        );
+    }
+    Ok(snapshot)
 }
 
 // Best-effort durable task link repair.
@@ -239,7 +255,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn terminal_aven_snapshot_omits_large_admitted_prompt() {
+    fn admitted_aven_snapshot_omits_large_prompt_without_changing_store_copy() {
         let mut attempt: Attempt = serde_json::from_value(serde_json::json!({
             "task_id":"task", "task_ref":"APP-TASK", "workflow":"implementation",
             "attempt_id":"att", "branch":"branch", "worktree":"/tmp", "session_id":"ses",
@@ -247,13 +263,46 @@ mod tests {
         }))
         .unwrap();
         attempt.pending_prompt = "large prompt".repeat(3000);
-        assert!(aven_attempt_snapshot(&attempt).pending_prompt.is_empty());
+        for state in [
+            "running",
+            "waiting",
+            "interrupted",
+            "failed",
+            "needs-review",
+            "completed",
+        ] {
+            attempt.state = state.into();
+            assert!(aven_attempt_snapshot(&attempt).pending_prompt.is_empty());
+            assert!(serialize_aven_attempt_snapshot(&attempt).is_ok());
+        }
         assert_eq!(attempt.pending_prompt.len(), 36000);
-        attempt.state = "prompt-pending".into();
-        assert_eq!(
-            aven_attempt_snapshot(&attempt).pending_prompt,
-            attempt.pending_prompt
-        );
+        for state in ["prompt-pending", "terminal-pending", "unknown"] {
+            attempt.state = state.into();
+            assert_eq!(
+                aven_attempt_snapshot(&attempt).pending_prompt,
+                attempt.pending_prompt
+            );
+            assert!(serialize_aven_attempt_snapshot(&attempt).is_err());
+        }
+    }
+
+    #[test]
+    fn aven_snapshot_limit_counts_serialized_utf8_and_escaping() {
+        let mut attempt: Attempt = serde_json::from_value(serde_json::json!({
+            "task_id":"task", "task_ref":"APP-TASK", "workflow":"implementation",
+            "attempt_id":"att", "branch":"branch", "worktree":"/tmp", "session_id":"ses",
+            "prompt_id":"msg", "state":"prompt-pending", "aven":{}, "created_at":0
+        }))
+        .unwrap();
+        let base = serialize_aven_attempt_snapshot(&attempt).unwrap().len();
+        attempt.pending_prompt = "é".repeat((AVEN_METADATA_VALUE_LIMIT - base) / 2);
+        assert!(serialize_aven_attempt_snapshot(&attempt).is_ok());
+        attempt.pending_prompt.push('é');
+        assert!(serialize_aven_attempt_snapshot(&attempt).is_err());
+        attempt.pending_prompt = "\\".repeat((AVEN_METADATA_VALUE_LIMIT - base) / 2);
+        assert!(serialize_aven_attempt_snapshot(&attempt).is_ok());
+        attempt.pending_prompt.push('\\');
+        assert!(serialize_aven_attempt_snapshot(&attempt).is_err());
     }
     #[test]
     fn dispatcher_events_are_machine_readable_json() {
