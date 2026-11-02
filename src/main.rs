@@ -1612,6 +1612,7 @@ fn start_babysitter(
     )?;
     let _ = app::show_worktree(
         &terminal.address,
+        &attempt.terminal.address,
         &worktree,
         &format!("Babysit {}", attempt.task_ref),
         &attempt.task_ref,
@@ -1820,6 +1821,7 @@ fn provision_phase_worktrees(
         attempt.core_name = core.name.clone();
         attempt.phases[index].terminal = terminal_ref_for(&core, &terminal, "phase", true);
         let _ = app::show_worktree(
+            &terminal.address,
             &terminal.address,
             &resource.path,
             &format!("{} {}", task.task_ref, task.title),
@@ -2217,6 +2219,7 @@ fn dispatch(
         )?;
         let _ = app::show_worktree(
             &terminal.address,
+            &terminal.address,
             &worktree,
             &format!("{} {}", reopened.task_ref, selected.task.title),
             &reopened.task_ref,
@@ -2231,7 +2234,7 @@ fn dispatch(
             } else {
                 let session = reopened.babysitter_session_id.clone();
                 let worktree = reopened.worktree.clone();
-                launch_and_record(
+                let babysitter = launch_and_record(
                     &mut reopened,
                     "babysitter",
                     &worktree,
@@ -2239,6 +2242,14 @@ fn dispatch(
                     &path,
                     &mut store,
                 )?;
+                let _ = app::show_worktree(
+                    &babysitter.address,
+                    &reopened.terminal.address,
+                    &worktree,
+                    &format!("Babysit {}", reopened.task_ref),
+                    &reopened.task_ref,
+                    &mut reopened.aven_panel,
+                );
                 if matches!(
                     prior_state.as_str(),
                     "babysitter-session-pending" | "babysitter-prompt-pending"
@@ -2497,6 +2508,7 @@ fn dispatch(
         &mut store,
     )?;
     let _ = app::show_worktree(
+        &terminal.address,
         &terminal.address,
         &worktree,
         &format!("{} {}", attempt.task_ref, selected.task.title),

@@ -344,7 +344,7 @@ assert_file_contains "$work/watch-status" '"store"' 'watcher status reports its 
 # With herdr-app available, a dispatched worktree gets a sidebar space and the
 # attempt terminal is labelled into that space's tab.
 app_store=$work/app.sqlite
-FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra <<EOF >/dev/null
+FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --babysitter <<EOF >/dev/null
 $context
 EOF
 assert_file_contains "$work/app.log" 'space.new' 'dispatch creates a worktree space in herdr-app'
@@ -357,6 +357,26 @@ assert_file_contains "$log" '"kill"' 'the placeholder shell is removed after the
 assert_file_contains "$log" '"t-shell"' 'the removed terminal is the space.new placeholder'
 assert_file_contains "$log" 'herdr.space=s1' 'attempt terminal is labelled into the worktree space'
 assert_file_contains "$log" 'herdr.tab=tb1' 'attempt terminal is labelled into the worktree tab'
+
+# The worker establishes the task layout; its babysitter joins that existing
+# worktree tab without creating another Aven companion pane or placeholder
+# space. The sidecar is deliberately started after the worker is admitted.
+assert_eq "$(grep -c 'space.new' "$work/app.log")" 1 'babysitter reuses the worker worktree space'
+assert_eq "$(grep -c 'pane.split' "$work/app.log")" 1 'babysitter reuses the worker Aven panel'
+assert_file_contains "$work/app.log" 'pane.focus --terminal t' 'sidecar layout restores focus to the worker or sidecar terminal'
+
+# Cumulative dispatch keeps the coordinator and every phase worker in their
+# own worktree space, with exactly one companion Aven panel in each. Later
+# workers must not inherit the root worktree's panel.
+app_worktree_store=$work/app-worktree.sqlite
+FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_worktree_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-5.6-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
+$cumulative_context
+EOF
+app_splits=$(grep -c 'pane.split' "$work/app.log")
+assert_eq "$app_splits" 4 'coordinator and two phase workers each receive one Aven panel'
+assert_file_contains "$work/app.log" 'app-dispatch-epic-task-phase-01' 'first phase gets a separate worktree space'
+assert_file_contains "$work/app.log" 'app-dispatch-epic-task-phase-02' 'second phase gets a separate worktree space'
+assert_file_contains "$work/app.log" 'app-dispatch-epic-task' 'coordinator gets its root worktree space'
 
 # Reset invalidates execution while preserving Aven plan/status.
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reset APP-1 --yes > "$work/reset"
