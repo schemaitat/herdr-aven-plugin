@@ -10,6 +10,8 @@ const base = (path) => (path ?? "").replace(/\/+$/, "").split("/").pop() || path
 // Probe the peek for a bounded time instead of revealing too early.
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
+// The overlay can take focus while it is attaching; retry after that handoff.
+const FOCUS_RETRY_MS = 600;
 
 export default class AvenTasks extends View {
   init(_props, cx) {
@@ -21,6 +23,7 @@ export default class AvenTasks extends View {
     this.cwd = focused()?.cwd ?? null;
     this.handle = cx.focus_handle();
     this.handle.focus();
+    cx.timer.after(FOCUS_RETRY_MS, () => { if (!this.closed) this.handle.focus(); });
     this.refresh();
     this.tick(cx);
     this.commands(cx);
