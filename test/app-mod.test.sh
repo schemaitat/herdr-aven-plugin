@@ -33,6 +33,10 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'terminal.peek' 'w
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'write_to_clipboard' 'worktree panel copies the displayed task ref through GPUI'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'yank-id' 'worktree panel exposes a task-ID yank control'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'ID copied' 'worktree panel confirms a copied task ID'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'open-task' 'worktree panel exposes a task opener'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" '"Open task"' 'worktree panel labels the task opener'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" '"aven", "tui", ref' 'task opener starts Aven at the displayed task'
+assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/main.js" 'aven-task-' 'task opener uses task-specific terminals'
 
 [ ! -e "$PLUGIN_ROOT/herdr-plugin.toml" ] || fail 'legacy herdr plugin manifest must be retired'
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'
