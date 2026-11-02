@@ -586,18 +586,18 @@ aven project create "My app" --path "$PWD"
 | `a` | In the overlay: open Aven's add-task composer |
 | `r` | In the overlay: refresh live terminals |
 | `Esc` | In the overlay: close it |
-| `z d` in Aven | Dispatch the selected task |
-| `z s` in Aven | Plan then implement the selected task |
-| `z p` in Aven | Turn the selected task idea into a durable implementation plan |
-| `z i` in Aven | Implement an already worked-out plan |
-| `z r` in Aven | Reset dispatch execution while preserving the focused task plan |
-| `z S` in Aven | Plan then implement with an adjacent babysitter |
-| `z b` in Aven | Implement an existing plan with an adjacent babysitter |
+| `z d` in Aven | Dispatch the selected task (list or detail) |
+| `z s` in Aven | Plan then implement the selected task (list or detail) |
+| `z p` in Aven | Turn the selected task idea into a durable implementation plan (list or detail) |
+| `z i` in Aven | Implement an already worked-out plan (list or detail) |
+| `z r` in Aven | Reset dispatch execution while preserving the focused task plan (list or detail) |
+| `z S` in an Aven list; `z x` in task detail | Plan then implement with an adjacent babysitter |
+| `z b` in Aven | Implement an existing plan with an adjacent babysitter (list or detail) |
 
 The default prefix is `ctrl+b`. `z s` runs the normal SDD workflow from either
-the task list or task detail. In task detail, `z S` runs the SDD babysitter
-command; the other dispatch bindings use uppercase `D`, `P`, `I`, `B`, and
-`R`. Press `q` to close Aven and return to your pane.
+the task list or task detail. The plan-and-implement babysitter uses `z S` in
+lists and `z x` in task detail to avoid colliding with `z s`. Press `q` to close
+Aven and return to your pane.
 
 ### Dispatch flow
 

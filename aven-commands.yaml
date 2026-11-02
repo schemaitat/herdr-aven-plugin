@@ -71,7 +71,7 @@
     - --skills-dir
     - "${PLUGIN_ROOT}/skills"
   keys: [z p]
-  detail_keys: [z P]
+  detail_keys: [z p]
   target: focused
   execution: terminal
   on_success: quit
@@ -95,7 +95,7 @@
     - --skills-dir
     - "${PLUGIN_ROOT}/skills"
   keys: [z i]
-  detail_keys: [z I]
+  detail_keys: [z i]
   target: focused
   execution: terminal
   on_success: quit
@@ -120,7 +120,7 @@
     - "${PLUGIN_ROOT}/skills"
     - --babysitter
   keys: [z S]
-  detail_keys: [z S]
+  detail_keys: [z x]
   target: focused
   execution: terminal
   on_success: quit
@@ -143,7 +143,7 @@
     - "${PLUGIN_ROOT}/skills"
     - --babysitter
   keys: [z b]
-  detail_keys: [z B]
+  detail_keys: [z b]
   target: focused
   execution: terminal
   on_success: quit
@@ -157,7 +157,7 @@
   program: aven-dispatch
   args: [reset]
   keys: [z r]
-  detail_keys: [z R]
+  detail_keys: [z r]
   target: focused
   execution: terminal
   on_success: quit

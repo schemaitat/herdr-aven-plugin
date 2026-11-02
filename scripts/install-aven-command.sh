@@ -82,7 +82,7 @@ dispatch_item() {
         - --agent
         - select
       keys: [z d]
-      detail_keys: [z D]
+      detail_keys: [z d]
       target: focused
       execution: terminal
       on_success: quit

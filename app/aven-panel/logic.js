@@ -1,7 +1,15 @@
 // Pure Aven-panel contracts. Kept independent of GPUI so query and identity
 // behavior can be exercised with Node fixtures.
-export const OPEN_STATUSES = new Set(["inbox", "backlog", "todo", "active"]);
 export const LIMIT = 500;
+export const DISPATCH_ACTIONS = [
+  { id: "dispatch", detailKey: "d", terminalKey: "d", label: "z d", description: "Dispatch task" },
+  { id: "plan-implement", detailKey: "s", terminalKey: "s", label: "z s", description: "Plan then implement" },
+  { id: "plan", detailKey: "p", terminalKey: "p", label: "z p", description: "Create implementation plan" },
+  { id: "implement", detailKey: "i", terminalKey: "i", label: "z i", description: "Implement existing plan" },
+  { id: "reset", detailKey: "r", terminalKey: "r", label: "z r", description: "Reset dispatcher execution" },
+  { id: "plan-implement-babysitter", detailKey: "x", terminalKey: "x", label: "z x", description: "Plan then implement with babysitter" },
+  { id: "implement-babysitter", detailKey: "b", terminalKey: "b", label: "z b", description: "Implement with babysitter" },
+];
 
 export function projectArgs(workspace) {
   return ["project", "list", "--workspace", workspace, "--limit", String(LIMIT), "--json"];
@@ -16,6 +24,17 @@ export function upcomingArgs(workspace, project) {
   return ["list", "--workspace", workspace, "--project", project, "--upcoming", "--limit", String(LIMIT), "--json"];
 }
 
+// Omitting --project lets Aven infer the project from the selected space's
+// Git root. This keeps All scoped to (for example) HAP, not every workspace
+// project, while still including every space in that project.
+export function inferredEpicArgs(workspace) {
+  return ["list", "--workspace", workspace, "--epics", "--limit", String(LIMIT), "--json"];
+}
+
+export function inferredUpcomingArgs(workspace) {
+  return ["list", "--workspace", workspace, "--upcoming", "--limit", String(LIMIT), "--json"];
+}
+
 export function canonicalId(row) {
   return String(row?.id ?? row?.canonical_id ?? row?.ref ?? "").trim();
 }
@@ -26,7 +45,7 @@ export function qualifiedRef(row, project) {
 }
 
 export function normalizeEpic(row, project, workspace) {
-  if (!row || row.deleted || !row.is_epic || !OPEN_STATUSES.has(row.status)) return null;
+  if (!row || row.deleted || !row.is_epic || row.status === "done" || row.status === "canceled") return null;
   const id = canonicalId(row);
   const ref = qualifiedRef(row, project);
   if (!id || !ref) return null;
@@ -71,8 +90,26 @@ export function mergeCoverage(results) {
   return { rows: sortEpics([...rows.values()]), coverageError: errors.join("; ") };
 }
 
+function terminalHash(value) {
+  let first = 0x811c9dc5, second = 0x9e3779b9;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+  return `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0").slice(0, 4)}`;
+}
+
+export function scopeEpics(rows, scope, context) {
+  if (scope !== "space") return rows;
+  const rootId = context?.kind === "dispatch" ? canonicalId(context.root) : "";
+  return rootId ? rows.filter((row) => canonicalId(row) === rootId) : [];
+}
+
 export function terminalName(workspace, epicId) {
-  return `aven-epic-${encodeURIComponent(workspace)}-${encodeURIComponent(epicId)}-`;
+  // Herdr terminal names are limited to 32 chars. Keep a stable, compact
+  // per-workspace/task prefix so existing terminals can still be reused.
+  return `aven-e-${terminalHash(`${workspace}\u0000${epicId}`)}-`;
 }
 
 export function terminalIdentity(workspace, epicId) {
