@@ -33,6 +33,22 @@ export default class AvenPanel extends View {
   cwd() { return String(props()?.cwd ?? ""); }
   space() { const id = focused()?.space; return spaces().find((space) => space.id === id) ?? spaces().find((space) => space.active) ?? null; }
 
+  spaceCwd(space) {
+    const focus = focused();
+    // A space's folder is only the default for new terminals. Its visible
+    // terminal can be in a nested checkout (or the space can point at $HOME).
+    return focus?.space === space?.id && focus.cwd ? focus.cwd : (space?.folder || this.cwd());
+  }
+
+  async worktreeFolder(folder) {
+    if (!folder) return "";
+    try {
+      const result = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder });
+      if (result.code === 0 && result.stdout.trim()) return result.stdout.trim().replace(/\/+$/, "");
+    } catch {}
+    return folder.replace(/\/+$/, "");
+  }
+
   async rootFolder(folder) {
     if (!folder) return undefined;
     try {
@@ -53,7 +69,8 @@ export default class AvenPanel extends View {
       try {
         const workspace = this.workspace();
         const space = this.space();
-        const cwd = await this.rootFolder(space?.folder || this.cwd());
+        const spaceCwd = this.spaceCwd(space);
+        const cwd = await this.rootFolder(spaceCwd);
         const [open, upcoming] = await Promise.all([
           exec("aven", inferredEpicArgs(workspace), cwd ? { cwd } : undefined),
           exec("aven", inferredUpcomingArgs(workspace), cwd ? { cwd } : undefined),
@@ -63,15 +80,19 @@ export default class AvenPanel extends View {
         const rows = mergeProjectRows({ workspace, project: "", open: openRows, upcoming: upcomingRows });
         let context;
         try {
-          const attempts = JSON.parse((await exec("aven-dispatch", ["list"], space?.folder ? { cwd: space.folder } : undefined)).stdout || "[]");
-          const match = attempts.filter((attempt) => String(attempt?.worktree ?? "") === String(space?.folder ?? ""));
+          const worktree = await this.worktreeFolder(spaceCwd);
+          const contextSpace = { ...space, folder: worktree };
+          const attemptsResult = await exec("aven-dispatch", ["list"], worktree ? { cwd: worktree } : undefined);
+          if (attemptsResult.code !== 0) throw new Error((attemptsResult.stderr || "").trim() || "could not read dispatcher attempts");
+          const attempts = JSON.parse(attemptsResult.stdout || "[]");
+          const match = attempts.filter((attempt) => String(attempt?.worktree ?? "").replace(/\/+$/, "") === worktree);
           let task, root;
           if (match.length === 1 && match[0].task_ref) {
-            task = JSON.parse((await exec("aven", ["show", match[0].task_ref, "--json"], space?.folder ? { cwd: space.folder } : undefined)).stdout);
-            root = task.is_epic ? task : task.epic_parent?.ref ? JSON.parse((await exec("aven", ["show", task.epic_parent.ref, "--json"], space?.folder ? { cwd: space.folder } : undefined)).stdout) : null;
+            task = JSON.parse((await exec("aven", ["show", match[0].task_ref, "--json"], worktree ? { cwd: worktree } : undefined)).stdout);
+            root = task.is_epic ? task : task.epic_parent?.ref ? JSON.parse((await exec("aven", ["show", task.epic_parent.ref, "--json"], worktree ? { cwd: worktree } : undefined)).stdout) : null;
           }
-          context = resolveSpaceContext({ space, attempts, task, root, rows });
-        } catch { context = { kind: "unavailable", name: String(space?.name ?? ""), folder: String(space?.folder ?? ""), message: "Dispatcher context is unavailable." }; }
+          context = resolveSpaceContext({ space: contextSpace, attempts, task, root, rows });
+        } catch { context = { kind: "unavailable", name: String(space?.name ?? ""), folder: String(spaceCwd), message: "Dispatcher context is unavailable; showing project epics." }; }
         this.state = { loading: false, rows, context, coverageError: "", error: "", stale: false };
       } catch (error) {
         const message = String(error?.message ?? error);
@@ -232,7 +253,7 @@ export default class AvenPanel extends View {
         .when(Boolean(state.error), (el) => el.child(div().mx(8).p(8).rounded(6).text_size(11).text_color(t.blocked).bg(t.raised).child(state.error)))
         .when(Boolean(state.coverageError), (el) => el.child(div().mx(8).p(8).rounded(6).text_size(11).text_color(t.blocked).bg(t.raised).child(`Incomplete coverage: ${state.coverageError}`)))
         .when(state.stale && state.rows.length > 0, (el) => el.child(div().mx(8).py(5).text_size(10.5).text_color(t.dim).child("Showing last successful results (stale).")))
-         .when(!state.loading && !state.error && !state.coverageError && rows.length === 0, (el) => el.child(div().p(12).text_size(11.5).text_color(t.dim).child(this.scope === "space" ? "No root epic identified for this space." : "No epics in this project.")))
+          .when(!state.loading && !state.error && !state.coverageError && rows.length === 0, (el) => el.child(div().p(12).text_size(11.5).text_color(t.dim).child("No epics in this project.")))
          .children(rows.map((epic) => this.row(t, epic, cx))));
   }
 }

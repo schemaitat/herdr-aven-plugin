@@ -103,7 +103,11 @@ function terminalHash(value) {
 export function scopeEpics(rows, scope, context) {
   if (scope !== "space") return rows;
   const rootId = context?.kind === "dispatch" ? canonicalId(context.root) : "";
-  return rootId ? rows.filter((row) => canonicalId(row) === rootId) : [];
+  // A normal project/root space may not belong to a dispatcher attempt. The
+  // caller already queried epics from that space's Git project, so keep those
+  // rows instead of making Space appear empty. Dispatched worktrees stay pinned
+  // to their owning root epic.
+  return rootId ? rows.filter((row) => canonicalId(row) === rootId) : rows;
 }
 
 export function terminalName(workspace, epicId) {
@@ -127,14 +131,12 @@ export function isLiveEpicTerminal(terminal, workspace, epicId) {
 }
 
 // Dispatcher data is only authoritative when it names this exact worktree.
-// Folder-derived information is deliberately display-only: it must never
-// change the browser query or cause a terminal launch.
 export function resolveSpaceContext({ space, attempts = [], task, root, rows = [] }) {
   const folder = String(space?.folder ?? "");
   const name = String(space?.name ?? "");
   const matches = folder ? attempts.filter((attempt) => String(attempt?.worktree ?? "") === folder) : [];
   if (!folder) return { kind: "missing", name, folder, message: "This space has no worktree folder." };
-  if (matches.length !== 1) return { kind: matches.length ? "ambiguous" : "unavailable", name, folder, message: matches.length ? "Dispatcher context is ambiguous for this worktree." : "No dispatcher context for this worktree." };
+  if (matches.length !== 1) return { kind: matches.length ? "ambiguous" : "unavailable", name, folder, message: matches.length ? "Multiple dispatches found; showing project epics." : "Project space; showing project epics." };
   if (!task?.ref || !root?.is_epic || !root?.id) return { kind: "stale", name, folder, message: "Dispatcher context no longer resolves to an Aven root epic." };
   const pinned = rows.find((row) => canonicalId(row) === canonicalId(root)) ?? null;
   return { kind: "dispatch", name, folder, task, root, pinned, message: pinned ? "Dispatcher root epic is listed below." : "Dispatcher root epic is not in the current safe result set." };

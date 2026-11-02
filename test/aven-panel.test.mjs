@@ -30,7 +30,7 @@ const root = { id: "root", ref: "HAP-ROOT", is_epic: true, title: "Root" };
 const context = resolveSpaceContext({ space: { name: "review", folder: "/repo" }, attempts: [{ worktree: "/repo" }], task: { ref: "HAP-CHILD" }, root, rows: [root] });
 assert.equal(context.kind, "dispatch"); assert.equal(context.pinned.id, "root");
 assert.deepEqual(scopeEpics([root, { ...root, id: "other", ref: "HAP-OTHER" }], "space", context).map((row) => row.id), ["root"], "space scope shows only the root epic identified from its worktree task");
-assert.equal(scopeEpics([root], "space", { kind: "unavailable" }).length, 0, "space scope does not guess when dispatcher context is missing");
+assert.deepEqual(scopeEpics([root], "space", { kind: "unavailable" }), [root], "a non-dispatched root space shows the epics already scoped to its project");
 assert.equal(scopeEpics([root], "all", { kind: "unavailable" }).length, 1, "all scope keeps the full workspace result");
 assert.equal(resolveSpaceContext({ space: { folder: "/none" }, attempts: [] }).kind, "unavailable");
 assert.equal(resolveSpaceContext({ space: { folder: "/repo" }, attempts: [{ worktree: "/repo" }], task: { ref: "HAP" }, root: { ref: "HAP" } }).kind, "stale");
