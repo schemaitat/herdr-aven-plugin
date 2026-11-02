@@ -23,7 +23,7 @@ just install
 ```
 
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
-commands, installs `mods/aven-tasks`, `mods/aven-worktree`, `mods/aven-panel`,
+commands, installs the global OpenCode `/ha-merge` command, and installs `mods/aven-tasks`, `mods/aven-worktree`, `mods/aven-panel`,
 `mods/aven-panel-tabs`, and the personal `layouts/aven-right.json` into
 `$HERDR_APP_HOME` (or `~/.config/herdr-app`), and reports readiness with
 `just doctor`. The app mods are optional; when `herdr-app` is absent the same
@@ -767,6 +767,33 @@ Apply command changes and **close/reopen Aven**:
 ```sh
 sh scripts/install-aven-command.sh
 ```
+
+### Finish a dispatched worktree
+
+Run `/ha-merge` in the OpenCode session in the dispatched worktree. The agent
+summarizes the changes and asks whether to merge the branch into the local
+`main` checkout, create a GitHub pull request targeting `main`, or cancel.
+The local merge does not push `main`; the PR route pushes the branch and needs
+GitHub CLI authentication. The agent preserves unrelated changes, checks the
+target checkout, and stops on ambiguity, conflict or failure.
+
+The workflow identifies the associated dispatch and reviews Aven task acceptance
+against verification evidence. It records a handoff and reconciles dispatcher
+state after a commit or PR and before any teardown. An open PR is not a merge.
+Only after a verified merge and successful reconciliation does it offer to close
+the exact associated Herdr space, with a default of No. Closing a space ends its
+terminals, possibly including the current session; the command never deletes a
+Git worktree or branch. Missing or ambiguous ownership prevents closure.
+
+This is an OpenCode prompt, not a transactional enforcement mechanism; review
+the agent's actions and confirmations. OpenCode and Git/GitHub permissions still
+apply. `just install` installs the command at
+`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/commands/ha-merge.md` for all
+projects. Run `sh scripts/install-opencode-command.sh` to install it separately.
+Identical files are left untouched; different files and symlinks are refused.
+To upgrade an older installed copy, compare it with `commands/ha-merge.md` and
+manually replace it only if you want the new version. Project-local commands of
+the same name override the global one. OpenCode reloads command files on save.
 
 ### Inspect a dispatch
 

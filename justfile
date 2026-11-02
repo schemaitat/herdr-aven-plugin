@@ -6,6 +6,7 @@ default:
 install:
     cargo install --path . --force
     sh scripts/install-aven-command.sh
+    sh scripts/install-opencode-command.sh
     sh scripts/install-app-mod.sh
     sh scripts/doctor.sh
 
