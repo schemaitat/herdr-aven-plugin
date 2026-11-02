@@ -23,6 +23,7 @@ const PHASE_GLYPH = { done: "✓", active: "●", canceled: "–", todo: "○", 
 
 const label = (status) => STATUS[status] ?? (status ? status[0].toUpperCase() + status.slice(1) : "Unknown");
 const base = (path) => String(path ?? "").replace(/\/+$/, "").split("/").pop() || "";
+const taskTerminalPrefix = (ref) => `aven-task-${encodeURIComponent(String(ref ?? ""))}-`;
 
 function taskTone(t, status, blocked) {
   if (blocked) return t.blocked;
@@ -214,6 +215,32 @@ export default class AvenWorktree extends View {
         "--name", name, "--cwd", folder, "--", "aven", "tui", "-p",
       ]);
       if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not start aven");
+      run("terminal.peek", { terminal: JSON.parse(result.stdout).address });
+    } catch (error) {
+      this.state = { ...this.state, error: String(error?.message ?? error) };
+      this.notify(cx);
+    }
+  }
+
+  async openTask(cx) {
+    const folder = this.state.folder || this.space()?.folder;
+    const ref = String(this.state.task?.ref ?? "").trim();
+    if (!folder || !ref) return;
+    const prefix = taskTerminalPrefix(ref);
+    const existing = terminals().find(
+      (terminal) => terminal.state === "live" && terminal.cwd === folder && String(terminal.name ?? "").startsWith(prefix),
+    );
+    if (existing) {
+      run("terminal.peek", { terminal: existing.address });
+      return;
+    }
+    try {
+      const name = `${prefix}${Date.now().toString(36)}`;
+      const result = await hc([
+        "run", "--bg", "--json", "--no-parent", "--outlive-parent",
+        "--name", name, "--cwd", folder, "--", "aven", "tui", ref,
+      ]);
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not open the task");
       run("terminal.peek", { terminal: JSON.parse(result.stdout).address });
     } catch (error) {
       this.state = { ...this.state, error: String(error?.message ?? error) };
@@ -471,6 +498,9 @@ export default class AvenWorktree extends View {
           .pt(2)
           .when(Boolean(state.task?.ref), (el) => el.child(
             this.button(t, "yank-id", this.copiedRef === state.task.ref ? "ID copied" : "Yank ID", (_event, cx) => this.copyTaskRef(cx)),
+          ))
+          .when(Boolean(state.task?.ref), (el) => el.child(
+            this.button(t, "open-task", "Open task", (_event, cx) => this.openTask(cx)),
           ))
           .child(this.button(t, "open", "Open Aven", (_event, cx) => this.openAven(cx)))
           .child(this.button(t, "inspect", "Inspector", (_event, cx) => this.openInspector(cx))))

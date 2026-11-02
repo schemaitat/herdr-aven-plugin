@@ -533,9 +533,10 @@ reuses it rather than opening a second Aven.
 The companion `aven-worktree` panel is installed with the same command. Every
 dispatched worktree space opens an **Aven** pane beside the agent showing the
 root epic, its phases and progress, the current task, and the persisted
-dispatcher state, with buttons to open the Aven TUI or the dispatcher inspector
-and a row that peeks the attempt terminal. The panel is created once per
-worktree and remembers that in the persisted attempt. If you close it, reopen it
+dispatcher state, with buttons to open the current task directly, the generic
+Aven TUI, or the dispatcher inspector and a row that peeks the attempt
+terminal. The panel is created once per worktree and remembers that in the
+persisted attempt. If you close it, reopen it
 for the focused space with `herdr-app do mod.open --name aven-worktree` (or the
 command palette's mod picker). It is read-only: it never changes tasks, prompts,
 or dispatch state.
