@@ -269,6 +269,7 @@ pub(crate) fn start_babysitter(
     )?;
     let _ = app::show_worktree(
         &terminal.address,
+        &attempt.terminal.address,
         &worktree,
         &format!("Babysit {}", attempt.task_ref),
         &attempt.task_ref,
@@ -403,6 +404,7 @@ pub(crate) fn provision_phase_worktrees(
         attempt.core_name = core.name.clone();
         attempt.phases[index].terminal = terminal_ref_for(&core, &terminal, "phase", true);
         let _ = app::show_worktree(
+            &terminal.address,
             &terminal.address,
             &resource.path,
             &format!("{} {}", task.task_ref, task.title),

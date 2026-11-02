@@ -265,6 +265,7 @@ pub(crate) fn reopen_existing(
     )?;
     let _ = app::show_worktree(
         &terminal.address,
+        &terminal.address,
         &worktree,
         &format!("{} {}", reopened.task_ref, task_title),
         &reopened.task_ref,
@@ -279,7 +280,7 @@ pub(crate) fn reopen_existing(
         } else {
             let session = reopened.babysitter_session_id.clone();
             let worktree = reopened.worktree.clone();
-            launch_and_record(
+            let babysitter = launch_and_record(
                 &mut reopened,
                 "babysitter",
                 &worktree,
@@ -287,6 +288,14 @@ pub(crate) fn reopen_existing(
                 &path,
                 &mut store,
             )?;
+            let _ = app::show_worktree(
+                &babysitter.address,
+                &reopened.terminal.address,
+                &worktree,
+                &format!("Babysit {}", reopened.task_ref),
+                &reopened.task_ref,
+                &mut reopened.aven_panel,
+            );
             if matches!(
                 prior_state.as_str(),
                 "babysitter-session-pending" | "babysitter-prompt-pending"
@@ -558,6 +567,7 @@ pub(crate) fn launch_primary_terminal(
     let worktree = attempt.worktree.clone();
     let terminal = launch_and_record(attempt, role, &worktree, &session_id, path, store)?;
     let _ = app::show_worktree(
+        &terminal.address,
         &terminal.address,
         &worktree,
         &format!("{} {}", attempt.task_ref, task_title),

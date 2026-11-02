@@ -261,6 +261,7 @@ fn show_aven_pane(space: &str, tab: &str, address: &str, task_ref: &str) -> bool
 /// fail dispatch. The terminal must already exist.
 pub(crate) fn show_worktree(
     address: &str,
+    anchor_address: &str,
     folder: &str,
     name: &str,
     task_ref: &str,
@@ -272,10 +273,19 @@ pub(crate) fn show_worktree(
     let Some(before) = spaces() else {
         return false;
     };
+    // A sidecar is not present in the app inventory until after it is labelled.
+    // Anchor it to the already-adopted worker instead of whichever tab happened
+    // to be active when it started. For primary and phase terminals the address
+    // itself is the anchor.
+    let anchor = if anchor_address.is_empty() {
+        address
+    } else {
+        anchor_address
+    };
     let existing = before
         .iter()
         .filter(|space| space.get("folder").and_then(Value::as_str) == Some(folder))
-        .find_map(|space| space_target(space, address));
+        .find_map(|space| space_target(space, anchor));
     let target = existing.or_else(|| {
         let previous = before
             .iter()
@@ -299,7 +309,7 @@ pub(crate) fn show_worktree(
             .and_then(created_target);
         parsed.or_else(|| {
             let after = spaces()?;
-            find_space(&after, folder, &previous, address)
+            find_space(&after, folder, &previous, anchor)
         })
     });
     let Some(target) = target else {
