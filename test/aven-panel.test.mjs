@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   LIMIT, canonicalId, isLiveEpicTerminal, launchArgs, mergeCoverage,
-  mergeProjectRows, openArgs, projectArgs, sortEpics, terminalName, upcomingArgs,
+  mergeProjectRows, openArgs, projectArgs, resolveSpaceContext, sortEpics, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
@@ -19,4 +19,9 @@ assert.equal(isLiveEpicTerminal({ state: "live", name }, "default", target.id), 
 assert.equal(isLiveEpicTerminal({ state: "dead", name }, "default", target.id), false);
 assert.deepEqual(launchArgs({ workspace: "default", epic: target, cwd: "/repo", name }).slice(-5), ["--", "aven", "--workspace", "default", "tui", "HAP-EPIC"].slice(-5));
 assert.equal(launchArgs({ workspace: "default", epic: target, cwd: "", name }).includes("--cwd"), false);
+const root = { id: "root", ref: "HAP-ROOT", is_epic: true, title: "Root" };
+const context = resolveSpaceContext({ space: { name: "review", folder: "/repo" }, attempts: [{ worktree: "/repo" }], task: { ref: "HAP-CHILD" }, root, rows: [root] });
+assert.equal(context.kind, "dispatch"); assert.equal(context.pinned.id, "root");
+assert.equal(resolveSpaceContext({ space: { folder: "/none" }, attempts: [] }).kind, "unavailable");
+assert.equal(resolveSpaceContext({ space: { folder: "/repo" }, attempts: [{ worktree: "/repo" }], task: { ref: "HAP" }, root: { ref: "HAP" } }).kind, "stale");
 console.log("aven panel logic ok");

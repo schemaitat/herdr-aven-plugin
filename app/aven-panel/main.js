@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, hc, props, run, terminals, theme } from "herdr";
-import { LIMIT, launchArgs, mergeCoverage, mergeProjectRows, openArgs, projectArgs, terminalIdentity, terminalName, upcomingArgs, isLiveEpicTerminal } from "./logic.js";
+import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
+import { LIMIT, canonicalId, launchArgs, mergeCoverage, mergeProjectRows, openArgs, projectArgs, resolveSpaceContext, terminalIdentity, terminalName, upcomingArgs, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const READY_TIMEOUT_MS = 3000;
@@ -28,6 +28,7 @@ export default class AvenPanel extends View {
 
   workspace() { return String(props()?.workspace ?? "default"); }
   cwd() { return String(props()?.cwd ?? ""); }
+  space() { const id = focused()?.space; return spaces().find((space) => space.id === id) ?? spaces().find((space) => space.active) ?? null; }
 
   notify(cx) { if (!this.closed) { try { cx.notify(); } catch {} } }
 
@@ -56,7 +57,19 @@ export default class AvenPanel extends View {
           } catch (error) { results.push({ project: key, error: String(error?.message ?? error) }); }
         }
         const merged = mergeCoverage(results);
-        this.state = { loading: false, rows: merged.rows, coverageError: merged.coverageError, error: "", stale: Boolean(merged.coverageError) };
+        const space = this.space();
+        let context;
+        try {
+          const attempts = JSON.parse((await exec("aven-dispatch", ["list"], space?.folder ? { cwd: space.folder } : undefined)).stdout || "[]");
+          const match = attempts.filter((attempt) => String(attempt?.worktree ?? "") === String(space?.folder ?? ""));
+          let task, root;
+          if (match.length === 1 && match[0].task_ref) {
+            task = JSON.parse((await exec("aven", ["show", match[0].task_ref, "--json"], space?.folder ? { cwd: space.folder } : undefined)).stdout);
+            root = task.is_epic ? task : task.epic_parent?.ref ? JSON.parse((await exec("aven", ["show", task.epic_parent.ref, "--json"], space?.folder ? { cwd: space.folder } : undefined)).stdout) : null;
+          }
+          context = resolveSpaceContext({ space, attempts, task, root, rows: merged.rows });
+        } catch { context = { kind: "unavailable", name: String(space?.name ?? ""), folder: String(space?.folder ?? ""), message: "Dispatcher context is unavailable." }; }
+        this.state = { loading: false, rows: merged.rows, context, coverageError: merged.coverageError, error: "", stale: Boolean(merged.coverageError) };
       } catch (error) {
         const message = String(error?.message ?? error);
         this.state = { ...this.state, loading: false, error: message, stale: this.state.rows.length > 0 };
@@ -102,7 +115,8 @@ export default class AvenPanel extends View {
   }
 
   row(t, epic, cx) {
-    return v_flex().id(`aven-epic-${epic.id}`).mx(8).px(9).py(7).gap(3).rounded(6).cursor_pointer()
+    const pinned = canonicalId(this.state.context?.pinned) === canonicalId(epic);
+    return v_flex().id(`aven-epic-${epic.id}`).mx(8).px(9).py(7).gap(3).rounded(6).cursor_pointer().when(pinned, (el) => el.bg(t.selected))
       .hover((style) => style.bg(t.hover)).on_click((_event, clickCx) => this.launch(epic, clickCx ?? cx))
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(epic.title))
@@ -120,6 +134,12 @@ export default class AvenPanel extends View {
         .child(div().id("aven-panel-refresh").px(7).py(4).rounded(5).cursor_pointer().text_size(11).text_color(t.muted)
           .hover((style) => style.bg(t.hover).text_color(t.foreground)).on_click((_event, clickCx) => this.refresh(clickCx)).child("Refresh")))
       .child(div().h(1).flex_none().bg(t.border))
+      .when(Boolean(state.context), (el) => el.child(v_flex().mx(8).my(7).p(8).gap(2).rounded(6).bg(t.raised)
+        .child(div().text_size(10).font_semibold().text_color(t.dim).child("CURRENT SPACE"))
+        .child(div().text_size(11.5).truncate().child(state.context.name || "Unnamed space"))
+        .when(Boolean(state.context.folder), (row) => row.child(div().text_size(10.5).truncate().text_color(t.dim).child(state.context.folder)))
+        .child(div().text_size(10.5).text_color(t.muted).child(state.context.message))
+        .when(state.context.kind === "dispatch", (row) => row.child(h_flex().gap(6).items_center().child(div().flex_1().min_w(0).truncate().text_size(10.5).child(`${state.context.root.ref} · ${state.context.root.title}`)).child(div().id("aven-panel-open-root").px(6).py(3).rounded(4).cursor_pointer().text_size(10.5).bg(t.selected).on_click((_event, clickCx) => this.launch(state.context.root, clickCx)).child("Open root"))))))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().py(5)
         .when(state.loading, (el) => el.child(div().p(12).text_size(11.5).text_color(t.dim).child("Loading epics…")))
         .when(Boolean(state.error), (el) => el.child(div().mx(8).p(8).rounded(6).text_size(11).text_color(t.blocked).bg(t.raised).child(state.error)))

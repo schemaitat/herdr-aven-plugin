@@ -88,3 +88,17 @@ export function launchArgs({ workspace, epic, cwd, name }) {
 export function isLiveEpicTerminal(terminal, workspace, epicId) {
   return terminal?.state === "live" && String(terminal?.name ?? "").startsWith(terminalName(workspace, epicId));
 }
+
+// Dispatcher data is only authoritative when it names this exact worktree.
+// Folder-derived information is deliberately display-only: it must never
+// change the browser query or cause a terminal launch.
+export function resolveSpaceContext({ space, attempts = [], task, root, rows = [] }) {
+  const folder = String(space?.folder ?? "");
+  const name = String(space?.name ?? "");
+  const matches = folder ? attempts.filter((attempt) => String(attempt?.worktree ?? "") === folder) : [];
+  if (!folder) return { kind: "missing", name, folder, message: "This space has no worktree folder." };
+  if (matches.length !== 1) return { kind: matches.length ? "ambiguous" : "unavailable", name, folder, message: matches.length ? "Dispatcher context is ambiguous for this worktree." : "No dispatcher context for this worktree." };
+  if (!task?.ref || !root?.is_epic || !root?.id) return { kind: "stale", name, folder, message: "Dispatcher context no longer resolves to an Aven root epic." };
+  const pinned = rows.find((row) => canonicalId(row) === canonicalId(root)) ?? null;
+  return { kind: "dispatch", name, folder, task, root, pinned, message: pinned ? "Dispatcher root epic is listed below." : "Dispatcher root epic is not in the current safe result set." };
+}
