@@ -157,6 +157,51 @@ describe('shared bounded live collector', () => {
     expect(snapshot.nodes.find(node => node.id === 'task:one')?.activity?.[0].state).toBe('working');
     await vi.advanceTimersByTimeAsync(600); expect(subscriptions).toBe(2);
   });
+  it('serializes each publish exactly once and hands the same frame to every subscriber', async () => {
+    vi.useFakeTimers();
+    const { api } = source();
+    const collector = createCollector(async () => liveFixture(), api); collectors.push(collector);
+    await collector.snapshot();
+    const received: string[][] = [];
+    for (let index = 0; index < 5; index++) {
+      const frames: string[] = []; received.push(frames);
+      collector.subscribe(frame => frames.push(frame));
+    }
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      await vi.advanceTimersByTimeAsync(2000); // one heartbeat plus the fast lane/API fallback publishes
+      const publishes = received[0].length;
+      expect(publishes).toBeGreaterThan(1);
+      for (const frames of received) expect(frames).toEqual(received[0]);
+      const envelopes = stringify.mock.calls.filter(([value]) => {
+        const schema = (value as { schema?: string } | undefined)?.schema;
+        return schema === 'live-graph/v1' || schema === 'live-heartbeat/v1';
+      });
+      expect(envelopes).toHaveLength(publishes);
+    } finally { stringify.mockRestore(); }
+  });
+  it('skips the activity overlay for heartbeats and reuses the last snapshot between publishes', async () => {
+    vi.useFakeTimers();
+    const { api } = source();
+    const graph = liveFixture();
+    let nodeReads = 0;
+    for (const node of graph.nodes) {
+      const details = node.details;
+      Object.defineProperty(node, 'details', { enumerable: true, configurable: true, get() { nodeReads++; return details; } });
+    }
+    const collector = createCollector(async () => graph, api); collectors.push(collector);
+    const initial = await collector.snapshot();
+    expect(nodeReads).toBeGreaterThan(0);
+    const between = await collector.snapshot();
+    expect(between).toBe(initial);
+    const frames: string[] = [];
+    collector.subscribe(frame => frames.push(frame));
+    const reads = nodeReads;
+    await vi.advanceTimersByTimeAsync(1000); // heartbeat only
+    expect(frames.some(frame => frame.includes('live-heartbeat/v1'))).toBe(true);
+    expect(nodeReads).toBe(reads);
+    expect(await collector.snapshot()).toBe(initial);
+  });
   it('authenticates stream reads, sends versioned health/heartbeat, and cancels connections on shutdown', async () => {
     const { api } = source();
     const collector = createCollector(async () => liveFixture(), api); collectors.push(collector);

@@ -4,7 +4,7 @@ import type { createLogs } from './logs.js';
 import { ProjectError, type ProjectManager } from './projects.js';
 
 export interface ProjectRoutes { manager: ProjectManager; startup: string; workspace: string }
-export function assertScope(graph: GraphSnapshot, project: string, workspace: string) {
+export function assertScope(graph: Pick<GraphSnapshot, 'scope'>, project: string, workspace: string) {
   if (graph.scope.project !== project || graph.scope.workspace !== workspace) throw new ProjectError('Source scope mismatch', 503);
 }
 

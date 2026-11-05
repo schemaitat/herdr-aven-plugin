@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify';
+import type { GraphSnapshot } from '../shared/graph.js';
+import { encodeSnapshotFrame } from '../shared/live.js';
 import type { Collector } from './refresh.js';
 import { ProjectError, type ProjectLease } from './projects.js';
 import { assertScope, type ProjectRoutes } from './routes.js';
@@ -39,19 +41,17 @@ export function streamRoute(app: FastifyInstance, collector?: Collector, project
     if (closed) return;
     response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     response.on('drain', () => { blocked = false; });
-    const send = (snapshot: Awaited<ReturnType<Collector['snapshot']>>, kind = 'snapshot') => {
+    const send = (frame: string, frameScope: GraphSnapshot['scope']) => {
       try {
         if (closed) return;
-        if (projects) assertScope(snapshot, project!, projects.workspace);
+        if (projects) assertScope({ scope: frameScope }, project!, projects.workspace);
         if (blocked) return close(); // No additional buffered frame for a slow reader.
-       const envelope = kind === 'heartbeat' ? { schema: 'live-heartbeat/v1', scope: snapshot.scope, version: snapshot.version, instance: snapshot.stream?.instance, health: snapshot.health, stream: snapshot.stream } : { schema: 'live-graph/v1', version: snapshot.version, snapshot };
-        const data = `id: ${snapshot.version}\nevent: ${kind}\ndata: ${JSON.stringify(envelope)}\n\n`;
-        if (Buffer.byteLength(data) > 4 * 1024 * 1024) return close();
-       blocked = !response.write(data); // Allow one bounded frame to drain; never queue another.
-       lease?.success();
+        if (Buffer.byteLength(frame) > 4 * 1024 * 1024) return close();
+        blocked = !response.write(frame); // Allow one bounded frame to drain; never queue another.
+        lease?.success();
       } catch { close(); }
     };
     unsubscribe = source!.subscribe(send);
-    send(initial);
+    send(encodeSnapshotFrame(initial), initial.scope);
   });
 }

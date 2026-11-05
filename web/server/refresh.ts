@@ -1,18 +1,20 @@
 import type { Activity, GraphSnapshot, TimelineEvent } from '../shared/graph.js';
+import { encodeHeartbeatFrame, encodeSnapshotFrame } from '../shared/live.js';
 import { applyActivity, linkedSessions } from './activity.js';
 import type { OpenCodeSource } from './sources/opencode.js';
 import { EventIdleRenewal } from './sources/opencode.js';
 import { retainEvents, summarizeEvent } from './logs.js';
 import { randomUUID } from 'node:crypto';
 
+export type FrameListener = (frame: string, scope: GraphSnapshot['scope']) => void;
 export interface Collector {
   snapshot(): Promise<GraphSnapshot>;
-  subscribe(listener: (snapshot: GraphSnapshot, kind?: 'snapshot' | 'heartbeat') => void): () => void;
+  subscribe(listener: FrameListener): () => void;
   close(): Promise<void>;
 }
 export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<GraphSnapshot>, api: OpenCodeSource, expectedScope = { project: 'unknown', workspace: 'unknown' }): Collector {
   const controller = new AbortController();
-  const listeners = new Set<(snapshot: GraphSnapshot, kind?: 'snapshot' | 'heartbeat') => void>();
+  const listeners = new Set<FrameListener>();
   const readings = new Map<string, Activity>();
   const children = new Map<string, string>();
   let graph: GraphSnapshot = { schema: 'local-explorer/v1', observedAt: new Date().toISOString(), scope: expectedScope, nodes: [], edges: [], health: [{ source: 'aven', status: 'unavailable', observedAt: '', message: 'Initial collection unavailable; retrying automatically' }] };
@@ -34,10 +36,25 @@ export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<Gr
     const timer = setTimeout(() => { timers.delete(timer); if (!controller.signal.aborted) callback(); }, ms);
     timers.add(timer);
   }
+  let cached: GraphSnapshot | undefined;
+  let cachedVersion = -1;
+  let cachedExpired = false;
+  function activityExpired() {
+    return [...readings.values()].some(item => Date.parse(item.expiresAt) <= Date.now());
+  }
+  function healthView(expired: boolean) {
+    return [...graph.health, expired ? { ...health, status: 'stale' as const, message: 'Activity expired; current state unknown. Reconnecting automatically.' } : health];
+  }
   function current() {
+    // Reuse the published snapshot; every mutation path publishes, so version is the cache key.
+    // An expiry transition re-derives once so snapshot reads keep the previous stale semantics.
+    const expired = activityExpired();
+    if (cached && cachedVersion === version && cachedExpired === expired) return cached;
     const next = applyActivity(graph, readings);
-    const expired = [...readings.values()].some(item => Date.parse(item.expiresAt) <= Date.now());
-    return { ...next, version, health: [...next.health, expired ? { ...health, status: 'stale' as const, message: 'Activity expired; current state unknown. Reconnecting automatically.' } : health], events, stream: { status, gaps, instance } };
+    cached = { ...next, version, health: healthView(expired), events, stream: { status, gaps, instance } };
+    cachedVersion = version;
+    cachedExpired = expired;
+    return cached;
   }
   function flushEvents() {
     if (!pendingEvents.size) return;
@@ -48,8 +65,18 @@ export function createCollector(readGraph: (lane: 'fast' | 'slow') => Promise<Gr
     if (pendingEvents.size) heartbeat = false;
     flushEvents();
     if (!heartbeat) version++;
-    const snapshot = current();
-    for (const listener of listeners) { try { listener(snapshot, heartbeat ? 'heartbeat' : 'snapshot'); } catch { listeners.delete(listener); } }
+    let frame: string;
+    let scope: GraphSnapshot['scope'];
+    if (heartbeat) {
+      // Heartbeats carry only scope/version/health/stream; never clone the graph for them.
+      frame = encodeHeartbeatFrame({ scope: graph.scope, version, instance, health: healthView(activityExpired()), stream: { status, gaps, instance } });
+      scope = graph.scope;
+    } else {
+      const snapshot = current();
+      frame = encodeSnapshotFrame(snapshot);
+      scope = snapshot.scope;
+    }
+    for (const listener of listeners) { try { listener(frame, scope); } catch { listeners.delete(listener); } }
   }
   async function refreshApi() {
     if (!graph || controller.signal.aborted) return;
