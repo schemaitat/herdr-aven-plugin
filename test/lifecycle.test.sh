@@ -211,6 +211,63 @@ print(attempt["lifecycle"]["contradiction"])
 PY
 )" "terminal_unknown_execution" "terminal task with missing API evidence is a contradiction"
 
+# Reconciliation refreshes bound terminal facts through the matching current
+# core. An explicit not_found plus a succeeded owned session proves stopped
+# execution; other core errors/session evidence remain unknown.
+terminal_store=$work/terminal-refresh.sqlite
+init_store "$terminal_store"
+insert_attempt "$terminal_store" "id-APP-DONE" "APP-DONE" "running"
+python3 - "$terminal_store" <<'PY'
+import json, sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    payload = json.loads(db.execute("SELECT payload FROM attempts").fetchone()[0])
+    payload["core_id"] = "fixture-core"
+    payload["terminals"] = {"builder": {
+        "core_id": "fixture-core", "address": "stale-missing",
+        "state": "live", "status": "", "status_kind": "",
+        "program": "opencode", "reason": "", "turn": 0,
+        "seq": 1, "updated_at": 1, "recovery": "",
+    }}
+    db.execute("UPDATE attempts SET payload = ?", (json.dumps(payload),))
+    db.commit()
+PY
+PATH="$fake:$PATH" OPENCODE_FIXTURE_OUTCOME=succeeded "$binary" --store "$terminal_store" watch --once > "$work/terminal-refresh-success"
+python3 - "$terminal_store" <<'PY'
+import json, sqlite3, sys
+attempt = json.loads(sqlite3.connect(sys.argv[1]).execute("SELECT payload FROM attempts").fetchone()[0])
+assert attempt["terminals"]["builder"]["state"] == "removed", attempt["terminals"]
+assert attempt["state"] == "completed", attempt
+assert attempt["lifecycle"]["observation"] == "stopped-success", attempt["lifecycle"]
+assert not attempt["lifecycle"]["contradiction"], attempt["lifecycle"]
+PY
+
+unknown_terminal_store=$work/terminal-refresh-unknown.sqlite
+init_store "$unknown_terminal_store"
+insert_attempt "$unknown_terminal_store" "id-APP-DONE" "APP-DONE" "running"
+python3 - "$unknown_terminal_store" <<'PY'
+import json, sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    payload = json.loads(db.execute("SELECT payload FROM attempts").fetchone()[0])
+    payload["core_id"] = "fixture-core"
+    payload["terminals"] = {"builder": {
+        "core_id": "fixture-core", "address": "unknown-missing",
+        "state": "live", "status": "", "status_kind": "",
+        "program": "opencode", "reason": "", "turn": 0,
+        "seq": 1, "updated_at": 1, "recovery": "",
+    }}
+    db.execute("UPDATE attempts SET payload = ?", (json.dumps(payload),))
+    db.commit()
+PY
+PATH="$fake:$PATH" "$binary" --store "$unknown_terminal_store" watch --once > "$work/terminal-refresh-unknown"
+python3 - "$unknown_terminal_store" <<'PY'
+import json, sqlite3, sys
+attempt = json.loads(sqlite3.connect(sys.argv[1]).execute("SELECT payload FROM attempts").fetchone()[0])
+assert attempt["terminals"]["builder"]["state"] == "removed", attempt["terminals"]
+assert attempt["state"] == "needs-review", attempt
+assert attempt["lifecycle"]["observation"] == "unknown", attempt["lifecycle"]
+assert attempt["lifecycle"]["contradiction"] == "terminal_unknown_execution", attempt["lifecycle"]
+PY
+
 # ---------------------------------------------------------------------------
 # Phase 3 — accepted-but-unmerged work gets one obligation; a human merge and
 # closeout resolve it with exact local ancestry evidence.

@@ -425,20 +425,7 @@ pub(crate) fn run(args: AuditArgs) -> Result<()> {
         // F2/F3 — terminal execution contradictions and pending sync.
         if terminal {
             for attempt in &task_attempts {
-                let running = matches!(
-                    attempt.state.as_str(),
-                    "running"
-                        | "waiting"
-                        | "workspace-pending"
-                        | "session-pending"
-                        | "terminal-pending"
-                        | "prompt-pending"
-                        | "babysitter-session-pending"
-                        | "babysitter-prompt-pending"
-                        | "needs-review"
-                        | "failed"
-                );
-                if running || !attempt.lifecycle.contradiction.is_empty() {
+                if terminal_execution_conflict(&task.status, attempt) {
                     add(
                         &mut findings,
                         "terminal_execution_contradiction",
@@ -802,6 +789,41 @@ fn status_is_open_status(status: &str) -> bool {
     super::lifecycle::status_is_open(status)
 }
 
+fn terminal_execution_conflict(task_status: &str, attempt: &Attempt) -> bool {
+    if !status_is_terminal(task_status) {
+        return false;
+    }
+    let state_requires_review = match attempt.state.as_str() {
+        "running"
+        | "waiting"
+        | "workspace-pending"
+        | "session-pending"
+        | "terminal-pending"
+        | "prompt-pending"
+        | "babysitter-session-pending"
+        | "babysitter-prompt-pending"
+        | "failed" => true,
+        "needs-review" => {
+            if !attempt.lifecycle.contradiction.is_empty()
+                || matches!(
+                    attempt.lifecycle.observation.as_str(),
+                    "live" | "unknown" | ""
+                )
+            {
+                true
+            } else {
+                task_status == "done"
+                    && matches!(
+                        attempt.lifecycle.observation.as_str(),
+                        "stopped-failure" | "stopped-interrupted"
+                    )
+            }
+        }
+        _ => false,
+    };
+    state_requires_review || !attempt.lifecycle.contradiction.is_empty()
+}
+
 fn severity_rank(severity: Severity) -> u8 {
     match severity {
         Severity::Violation => 0,
@@ -833,5 +855,29 @@ mod tests {
         assert!(!status_is_open_status("done"));
         assert!(!status_is_open_status("canceled"));
         assert!(status_is_open_status("todo"));
+    }
+
+    #[test]
+    fn canceled_interrupted_attempt_is_not_a_live_execution_contradiction() {
+        let mut attempt = serde_json::from_value::<Attempt>(serde_json::json!({
+            "task_id":"task",
+            "task_ref":"APP-1",
+            "workflow":"planning",
+            "attempt_id":"attempt",
+            "branch":"app/branch",
+            "worktree":"/tmp/app",
+            "state":"needs-review",
+            "lifecycle":{"observation":"stopped-interrupted","contradiction":"","revision":1,"reduced_at":1},
+            "prompt_id":"msg-1",
+            "aven":{"aven_exe":"","origin_cwd":""},
+            "created_at":1
+        }))
+        .unwrap();
+        assert!(!terminal_execution_conflict("canceled", &attempt));
+        assert!(terminal_execution_conflict("done", &attempt));
+
+        attempt.lifecycle.observation = "unknown".into();
+        attempt.lifecycle.contradiction = "terminal_unknown_execution".into();
+        assert!(terminal_execution_conflict("canceled", &attempt));
     }
 }

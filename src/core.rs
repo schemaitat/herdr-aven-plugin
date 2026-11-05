@@ -115,6 +115,19 @@ pub(crate) fn run_json(args: &[String]) -> Result<Value> {
         .with_context(|| format!("herdr-core returned non-JSON for {}", args.join(" ")))
 }
 
+fn is_not_found_error(stderr: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(stderr)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("not_found")
+}
+
 /// Run Git through core and report its exact output and success. Nonzero is a
 /// result here: callers inspect the exit code before deciding.
 pub(crate) fn git_status(cwd: &str, git_args: &[String]) -> Result<(bool, String, String)> {
@@ -383,6 +396,30 @@ pub(crate) fn get(address: &str) -> Result<Terminal> {
     parse_terminal(&value)
 }
 
+/// Refresh a terminal bound to the current core. `None` is returned only for
+/// herdr-core's explicit structured `not_found` response; transport, auth and
+/// parse failures stay errors and must not be treated as a stopped terminal.
+pub(crate) fn get_if_present(address: &str) -> Result<Option<Terminal>> {
+    let args = vec!["get".into(), address.into(), "--json".into()];
+    let output = with_timeout(command(&args), HC_TIMEOUT, &args.join(" "))?;
+    if !output.status.success() {
+        if is_not_found_error(&output.stderr) {
+            return Ok(None);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{} {} failed ({}): {}",
+            binary(),
+            args.iter().take(3).cloned().collect::<Vec<_>>().join(" "),
+            output.status,
+            stderr.trim()
+        );
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .context("herdr-core returned non-JSON for terminal get")?;
+    parse_terminal(&value).map(Some)
+}
+
 pub(crate) fn label(address: &str, labels: &[(String, String)]) -> Result<Terminal> {
     let mut args = vec!["label".into(), address.into(), "--json".into()];
     for (key, value) in labels {
@@ -554,4 +591,20 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_not_found_error;
+
+    #[test]
+    fn only_structured_not_found_is_treated_as_a_removed_terminal() {
+        assert!(is_not_found_error(
+            br#"{"error":{"kind":"not_found","message":"no terminal t1"}}"#
+        ));
+        assert!(!is_not_found_error(
+            br#"{"error":{"kind":"permission_denied","message":"no terminal t1"}}"#
+        ));
+        assert!(!is_not_found_error(b"not found"));
+    }
 }

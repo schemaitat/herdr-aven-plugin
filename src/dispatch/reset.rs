@@ -1,6 +1,7 @@
 //! Reset inventory and pure state helpers.
 
 use crate::{
+    core,
     dispatch::{
         aven::{refresh_task_by_ref, reset_incomplete, task_generation},
         parse_context, selected_for,
@@ -124,10 +125,13 @@ pub(crate) fn refresh_attempt_execution_state(
     task: Option<&Value>,
 ) -> Result<()> {
     use crate::dispatch::lifecycle::{
-        SessionOutcome, aggregate_execution, apply_reduction, task_status,
+        SessionOutcome, aggregate_execution, apply_reduction, status_is_terminal, task_status,
         terminal_observation_flags,
     };
     let status = task.and_then(task_status);
+    if status.is_some_and(status_is_terminal) {
+        refresh_owned_terminal_facts(attempt);
+    }
     if attempt.session_id.is_empty()
         && attempt.coordinator_session_id.is_empty()
         && attempt.babysitter_session_id.is_empty()
@@ -157,6 +161,49 @@ pub(crate) fn refresh_attempt_execution_state(
     let observation = aggregate_execution(live, unknown, &outcomes);
     apply_reduction(attempt, status, observation);
     Ok(())
+}
+
+/// Refresh persisted terminal observations without guessing from session
+/// status alone. Query only terminal IDs bound to this current core identity;
+/// map only an explicit core `not_found` response to `removed`. Other errors
+/// leave the previous evidence intact and therefore fail closed.
+fn refresh_owned_terminal_facts(attempt: &mut Attempt) {
+    if attempt.terminals.is_empty() {
+        return;
+    }
+    let Ok(identity) = core::identity() else {
+        return;
+    };
+    for terminal in attempt.terminals.values_mut() {
+        if terminal.address.is_empty()
+            || terminal.core_id != identity.id
+            || matches!(terminal.state.as_str(), "finished" | "removed")
+        {
+            continue;
+        }
+        match core::get_if_present(&terminal.address) {
+            Ok(Some(observed)) => {
+                let recovery = match observed.state.as_str() {
+                    "finished" if observed.reason == "holder_lost" => "lost",
+                    "finished" => "finished",
+                    "removed" => "removed",
+                    _ if observed.recovered_shell() => "recovered-shell",
+                    _ => "",
+                };
+                *terminal = observed.observe(&identity, attempt.last_event_seq, recovery);
+            }
+            Ok(None) => {
+                terminal.state = "removed".into();
+                terminal.status.clear();
+                terminal.status_kind.clear();
+                terminal.program.clear();
+                terminal.reason = "not_found".into();
+                terminal.updated_at = core::now_ms();
+                terminal.recovery = "removed".into();
+            }
+            Err(_) => {}
+        }
+    }
 }
 pub(crate) fn interrupt_and_drain_sessions(sessions: &[String]) -> Result<()> {
     let unique: BTreeSet<_> = sessions.iter().collect();
