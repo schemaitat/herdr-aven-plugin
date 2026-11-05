@@ -73,8 +73,18 @@ cat > "$fake/aven" <<'EOF'
 printf 'aven %s\n' "$*" >> "$RUST_INSPECT_LOG"
 case " $* " in
   *" project list "*) printf '%s\n' '[{"key":"app","name":"app","prefix":"APP"}]' ;;
-  *" list "*" --upcoming "*) cat "$RUST_INSPECT_WORK/upcoming.json" ;;
-  *" list "*) cat "$RUST_INSPECT_WORK/tasks.json" ;;
+  *" list "*" --upcoming "*)
+    printf 'start %s\n' "$(date +%s%N)" >> "$RUST_INSPECT_WORK/list-upcoming.times"
+    sleep 0.2
+    cat "$RUST_INSPECT_WORK/upcoming.json"
+    printf 'end %s\n' "$(date +%s%N)" >> "$RUST_INSPECT_WORK/list-upcoming.times"
+    ;;
+  *" list "*)
+    printf 'start %s\n' "$(date +%s%N)" >> "$RUST_INSPECT_WORK/list-available.times"
+    sleep 0.2
+    cat "$RUST_INSPECT_WORK/tasks.json"
+    printf 'end %s\n' "$(date +%s%N)" >> "$RUST_INSPECT_WORK/list-available.times"
+    ;;
   *" context APP-1 "*) cat "$RUST_INSPECT_WORK/context-one.json" ;;
   *" context APP-2 "*) cat "$RUST_INSPECT_WORK/context-two.json" ;;
   *) printf '%s\n' '{}' ;;
@@ -197,6 +207,23 @@ assert "SECRET_PROMPT" not in serialized
 assert "prompt_id" not in serialized
 assert "pending_prompt" not in serialized
 assert "\u001b" not in serialized
+PY
+
+# The available and upcoming list reads must overlap in time.
+python3 - "$work" <<'PY'
+import sys
+work = sys.argv[1]
+
+def interval(name):
+    stamps = [line.split() for line in open(f"{work}/{name}.times")]
+    start = min(int(value) for kind, value in stamps if kind == "start")
+    end = max(int(value) for kind, value in stamps if kind == "end")
+    return start, end
+
+available = interval("list-available")
+upcoming = interval("list-upcoming")
+assert available[0] < upcoming[1] and upcoming[0] < available[1], (
+    f"list reads did not overlap: available={available} upcoming={upcoming}")
 PY
 
 # Scope is inferred from the repository basename, not widened to every project.

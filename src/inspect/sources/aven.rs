@@ -220,46 +220,30 @@ pub(super) fn read_aven(
     BTreeMap<String, (AvenContext, u64)>,
     SourceHealth,
 )> {
-    let mut observations = Vec::new();
-    for upcoming in [false, true] {
-        let mut args = vec![
-            "list".into(),
-            "--project".into(),
-            scope.project.clone(),
-            "--workspace".into(),
-            scope.workspace.clone(),
-            "--limit".into(),
-            AVEN_LIST_LIMIT.to_string(),
-            "--json".into(),
-        ];
-        if upcoming {
-            args.push("--upcoming".into());
-        }
-        match aven_read(&args, Path::new(&scope.cwd), secrets).and_then(|output| {
-            let tasks: Vec<AvenTask> = serde_json::from_str(&output)
-                .context("Aven list returned an unsupported payload")?;
-            if tasks.len() > AVEN_LIST_LIMIT {
-                bail!("Aven list exceeded the {AVEN_LIST_LIMIT}-task limit");
-            }
-            Ok((tasks, upcoming))
-        }) {
-            Ok((tasks, _)) => observations.push(tasks),
-            Err(error) => {
-                return Ok((
-                    Vec::new(),
-                    BTreeMap::new(),
-                    SourceHealth::unavailable(
-                        "aven",
-                        format!(
-                            "Aven list unavailable or unsupported; inspection did not widen scope: {}",
-                            source_error(&error, secrets)
-                        ),
+    let (available, upcoming) = thread::scope(|threads| {
+        let available = threads.spawn(|| read_list(scope, false, secrets));
+        let upcoming = threads.spawn(|| read_list(scope, true, secrets));
+        (
+            available.join().expect("available list worker"),
+            upcoming.join().expect("upcoming list worker"),
+        )
+    });
+    let lists = match (available, upcoming) {
+        (Ok(available), Ok(upcoming)) => vec![available, upcoming],
+        (Err(error), _) | (_, Err(error)) => {
+            return Ok((
+                Vec::new(),
+                BTreeMap::new(),
+                SourceHealth::unavailable(
+                    "aven",
+                    format!(
+                        "Aven list unavailable or unsupported; inspection did not widen scope: {}",
+                        source_error(&error, secrets)
                     ),
-                ));
-            }
+                ),
+            ));
         }
-    }
-    let lists = observations;
+    };
     let mut list_tasks: BTreeMap<String, AvenTask> = BTreeMap::new();
     let mut capped = false;
     for list in &lists {
@@ -306,6 +290,29 @@ pub(super) fn read_aven(
         aven_read.health
     };
     Ok((aven_read.tasks, aven_read.contexts, health))
+}
+
+fn read_list(scope: &Scope, upcoming: bool, secrets: &[String]) -> Result<Vec<AvenTask>> {
+    let mut args = vec![
+        "list".into(),
+        "--project".into(),
+        scope.project.clone(),
+        "--workspace".into(),
+        scope.workspace.clone(),
+        "--limit".into(),
+        AVEN_LIST_LIMIT.to_string(),
+        "--json".into(),
+    ];
+    if upcoming {
+        args.push("--upcoming".into());
+    }
+    let output = aven_read(&args, Path::new(&scope.cwd), secrets)?;
+    let tasks: Vec<AvenTask> =
+        serde_json::from_str(&output).context("Aven list returned an unsupported payload")?;
+    if tasks.len() > AVEN_LIST_LIMIT {
+        bail!("Aven list exceeded the {AVEN_LIST_LIMIT}-task limit");
+    }
+    Ok(tasks)
 }
 
 fn hydrate_contexts(
