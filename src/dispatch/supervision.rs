@@ -180,13 +180,19 @@ pub(crate) fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Re
 /// core event. Stops at the first Aven/API outage instead of guessing.
 pub(crate) fn reconcile_all(path: &Path) -> Result<usize> {
     let mut store = LockedStore::open(path.to_path_buf())?;
+    reconcile_all_with(&mut store, path)
+}
+
+/// Reconcile every durable attempt against an already-open store so callers can
+/// reuse one connection across the rest of an event batch.
+pub(crate) fn reconcile_all_with(store: &mut LockedStore, path: &Path) -> Result<usize> {
     let attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
     let mut reconciled = 0;
     for attempt in attempts {
         if attempt_is_legacy(&attempt) {
             continue;
         }
-        match reconcile_attempt(&mut store, attempt.clone()) {
+        match reconcile_attempt(store, attempt.clone()) {
             Ok(_) => reconciled += 1,
             Err(error) => eprintln!(
                 "supervision left {} ({}) unchanged: {error:#}",
@@ -305,12 +311,10 @@ pub(crate) fn reconcile_key(store: &mut LockedStore, key: &str) {
     }
 }
 
-pub(crate) fn reconcile_keys(path: &Path, keys: &[String]) -> Result<()> {
-    let mut store = LockedStore::open(path.to_path_buf())?;
+pub(crate) fn reconcile_keys(store: &mut LockedStore, keys: &[String]) {
     for key in keys {
-        reconcile_key(&mut store, key);
+        reconcile_key(store, key);
     }
-    Ok(())
 }
 
 pub(crate) fn watch_command(
@@ -375,14 +379,11 @@ pub(crate) fn watch_command(
                         )?);
                     }
                 }
-                drop(store);
-                for key in keys {
-                    reconcile_keys(&path, &[key])?;
-                }
+                reconcile_keys(&mut store, &keys);
                 // Reconcile every durable attempt from the initial snapshot so
                 // a terminated phase or lost terminal surfaces even when it is
                 // no longer part of the live subscription.
-                let _ = reconcile_all(&path);
+                let _ = reconcile_all_with(&mut store, &path);
                 guard.state.last_seq = seq;
                 guard.record(&path, "snapshot")?;
             }
@@ -428,11 +429,8 @@ pub(crate) fn watch_command(
                 });
                 let mut store = LockedStore::open(path.clone())?;
                 let keys = apply_terminal_fact(&mut store, &core, &observed, &kind, seq)?;
-                drop(store);
                 if !matches!(kind.as_str(), "foreground" | "size" | "doc" | "title") {
-                    for key in keys {
-                        reconcile_keys(&path, &[key])?;
-                    }
+                    reconcile_keys(&mut store, &keys);
                 }
                 guard.state.last_seq = seq;
                 if matches!(
