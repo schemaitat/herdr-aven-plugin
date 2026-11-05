@@ -67,6 +67,9 @@ tasks = {
     "APP-DELETED": ("DELETED", "deleted task", "todo", False, True, "app"),
     "APP-WEIRD": ("WEIRD", "unknown status task", "mystery", False, False, "app"),
     "APP-CODE": ("CODE", "accepted code result", "done", False, False, "app"),
+    "APP-EPIC-CODE": ("EPICCODE", "accepted childless epic code result", "done", True, False, "app"),
+    "APP-EPIC-RETAINED": ("EPICRETAINED", "accepted childless epic with retained result", "done", True, False, "app"),
+    "APP-EPIC-PLANNING": ("EPICPLAN", "accepted childless planning epic", "done", True, False, "app"),
     "APP-CANCELME": ("CANCELME", "active cancellation", "active", False, False, "app"),
     "APP-EPIC": ("EPIC", "childless idea", "todo", True, False, "app"),
     "APP-OBLIGATION": ("OBLIG", "delivery obligation", "todo", False, False, "app"),
@@ -270,6 +273,99 @@ PY
 
 # An unrelated merge/PR claim cannot satisfy delivery.
 assert_contains "$(PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-CODE --project app --target main --pr 42 --json)" '"target": "main"' "PR identity can be recorded without pretending merged delivery"
+
+# A childless epic can still have its own bound code result. Do not infer
+# no-code from `is_epic=true` plus an empty child list.
+planning_dry=$work/epic-planning-dry
+set +e
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-EPIC-PLANNING --project app --target main --json > "$planning_dry" 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "childless planning epic needs an explicit no-code disposition"
+assert_file_contains "$planning_dry" '"state": "pending"' "empty epic is not inferred not-applicable"
+assert_file_contains "$planning_dry" 'explicit --not-applicable' "empty epic explains the required human decision"
+
+epic_worktree=$work/worktrees/repo/app-dispatch-epic-code
+git -C "$repo" worktree add -q -b app/dispatch-epic-code "$epic_worktree"
+printf '%s\n' epic-change > "$epic_worktree/epic-change.txt"
+git -C "$epic_worktree" add epic-change.txt
+git -C "$epic_worktree" commit -qm epic-change
+epic_code_commit=$(git -C "$epic_worktree" rev-parse HEAD)
+insert_attempt "$closeout_store" "id-APP-EPIC-CODE" "APP-EPIC-CODE" "completed"
+python3 - "$closeout_store" "$epic_worktree" <<'PY'
+import json, sqlite3, sys
+store, worktree = sys.argv[1:]
+with sqlite3.connect(store) as db:
+    payload = json.loads(db.execute("SELECT payload FROM attempts WHERE task_id = ?", ("id-APP-EPIC-CODE",)).fetchone()[0])
+    payload["worktree"] = worktree
+    payload["branch"] = "app/dispatch-epic-code"
+    db.execute("UPDATE attempts SET payload = ? WHERE task_id = ?", (json.dumps(payload), "id-APP-EPIC-CODE"))
+    db.commit()
+PY
+
+set +e
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-EPIC-CODE --project app --target main --json > "$work/epic-code-dry" 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "unmerged childless epic code result remains pending"
+assert_file_contains "$work/epic-code-dry" '"state": "committed"' "childless epic's bound result is verified as code"
+
+set +e
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-EPIC-CODE --project app --target main --apply > "$work/epic-code-apply" 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "childless epic code result creates a pending delivery obligation"
+python3 - "$state" "$epic_code_commit" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+task = state["tasks"]["APP-EPIC-CODE"]
+assert task["is_epic"] and task["status"] == "done", task
+assert task["metadata"]["delivery.state"] == "committed", task["metadata"]
+assert task["metadata"]["delivery.commit"] == sys.argv[2], task["metadata"]
+obligations = [t for t in state["tasks"].values() if t["metadata"].get("delivery.obligation-for") == "APP-EPIC-CODE"]
+assert len(obligations) == 1 and obligations[0]["status"] == "todo", obligations
+PY
+
+git -C "$repo" merge --ff-only -q app/dispatch-epic-code
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-EPIC-CODE --project app --target main --apply --json > "$work/epic-code-merged"
+python3 - "$state" "$epic_code_commit" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+task = state["tasks"]["APP-EPIC-CODE"]
+assert task["metadata"]["delivery.state"] == "merged", task["metadata"]
+assert task["metadata"]["delivery.commit"] == sys.argv[2], task["metadata"]
+obligations = [t for t in state["tasks"].values() if t["metadata"].get("delivery.obligation-for") == "APP-EPIC-CODE"]
+assert len(obligations) == 1 and obligations[0]["status"] == "done", obligations
+PY
+
+# A retained attempt may outlive its worktree. An explicit exact SHA can still
+# be verified against a clean local target checkout without fabricating a
+# source worktree or treating the code-bearing epic as no-code.
+insert_attempt "$closeout_store" "id-APP-EPIC-RETAINED" "APP-EPIC-RETAINED" "needs-review"
+python3 - "$closeout_store" "$work/missing-epic-worktree" <<'PY'
+import json, sqlite3, sys
+store, missing = sys.argv[1:]
+with sqlite3.connect(store) as db:
+    payload = json.loads(db.execute("SELECT payload FROM attempts WHERE task_id = ?", ("id-APP-EPIC-RETAINED",)).fetchone()[0])
+    payload["worktree"] = missing
+    payload["branch"] = "app/dispatch-retained-epic"
+    db.execute("UPDATE attempts SET payload = ? WHERE task_id = ?", (json.dumps(payload), "id-APP-EPIC-RETAINED"))
+    db.commit()
+PY
+(cd "$repo" && PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-EPIC-RETAINED --project app --target main --commit "$epic_code_commit" --json) > "$work/epic-retained-dry"
+assert_file_contains "$work/epic-retained-dry" '"state": "merged"' "exact retained result is checked against the clean target"
+assert_file_contains "$work/epic-retained-dry" "$epic_code_commit" "retained result evidence preserves the exact source SHA"
+(cd "$repo" && PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-EPIC-RETAINED --project app --target main --commit "$epic_code_commit" --apply --json) > "$work/epic-retained-apply"
+python3 - "$state" "$epic_code_commit" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+task = state["tasks"]["APP-EPIC-RETAINED"]
+assert task["is_epic"] and task["status"] == "done", task
+assert task["metadata"]["delivery.state"] == "merged", task["metadata"]
+assert task["metadata"]["delivery.commit"] == sys.argv[2], task["metadata"]
+assert task["metadata"]["delivery.provenance"] == "local-main-ancestry", task["metadata"]
+assert not [t for t in state["tasks"].values() if t["metadata"].get("delivery.obligation-for") == "APP-EPIC-RETAINED"]
+PY
 
 # ---------------------------------------------------------------------------
 # Phase 4 — reviewed cancellation preserves artifacts and transfers an open

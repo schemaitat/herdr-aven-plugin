@@ -422,6 +422,10 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
         .pointer("/task/is_epic")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let has_children = task
+        .get("epic_children")
+        .and_then(Value::as_array)
+        .is_some_and(|children| !children.is_empty());
     let project = args
         .project
         .clone()
@@ -456,6 +460,7 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
         unresolved: Vec::new(),
         notes: Vec::new(),
     };
+    let mut has_code_result = false;
 
     // Explicit reviewed dispositions are human decisions, never inferred from
     // a missing commit or a green session.
@@ -471,7 +476,7 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
     } else if let Some(superseded) = &args.superseded_by {
         outcome.state = DELIVERY_SUPERSEDED.into();
         outcome.provenance = format!("superseded-by:{superseded}");
-    } else if is_epic {
+    } else if is_epic && has_children {
         outcome.unresolved = unresolved_children(&invocation, &task)?;
         if outcome.unresolved.is_empty() {
             outcome.state = DELIVERY_NOT_APPLICABLE.into();
@@ -487,27 +492,59 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
             args.commit.as_deref(),
         );
         if let Some((worktree, branch, commit)) = source {
+            has_code_result = true;
             outcome.commit = commit.clone();
             outcome.branch = branch;
-            let repository_hint = worktree.clone();
-            match verify(&worktree, &commit, &repository_hint, &args.target) {
-                Ok(verification) => {
-                    outcome.state = verification.state.into();
-                    outcome.repository = verification.repository;
-                    outcome.target_commit = verification.target_commit;
-                    outcome.merged = verification.merged;
-                    outcome.provenance = verification.provenance;
-                }
-                Err(error) => {
-                    outcome.state = if commit.is_empty() {
-                        DELIVERY_PENDING.into()
-                    } else {
-                        "committed".into()
-                    };
-                    outcome.repository = repository_hint;
-                    notes.push(format!("{error:#}"));
+            if commit.is_empty() {
+                notes.push("no committed result exists; uncommitted work stays pending".into());
+            } else {
+                // A retained attempt can outlive its source worktree. When the
+                // exact result SHA is supplied, verify it in the current
+                // repository checkout instead of treating a missing historical
+                // worktree as an accepted no-code result.
+                let source_worktree_exists = !worktree.is_empty() && Path::new(&worktree).is_dir();
+                let (verification_worktree, repository_hint) = if source_worktree_exists {
+                    (worktree.clone(), worktree.clone())
+                } else {
+                    match worktrees::repository_root(&invocation.origin_cwd) {
+                        Ok(repository) => (String::new(), repository),
+                        Err(error) => {
+                            notes.push(format!(
+                                "cannot locate repository for exact result: {error:#}"
+                            ));
+                            (String::new(), String::new())
+                        }
+                    }
+                };
+                if repository_hint.is_empty() {
+                    outcome.state = "committed".into();
+                } else {
+                    match verify(
+                        &verification_worktree,
+                        &commit,
+                        &repository_hint,
+                        &args.target,
+                    ) {
+                        Ok(verification) => {
+                            outcome.state = verification.state.into();
+                            outcome.repository = verification.repository;
+                            outcome.target_commit = verification.target_commit;
+                            outcome.merged = verification.merged;
+                            outcome.provenance = verification.provenance;
+                        }
+                        Err(error) => {
+                            outcome.state = "committed".into();
+                            outcome.repository = repository_hint;
+                            notes.push(format!("{error:#}"));
+                        }
+                    }
                 }
             }
+        } else if is_epic {
+            notes.push(
+                "childless epic has no bound code result; an explicit --not-applicable disposition is required"
+                    .into(),
+            );
         } else {
             notes.push(
                 "no dispatcher result or explicit --commit exists; uncommitted work stays pending"
@@ -527,7 +564,7 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
         outcome.state.as_str(),
         DELIVERY_MERGED | DELIVERY_NOT_APPLICABLE | DELIVERY_SUPERSEDED | DELIVERY_WAIVED
     );
-    if accepted && !delivered && !is_epic {
+    if accepted && !delivered && (!is_epic || has_code_result) {
         outcome.obligation = ensure_obligation(
             &invocation,
             &task,
