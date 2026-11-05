@@ -23,12 +23,14 @@ just install
 ```
 
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
-commands, installs the global OpenCode `/ha-merge` command, and installs `mods/aven-tasks`, `mods/aven-worktree`, `mods/aven-panel`,
-`mods/aven-panel-tabs`, and the personal `layouts/aven-right.json` into
-`$HERDR_APP_HOME` (or `~/.config/herdr-app`), and reports readiness with
-`just doctor`. The app mods are optional; when `herdr-app` is absent the same
-dispatch, supervision, and recovery work headlessly. The installer preserves
-unrelated app settings and never overwrites an existing key binding. Re-run
+commands, installs the global OpenCode `/ha-merge` command and the
+`herdr-aven-tasks` skill, and installs `mods/aven-tasks`,
+`mods/aven-worktree`, `mods/aven-panel`, `mods/aven-panel-tabs`, and the personal
+`layouts/aven-right.json` into `$HERDR_APP_HOME` (or `~/.config/herdr-app`), and
+reports readiness with `just doctor`. The app mods are optional; when
+`herdr-app` is absent the same dispatch, supervision, and recovery work
+headlessly. The installer preserves unrelated app settings, never overwrites an
+existing key binding, and refuses a differing skill file. Re-run
 `just install-app-mod` after an upgrade to refresh owned assets. Both commands
 install the Aven-right assets by default, including with `--no-keys`, but never
 select a layout, open a panel, or change panel preferences. A foreign asset
@@ -797,6 +799,18 @@ Identical files are left untouched; different files and symlinks are refused.
 To upgrade an older installed copy, compare it with `commands/ha-merge.md` and
 manually replace it only if you want the new version. Project-local commands of
 the same name override the global one. OpenCode reloads command files on save.
+
+### Analyze task and dispatch state
+
+`just install` also installs the `herdr-aven-tasks` OpenCode skill at
+`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/herdr-aven-tasks/SKILL.md`.
+Ask OpenCode to "check running tasks" — or what is stale, what an epic's phases
+are doing, or whether a project's attempts are healthy — and the skill walks
+Aven status, dispatcher attempts, `hc` terminals, and OpenCode sessions, then
+reports running, awaiting-review, stale, and not-started work without mutating
+anything. Run `sh scripts/install-skill.sh` to install or refresh it separately.
+Identical files are left untouched; different files and symlinks are refused.
+The bundled copy lives at `opencode-skills/herdr-aven-tasks/SKILL.md`.
 
 ### Inspect a dispatch
 

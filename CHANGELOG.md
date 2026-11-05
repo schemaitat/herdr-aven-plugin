@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Install a bundled `herdr-aven-tasks` OpenCode skill with `just install`. It
+  triages Aven tasks against dispatcher attempts, `hc` terminals, and OpenCode
+  sessions, and reports running, awaiting-review, stale, and not-started work.
+  The installer never overwrites a differing skill or a symlink; re-run
+  `just install-skill` after an upgrade.
 - Reveal the Aven terminal on the first overlay attempt. herdr-app adopts a
   terminal a moment after `hc run --bg` returns its address, so the overlay now
   probes the peek with a bounded retry before closing, and reuses live core

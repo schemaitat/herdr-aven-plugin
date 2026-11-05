@@ -50,6 +50,13 @@ else
   row watcher "aven-dispatch not on PATH"
 fi
 
+skill_file=${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/herdr-aven-tasks/SKILL.md
+if [ -f "$skill_file" ]; then
+  row skill "installed ($skill_file)"
+else
+  row skill "not installed (run just install-skill)"
+fi
+
 if command -v herdr-app >/dev/null 2>&1 && herdr-app status >/dev/null 2>&1; then
   row herdr-app "available (optional overlay)"
 else

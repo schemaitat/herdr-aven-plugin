@@ -7,8 +7,12 @@ install:
     cargo install --path . --force
     sh scripts/install-aven-command.sh
     sh scripts/install-opencode-command.sh
+    sh scripts/install-skill.sh
     sh scripts/install-app-mod.sh
     sh scripts/doctor.sh
+
+install-skill:
+    sh scripts/install-skill.sh
 
 install-app-mod:
     sh scripts/install-app-mod.sh
