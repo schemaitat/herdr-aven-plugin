@@ -16,13 +16,13 @@ use crate::{
     worktrees,
 };
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub(crate) const DISPOSITION_MARKER_PREFIX: &str = "aven-dispatch:disposition:";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Artifact {
     pub(crate) kind: String,
     pub(crate) path: String,
@@ -108,6 +108,21 @@ pub(crate) fn artifact_inventory(task_id: &str, attempts: &[Attempt]) -> Vec<Art
     artifacts
 }
 
+fn retained_artifact_inventory(task: &Value, task_id: &str, attempts: &[Attempt]) -> Vec<Artifact> {
+    let mut artifacts = artifact_inventory(task_id, attempts);
+    let Some(previous) = metadata_value(task, "disposition.artifacts")
+        .and_then(|value| serde_json::from_str::<Vec<Artifact>>(value).ok())
+    else {
+        return artifacts;
+    };
+    for artifact in previous {
+        if !artifacts.contains(&artifact) {
+            artifacts.push(artifact);
+        }
+    }
+    artifacts
+}
+
 fn edit_metadata(
     invocation: &Invocation,
     reference: &str,
@@ -131,6 +146,31 @@ fn has_marker(task: &Value, marker: &str) -> bool {
         .any(|body| body.contains(marker))
 }
 
+fn note_matches_disposition(
+    task: &Value,
+    marker: &str,
+    reason: &str,
+    successor: Option<&str>,
+    no_successor: bool,
+) -> Option<bool> {
+    task.get("notes")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|note| note.get("body").and_then(Value::as_str))
+        .find(|body| body.contains(marker))
+        .map(|body| {
+            let expected_successor = successor.unwrap_or("none");
+            body.contains(&format!("Reason: {reason}\n"))
+                && body.contains(&format!("Successor: {expected_successor}\n"))
+                && body.contains(&format!("No successor: {no_successor}\n"))
+        })
+}
+
+fn metadata_value<'a>(task: &'a Value, key: &str) -> Option<&'a str> {
+    task.pointer(&format!("/metadata/{key}"))
+        .and_then(Value::as_str)
+}
+
 pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
     let invocation = invocation(args.workspace.clone());
     let task = refresh_task_by_ref(&invocation, &args.task)?;
@@ -141,6 +181,7 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
         .unwrap_or_default()
         .to_owned();
     let status = task_status(&task).to_owned();
+    let already_canceled = status == "canceled";
     let reason = args.reason.clone().unwrap_or_default();
     if reason.trim().is_empty() && args.apply {
         bail!("cancellation requires an explicit non-empty --reason");
@@ -155,7 +196,7 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
         .into_iter()
         .filter_map(|payload| serde_json::from_str::<Attempt>(&payload).ok())
         .collect::<Vec<_>>();
-    let artifacts = artifact_inventory(&task_id, &attempts);
+    let artifacts = retained_artifact_inventory(&task, &task_id, &attempts);
     let mut notes = Vec::new();
     let mut transferred = Vec::new();
     let mut outcome = DispositionOutcome {
@@ -168,12 +209,6 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
         transferred_obligations: Vec::new(),
         notes: Vec::new(),
     };
-    if status == "canceled" {
-        notes.push("task is already canceled; no status transition was needed".into());
-        outcome.notes = notes;
-        emit(&outcome, args.json)?;
-        return Ok(());
-    }
     if status == "done" {
         bail!(
             "{reference} is accepted (done); refusing to cancel accepted work. Reopen it deliberately or supersede it with a reviewed successor"
@@ -184,6 +219,35 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
         if task_status(&successor_task) == "canceled" {
             bail!("successor {successor} is canceled and cannot carry the decision");
         }
+    }
+    let decision_marker = marker(&task_id);
+    if let Some(existing) = metadata_value(&task, "disposition.reason")
+        && existing != reason
+    {
+        bail!("{reference} already has a different disposition reason; review it before changing");
+    }
+    if let Some(existing) = metadata_value(&task, "disposition.successor")
+        && Some(existing) != args.successor.as_deref()
+    {
+        bail!(
+            "{reference} already has a different disposition successor; review it before changing"
+        );
+    }
+    if metadata_value(&task, "disposition.no-successor") == Some("true") && !args.no_successor {
+        bail!("{reference} already records no successor; review it before changing");
+    }
+    if let Some(matches) = note_matches_disposition(
+        &task,
+        &decision_marker,
+        &reason,
+        args.successor.as_deref(),
+        args.no_successor,
+    ) && !matches
+    {
+        bail!("{reference} already has a different disposition note; review it before changing");
+    }
+    if already_canceled {
+        notes.push("task is already canceled; no status transition is needed".into());
     }
     let project = task
         .pointer("/project/key")
@@ -213,17 +277,19 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
         }
     }
     if !args.apply {
-        notes.push(
+        notes.push(if already_canceled {
+            "would publish and verify the missing disposition record; canceled status and artifacts are preserved"
+                .into()
+        } else {
             "would publish the decision note before changing status to canceled; artifacts are preserved"
-                .into(),
-        );
+                .into()
+        });
         outcome.notes = notes;
         emit(&outcome, args.json)?;
         return Ok(());
     }
     // Publish decision evidence before the status transition and validate it
     // on retry through the stable marker.
-    let decision_marker = marker(&task_id);
     let artifact_json = serde_json::to_string(&outcome.artifacts).unwrap_or_default();
     let note_body = format!(
         "## Disposition: canceled\n\n{decision_marker}\n\nReason: {reason}\n\nSuccessor: {}\n\nNo successor: {}\n\nRetained artifacts (never deleted automatically):\n\n```json\n{artifact_json}\n```\n\nDelivery obligations: {}\n",
@@ -261,16 +327,16 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
     if let Some(successor) = &args.successor {
         pairs.push(("superseded-by".into(), successor.clone()));
         pairs.push(("disposition.successor".into(), successor.clone()));
-        let _ = aven(
+        aven(
             &invocation,
             &["related", "add", successor, &reference],
             None,
-        );
-        let _ = aven(
+        )?;
+        aven(
             &invocation,
             &["related", "add", &reference, successor],
             None,
-        );
+        )?;
     } else if args.no_successor {
         pairs.push(("disposition.no-successor".into(), "true".into()));
     }
@@ -316,7 +382,35 @@ pub(crate) fn run(path: PathBuf, args: DispositionArgs) -> Result<()> {
         None,
     )?;
     let readback = refresh_task_by_ref(&invocation, &reference)?;
-    if task_status(&readback) != "canceled" || !has_marker(&readback, &decision_marker) {
+    let disposition_readback = metadata_value(&readback, "disposition.state") == Some("canceled")
+        && metadata_value(&readback, "disposition.reason") == Some(reason.as_str())
+        && metadata_value(&readback, "disposition.artifacts")
+            .and_then(|value| serde_json::from_str::<Vec<Artifact>>(value).ok())
+            .is_some_and(|recorded| recorded == outcome.artifacts)
+        && (args.successor.as_deref().is_none_or(|successor| {
+            metadata_value(&readback, "disposition.successor") == Some(successor)
+        }))
+        && (!args.no_successor
+            || metadata_value(&readback, "disposition.no-successor") == Some("true"));
+    let successor_linked = args.successor.as_deref().is_none_or(|successor| {
+        readback
+            .get("related")
+            .and_then(Value::as_array)
+            .is_some_and(|related| {
+                related.iter().any(|entry| {
+                    entry
+                        .get("display_ref")
+                        .or_else(|| entry.get("ref"))
+                        .and_then(Value::as_str)
+                        == Some(successor)
+                })
+            })
+    });
+    if task_status(&readback) != "canceled"
+        || !has_marker(&readback, &decision_marker)
+        || !disposition_readback
+        || !successor_linked
+    {
         bail!("disposition read-back for {reference} is incomplete; cancellation remains pending");
     }
     if !transferred.is_empty() {

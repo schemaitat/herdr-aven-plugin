@@ -71,6 +71,7 @@ tasks = {
     "APP-EPIC-RETAINED": ("EPICRETAINED", "accepted childless epic with retained result", "done", True, False, "app"),
     "APP-EPIC-PLANNING": ("EPICPLAN", "accepted childless planning epic", "done", True, False, "app"),
     "APP-CANCELME": ("CANCELME", "active cancellation", "active", False, False, "app"),
+    "APP-CANCEL-SUCCESSOR": ("CANCELSUCCESSOR", "canceled task needing a successor record", "canceled", False, False, "app"),
     "APP-EPIC": ("EPIC", "childless idea", "todo", True, False, "app"),
     "APP-OBLIGATION": ("OBLIG", "delivery obligation", "todo", False, False, "app"),
 }
@@ -86,6 +87,12 @@ state["tasks"]["APP-CODE"]["metadata"] = {"delivery.state": "pending"}
 state["tasks"]["APP-OBLIGATION"]["metadata"] = {"delivery.obligation-for": "APP-CANCELME"}
 state["tasks"]["APP-CANCELME"]["related"] = ["APP-OBLIGATION"]
 state["tasks"]["APP-OBLIGATION"]["related"] = ["APP-CANCELME"]
+state["tasks"]["APP-CANCEL"]["metadata"] = {
+    "disposition.artifacts": json.dumps([{
+        "kind": "phase-worktree", "path": "/preserved/phase-02",
+        "branch": "app/phase-02", "commit": "deadbeef", "dirty": False,
+    }])
+}
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(state, handle, indent=2, sort_keys=True)
 PY
@@ -395,6 +402,43 @@ assert obligation["metadata"]["delivery.obligation-for"] == "APP-OPEN", obligati
 assert obligation["metadata"]["delivery.transferred-from"] == "APP-CANCELME", obligation["metadata"]
 assert any("Disposition: canceled" in note["body"] for note in task["notes"])
 PY
+
+# Already-canceled tasks still need a durable reason and successor/no-successor
+# record. Applying the same decision again must not duplicate its note, and a
+# conflicting retry must fail closed.
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" disposition APP-CANCEL --reason "retained historical cancellation" --no-successor --json > "$work/canceled-no-successor-dry"
+assert_file_contains "$work/canceled-no-successor-dry" 'missing disposition record' "already-canceled dry-run proposes recording the missing decision"
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" disposition APP-CANCEL --apply --reason "retained historical cancellation" --no-successor --json > "$work/canceled-no-successor-apply"
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" disposition APP-CANCEL --apply --reason "retained historical cancellation" --no-successor --json > "$work/canceled-no-successor-retry"
+python3 - "$state" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+task = state["tasks"]["APP-CANCEL"]
+assert task["status"] == "canceled", task
+assert task["metadata"]["disposition.reason"] == "retained historical cancellation", task["metadata"]
+assert task["metadata"]["disposition.no-successor"] == "true", task["metadata"]
+artifacts = json.loads(task["metadata"]["disposition.artifacts"])
+assert artifacts[0]["path"] == "/preserved/phase-02", artifacts
+assert len([note for note in task["notes"] if "Disposition: canceled" in note["body"]]) == 1, task["notes"]
+PY
+
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" disposition APP-CANCEL-SUCCESSOR --apply --reason "superseded by current work" --successor APP-OPEN --json > "$work/canceled-successor-apply"
+python3 - "$state" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+task = state["tasks"]["APP-CANCEL-SUCCESSOR"]
+assert task["status"] == "canceled", task
+assert task["metadata"]["disposition.reason"] == "superseded by current work", task["metadata"]
+assert task["metadata"]["disposition.successor"] == "APP-OPEN", task["metadata"]
+assert "APP-OPEN" in task["related"], task["related"]
+PY
+
+set +e
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" disposition APP-CANCEL --apply --reason "conflicting replacement" --no-successor --json > "$work/canceled-conflict" 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "conflicting retry on an already-recorded cancellation is rejected"
+assert_file_contains "$work/canceled-conflict" 'different disposition reason' "conflicting cancellation retry explains the refusal"
 
 recovery_state=$work/recovery.json
 python3 - "$recovery_state" <<'PY'
