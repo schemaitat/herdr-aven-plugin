@@ -14,7 +14,9 @@
 # aliases, description, cwd, env, timeout_seconds, args, keys, detail_keys,
 # target, execution, and on_success are optional. Names must be unique across
 # custom and built-in commands. Point AVEN_COMMANDS_FILE at another file to use
-# a different set of extra commands.
+# a different set of extra commands. Dispatch commands use
+# `target: marked-or-focused` so marking several tasks dispatches each one;
+# without marks they fall back to the focused task.
 #
 # --- Example: an aven-native task workflow -----------------------------------
 #
@@ -30,7 +32,7 @@
 
 - name: sdd-plan-implement
   aliases: [aven-sdd-plan-implement]
-  description: Plan then implement the selected task (example)
+  description: Plan then implement the marked or focused task(s) (example)
   program: aven-dispatch
   args:
     - dispatch
@@ -46,17 +48,17 @@
     - "${PLUGIN_ROOT}/skills"
   keys: [z s]
   detail_keys: [z s]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 
-# Turn a selected task idea into a durable Aven-only implementation plan. The
+# Turn each selected task idea into a durable Aven-only implementation plan. The
 # planning workflow detects its `sdd.plan-worked-out` metadata marker to avoid
 # recreating an existing plan. Every plan root becomes an epic; implementation
 # phases, including a single phase, become its ordered children.
 - name: sdd-plan
   aliases: [aven-sdd-plan]
-  description: Turn the selected task idea into an epic-rooted implementation plan
+  description: Turn each marked or focused task idea into an epic-rooted implementation plan
   program: aven-dispatch
   args:
     - dispatch
@@ -72,7 +74,7 @@
     - "${PLUGIN_ROOT}/skills"
   keys: [z p]
   detail_keys: [z p]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 
@@ -80,7 +82,7 @@
 # checks the root task's sdd.plan-worked-out metadata before changing code.
 - name: sdd-implement
   aliases: [aven-sdd-implement]
-  description: Implement the selected task's already-worked-out plan
+  description: Implement the marked or focused task(s)' already-worked-out plan
   program: aven-dispatch
   args:
     - dispatch
@@ -96,7 +98,7 @@
     - "${PLUGIN_ROOT}/skills"
   keys: [z i]
   detail_keys: [z i]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 
@@ -104,7 +106,7 @@
 # the plan-and-implement SDD flow and implementation of an existing plan.
 - name: sdd-plan-implement-babysitter
   aliases: [aven-sdd-plan-implement-babysitter]
-  description: Plan then implement the selected task with an adjacent babysitter
+  description: Plan then implement the marked or focused task(s) with an adjacent babysitter
   program: aven-dispatch
   args:
     - dispatch
@@ -121,13 +123,13 @@
     - --babysitter
   keys: [z S]
   detail_keys: [z x]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 
 - name: sdd-implement-babysitter
   aliases: [aven-sdd-implement-babysitter]
-  description: Implement the selected task's plan with an adjacent babysitter
+  description: Implement the marked or focused task(s)' plan with an adjacent babysitter
   program: aven-dispatch
   args:
     - dispatch
@@ -144,7 +146,7 @@
     - --babysitter
   keys: [z b]
   detail_keys: [z b]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 
@@ -164,11 +166,11 @@
 
 # --- More examples -----------------------------------------------------------
 #
-# Dispatch the selected task to Claude on "z c" instead of opencode.
+# Dispatch the marked or focused task(s) to Claude on "z c" instead of opencode.
 #
 # - name: dispatch-claude
 #   aliases: [custom-dispatch-claude]
-#   description: Implement the selected task with Claude in a herdr-core worktree
+#   description: Implement the marked or focused task(s) with Claude in a herdr-core worktree
 #   program: aven-dispatch
 #   args:
 #     - dispatch
@@ -176,19 +178,19 @@
 #     - claude
 #   keys: [z c]
 #   detail_keys: [z C]
-#   target: focused
+#   target: marked-or-focused
 #   execution: wait
 #   on_success: quit
 # Dispatch with an explicit model on "z m".
 #
 # - name: dispatch-model
-#   description: Implement the selected task with a specific OpenCode model
+#   description: Implement the marked or focused task(s) with a specific OpenCode model
 #   program: aven-dispatch
 #   args:
 #     - dispatch
 #     - --model
 #     - provider/model
 #   keys: [z m]
-#   target: focused
+#   target: marked-or-focused
 #   execution: wait
 #   on_success: quit

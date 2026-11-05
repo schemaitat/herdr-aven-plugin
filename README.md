@@ -586,10 +586,10 @@ aven project create "My app" --path "$PWD"
 | `a` | In the overlay: open Aven's add-task composer |
 | `r` | In the overlay: refresh live terminals |
 | `Esc` | In the overlay: close it |
-| `z d` in Aven | Dispatch the selected task (list or detail) |
-| `z s` in Aven | Plan then implement the selected task (list or detail) |
-| `z p` in Aven | Turn the selected task idea into a durable implementation plan (list or detail) |
-| `z i` in Aven | Implement an already worked-out plan (list or detail) |
+| `z d` in Aven | Dispatch the marked or focused task(s) (list or detail) |
+| `z s` in Aven | Plan then implement the marked or focused task(s) (list or detail) |
+| `z p` in Aven | Turn each marked or focused task idea into a durable implementation plan (list or detail) |
+| `z i` in Aven | Implement an already worked-out plan for the marked or focused task(s) (list or detail) |
 | `z r` in Aven | Reset dispatch execution while preserving the focused task plan (list or detail) |
 | `z S` in an Aven list; `z x` in task detail | Plan then implement with an adjacent babysitter |
 | `z b` in Aven | Implement an existing plan with an adjacent babysitter (list or detail) |
@@ -601,7 +601,9 @@ Aven and return to your pane.
 
 ### Dispatch flow
 
-1. Select a task and press `z d`.
+1. Select a task or mark several tasks, then press `z d`. Marked tasks are
+   dispatched in visible order with an independent worktree and session each;
+   when nothing is marked, the focused task is dispatched.
 2. Choose an agent by number in the existing Aven terminal, or in a dedicated
    herdr-core picker terminal when dispatched outside Aven. The picker appears
    even with one agent. In the terminal picker, press `/` and type to filter
@@ -732,7 +734,7 @@ session is created. For example:
   program: aven-dispatch
   args: [dispatch, --agent, build, --model, provider/model]
   keys: [z c]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 ```
@@ -752,7 +754,7 @@ touching the worker model:
   program: aven-dispatch
   args: [dispatch, --agent, build, --model, provider/worker, --skill, aven/sdd-implement, --babysitter, --babysitter-model, provider/supervisor]
   keys: [z 2]
-  target: focused
+  target: marked-or-focused
   execution: terminal
   on_success: quit
 ```

@@ -83,7 +83,7 @@ dispatch_item() {
         - select
       keys: [z d]
       detail_keys: [z d]
-      target: focused
+      target: marked-or-focused
       execution: terminal
       on_success: quit
 EOF
