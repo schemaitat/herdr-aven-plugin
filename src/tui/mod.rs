@@ -23,7 +23,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{SyncSender, TrySendError, sync_channel},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
     },
     thread,
     time::{Duration, Instant},
@@ -78,24 +78,78 @@ enum LaneUpdate {
     Live(LiveRead),
 }
 
-#[derive(Default)]
 struct Shared {
     scope: Mutex<Option<Scope>>,
     attempts: Mutex<Vec<AttemptRecord>>,
     priority: Mutex<Option<String>>,
     cancel: AtomicBool,
-    refresh_base: AtomicBool,
-    refresh_live: AtomicBool,
+    refresh_base: SyncSender<()>,
+    refresh_live: SyncSender<()>,
+}
+
+impl Shared {
+    fn new() -> (Self, Receiver<()>, Receiver<()>) {
+        let (refresh_base, base_receiver) = sync_channel(1);
+        let (refresh_live, live_receiver) = sync_channel(1);
+        (
+            Self {
+                scope: Mutex::new(None),
+                attempts: Mutex::new(Vec::new()),
+                priority: Mutex::new(None),
+                cancel: AtomicBool::new(false),
+                refresh_base,
+                refresh_live,
+            },
+            base_receiver,
+            live_receiver,
+        )
+    }
+
+    fn refresh_all(&self) {
+        notify(&self.refresh_base);
+        notify(&self.refresh_live);
+    }
+
+    fn shutdown(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        self.refresh_all();
+    }
+}
+
+// A single queued notification is enough, including when a read is in flight.
+fn notify(sender: &SyncSender<()>) {
+    let _ = sender.try_send(());
+}
+
+fn run_lane(shared: &Shared, receiver: Receiver<()>, interval: Duration, mut cycle: impl FnMut()) {
+    let mut next = Instant::now();
+    while !shared.cancel.load(Ordering::SeqCst) {
+        match receiver.recv_timeout(next.saturating_duration_since(Instant::now())) {
+            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if shared.cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        next = Instant::now() + interval;
+        cycle();
+    }
 }
 
 fn run_live(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, options: Options) -> Result<()> {
     let (sender, receiver) = sync_channel::<LaneUpdate>(8);
-    let shared = Arc::new(Shared::default());
-    let base_handle = spawn_base_lane(Arc::clone(&shared), sender.clone(), options.clone());
-    let live_handle = spawn_live_lane(Arc::clone(&shared), sender);
+    let (shared, base_receiver, live_receiver) = Shared::new();
+    let shared = Arc::new(shared);
+    let base_handle = spawn_base_lane(
+        Arc::clone(&shared),
+        base_receiver,
+        sender.clone(),
+        options.clone(),
+    );
+    let live_handle = spawn_live_lane(Arc::clone(&shared), live_receiver, sender);
     let mut model = Model::new(empty_snapshot());
     let result = event_loop(terminal, &mut model, &receiver, Some(&shared));
-    shared.cancel.store(true, Ordering::SeqCst);
+    shared.shutdown();
     // Never join: a source read may still be inside its bounded four-second
     // call, and quitting must stay responsive. Process exit reclaims the
     // detached workers; the cancel flag stops them otherwise.
@@ -106,59 +160,52 @@ fn run_live(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, options: Opti
 
 fn spawn_base_lane(
     shared: Arc<Shared>,
+    receiver: Receiver<()>,
     sender: SyncSender<LaneUpdate>,
     mut options: Options,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut next = Instant::now();
-        while !shared.cancel.load(Ordering::SeqCst) {
-            let due = Instant::now() >= next || shared.refresh_base.swap(false, Ordering::SeqCst);
-            if due {
-                next = Instant::now() + BASE_INTERVAL;
-                options.priority_task = shared.priority.lock().expect("priority lock").clone();
-                let result = sources::read_base(&options).map_err(|error| format!("{error:#}"));
-                if let Ok(base) = &result {
-                    *shared.scope.lock().expect("scope lock") = Some(base.scope.clone());
-                    *shared.attempts.lock().expect("attempt lock") = base.attempts.clone();
-                    // Force the live lane to reconcile against the new
-                    // attempts without waiting for its full interval.
-                    shared.refresh_live.store(true, Ordering::SeqCst);
-                }
-                // Contexts are cached across cycles; the next read only spawns
-                // `aven context` for missing, changed, or aged-out tasks.
-                let update = match result {
-                    Ok(base) => LaneUpdate::Base(Ok(base)),
-                    Err(error) => LaneUpdate::Base(Err(error)),
-                };
-                match sender.try_send(update) {
+        run_lane(&shared, receiver, BASE_INTERVAL, || {
+            options.priority_task = shared.priority.lock().expect("priority lock").clone();
+            let result = sources::read_base(&options).map_err(|error| format!("{error:#}"));
+            if let Ok(base) = &result {
+                *shared.scope.lock().expect("scope lock") = Some(base.scope.clone());
+                *shared.attempts.lock().expect("attempt lock") = base.attempts.clone();
+                // Force the live lane to reconcile against the new
+                // attempts without waiting for its full interval.
+                notify(&shared.refresh_live);
+            }
+            // Contexts are cached across cycles; the next read only spawns
+            // `aven context` for missing, changed, or aged-out tasks.
+            let update = match result {
+                Ok(base) => LaneUpdate::Base(Ok(base)),
+                Err(error) => LaneUpdate::Base(Err(error)),
+            };
+            match sender.try_send(update) {
+                Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+                Err(TrySendError::Full(_)) => {}
+            }
+        });
+    })
+}
+
+fn spawn_live_lane(
+    shared: Arc<Shared>,
+    receiver: Receiver<()>,
+    sender: SyncSender<LaneUpdate>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        run_lane(&shared, receiver, LIVE_INTERVAL, || {
+            let scope = shared.scope.lock().expect("scope lock").clone();
+            let attempts = shared.attempts.lock().expect("attempt lock").clone();
+            if let Some(scope) = scope {
+                let live = sources::read_live(&scope, &attempts);
+                match sender.try_send(LaneUpdate::Live(live)) {
                     Ok(()) | Err(TrySendError::Disconnected(_)) => {}
                     Err(TrySendError::Full(_)) => {}
                 }
             }
-            thread::sleep(Duration::from_millis(50));
-        }
-    })
-}
-
-fn spawn_live_lane(shared: Arc<Shared>, sender: SyncSender<LaneUpdate>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut next = Instant::now();
-        while !shared.cancel.load(Ordering::SeqCst) {
-            let due = Instant::now() >= next || shared.refresh_live.swap(false, Ordering::SeqCst);
-            if due {
-                next = Instant::now() + LIVE_INTERVAL;
-                let scope = shared.scope.lock().expect("scope lock").clone();
-                let attempts = shared.attempts.lock().expect("attempt lock").clone();
-                if let Some(scope) = scope {
-                    let live = sources::read_live(&scope, &attempts);
-                    match sender.try_send(LaneUpdate::Live(live)) {
-                        Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-                        Err(TrySendError::Full(_)) => {}
-                    }
-                }
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        });
     })
 }
 
@@ -363,8 +410,7 @@ fn event_loop(
                         }
                         Action::Refresh => {
                             if let Some(shared) = shared {
-                                shared.refresh_base.store(true, Ordering::SeqCst);
-                                shared.refresh_live.store(true, Ordering::SeqCst);
+                                shared.refresh_all();
                                 state.status = "Refresh requested.".into();
                             } else {
                                 state.status =
@@ -385,7 +431,7 @@ fn event_loop(
                 last_priority = priority.clone();
                 *shared.priority.lock().expect("priority lock") = priority;
                 if last_priority.is_some() {
-                    shared.refresh_base.store(true, Ordering::SeqCst);
+                    notify(&shared.refresh_base);
                 }
             }
         }
@@ -470,6 +516,124 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+
+    #[test]
+    fn lanes_wait_for_deadline_and_refresh_wakes_both() {
+        let (shared, base_rx, live_rx) = Shared::new();
+        let shared = Arc::new(shared);
+        let (cycles, observed) = channel();
+        let base_shared = Arc::clone(&shared);
+        let base_cycles = cycles.clone();
+        let base = thread::spawn(move || {
+            run_lane(&base_shared, base_rx, Duration::from_secs(5), || {
+                base_cycles.send("base").unwrap();
+            });
+        });
+        let live_shared = Arc::clone(&shared);
+        let live = thread::spawn(move || {
+            run_lane(&live_shared, live_rx, Duration::from_secs(5), || {
+                cycles.send("live").unwrap();
+            });
+        });
+        let mut initial = [
+            observed.recv_timeout(Duration::from_secs(2)).unwrap(),
+            observed.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ];
+        initial.sort();
+        assert_eq!(initial, ["base", "live"]);
+        assert_eq!(
+            observed.recv_timeout(Duration::from_millis(150)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        shared.refresh_all();
+        let mut refreshed = [
+            observed.recv_timeout(Duration::from_secs(2)).unwrap(),
+            observed.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ];
+        refreshed.sort();
+        assert_eq!(refreshed, ["base", "live"]);
+        shared.shutdown();
+        base.join().unwrap();
+        live.join().unwrap();
+        assert!(observed.try_recv().is_err());
+    }
+
+    #[test]
+    fn lane_times_out_at_its_interval() {
+        let (shared, receiver, _live_rx) = Shared::new();
+        let shared = Arc::new(shared);
+        let worker_shared = Arc::clone(&shared);
+        let (cycles, observed) = channel();
+        let worker = thread::spawn(move || {
+            run_lane(&worker_shared, receiver, Duration::from_millis(300), || {
+                cycles.send(Instant::now()).unwrap();
+            });
+        });
+        let first = observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            observed.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        let second = observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(second.duration_since(first) >= Duration::from_millis(250));
+        shared.shutdown();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn refresh_during_read_is_retained_and_coalesced() {
+        let (shared, receiver, _live_rx) = Shared::new();
+        let shared = Arc::new(shared);
+        let worker_shared = Arc::clone(&shared);
+        let (cycles, observed) = channel();
+        let (release, proceed) = channel();
+        let worker = thread::spawn(move || {
+            let mut first = true;
+            run_lane(&worker_shared, receiver, Duration::from_secs(5), || {
+                cycles.send(()).unwrap();
+                if first {
+                    first = false;
+                    proceed.recv().unwrap();
+                }
+            });
+        });
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..10 {
+            notify(&shared.refresh_base);
+        }
+        release.send(()).unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            observed.recv_timeout(Duration::from_millis(150)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        shared.shutdown();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn overdue_read_restarts_immediately_and_shutdown_during_read_stops_it() {
+        let (shared, receiver, _live_rx) = Shared::new();
+        let shared = Arc::new(shared);
+        let worker_shared = Arc::clone(&shared);
+        let (cycles, observed) = channel();
+        let (release, proceed) = channel();
+        let worker = thread::spawn(move || {
+            run_lane(&worker_shared, receiver, Duration::from_millis(500), || {
+                cycles.send(()).unwrap();
+                proceed.recv().unwrap();
+            });
+        });
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(600));
+        release.send(()).unwrap();
+        observed.recv_timeout(Duration::from_millis(300)).unwrap();
+        shared.shutdown();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(observed.try_recv().is_err());
+    }
 
     #[test]
     fn duplicate_focus_admission_is_suppressed_until_completion() {
