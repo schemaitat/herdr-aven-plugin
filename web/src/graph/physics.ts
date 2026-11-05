@@ -16,9 +16,27 @@ const copy = (positions: Map<string, Position>) => new Map([...positions].map(([
 interface Particle extends SimulationNodeDatum { id: string; x: number; y: number; radius: number; anchor: Position }
 const finitePoint = (point?: Position): point is Position => Boolean(point && Number.isFinite(point.x) && Number.isFinite(point.y));
 
+export interface ClearOverlapsRun {
+  positions: Map<string, Position>;
+  /** Pair-distance tests performed across every relaxation pass. */
+  pairTests: number;
+  /** Passes executed, including the final pass that found no overlap. */
+  passes: number;
+}
+
+// A uniform grid is complete when its cell is at least the largest possible
+// collision distance: two centres closer than that can differ by at most one
+// cell index per axis, so a 3x3 neighbourhood covers every real candidate.
+const MAX_NODE_RADIUS = Math.max(NODE_RADIUS.epic, NODE_RADIUS.default);
+const BROADPHASE_CELL = MAX_NODE_RADIUS * 2 + CLEARANCE_GAP;
+
 // Deterministic static clearance, also used for reduced motion. Pins always win;
 // two overlapping pins are intentionally not "fixed" by moving user geometry.
 export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>, pins = new Map<string, Position>()) {
+  return clearOverlapsDetailed(nodes, positions, pins).positions;
+}
+
+export function clearOverlapsDetailed(nodes: Entity[], positions: Map<string, Position>, pins = new Map<string, Position>()): ClearOverlapsRun {
   const result = copy(positions);
   for (const [id, point] of pins) if (result.has(id)) result.set(id, { ...point });
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
@@ -43,9 +61,33 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
       y: center.y + Math.floor(index / columns) * spacing,
     }));
   }
+  let pairTests = 0, passes = 0;
   for (let pass = 0; pass < 96; pass++) {
+    passes++;
     let overlap = false;
-    for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
+    // Broadphase: bucket centres once per pass, then only test pairs in the 3x3
+    // neighbourhood. Candidates stay in (i, j) order so the relaxation step and
+    // its deterministic tie-break angle are identical to a full sweep.
+    const cells = new Map<string, number[]>(), candidates: number[] = [], count = ordered.length;
+    for (let index = 0; index < count; index++) {
+      const point = result.get(ordered[index].id)!;
+      const key = `${Math.floor(point.x / BROADPHASE_CELL)}:${Math.floor(point.y / BROADPHASE_CELL)}`;
+      const bucket = cells.get(key);
+      if (bucket) bucket.push(index); else cells.set(key, [index]);
+    }
+    for (let i = 0; i < count; i++) {
+      const point = result.get(ordered[i].id)!;
+      const cx = Math.floor(point.x / BROADPHASE_CELL), cy = Math.floor(point.y / BROADPHASE_CELL);
+      for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+        const bucket = cells.get(`${cx + ox}:${cy + oy}`);
+        if (!bucket) continue;
+        for (const j of bucket) if (j > i) candidates.push(i * count + j);
+      }
+    }
+    candidates.sort((a, b) => a - b);
+    for (const pair of candidates) {
+      pairTests++;
+      const i = Math.floor(pair / count), j = pair % count;
       const a = ordered[i], b = ordered[j], p = result.get(a.id)!, q = result.get(b.id)!;
       const minimum = nodeRadius(a) + nodeRadius(b) + CLEARANCE_GAP;
       let dx = q.x - p.x, dy = q.y - p.y, distance = Math.hypot(dx, dy);
@@ -64,7 +106,7 @@ export function clearOverlaps(nodes: Entity[], positions: Map<string, Position>,
     if (!overlap) break;
   }
   for (const [id, point] of pins) if (result.has(id)) result.set(id, { ...point });
-  return result;
+  return { positions: result, pairTests, passes };
 }
 
 export function selectionTargets(nodes: Entity[], edges: GraphEdge[], overview: Map<string, Position>, selected?: string) {

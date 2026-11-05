@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { ACTIVATION_MS, clearOverlaps, GraphPhysics, MotionScheduler, nodeRadius, selectionTargets, topologyKey, type FrameClock } from '../src/graph/physics.js';
+import { ACTIVATION_MS, CLEARANCE_GAP, clearOverlaps, clearOverlapsDetailed, GraphPhysics, MotionScheduler, nodeRadius, selectionTargets, topologyKey, type FrameClock } from '../src/graph/physics.js';
 import { orbitalLayout } from '../src/graph/layout.js';
 import { relationships } from '../src/graph/elements.js';
 import { graphFixture } from './fixtures/graph-snapshot.js';
@@ -104,6 +104,26 @@ describe('copied, seeded bounded forces', () => {
     for (let i = 0; i < dense.length; i++) for (let j = i + 1; j < dense.length; j++) {
       const a = dense[i], b = dense[j], p = points.get(a.id)!, q = points.get(b.id)!;
       expect(Math.hypot(p.x - q.x, p.y - q.y) - nodeRadius(a) - nodeRadius(b)).toBeGreaterThanOrEqual(-.01);
+    }
+  });
+  test('broadphase tests far fewer pairs than a full sweep at 500 nodes without losing clearance', () => {
+    const fixture = largeGraph(), seeds = orbitalLayout(fixture.nodes, fixture.edges);
+    // Nudge a subset of seeds so the run needs real relaxation passes, not just
+    // the cheap no-overlap probe.
+    const nudged = new Map(fixture.nodes.map((node, index) => {
+      const point = seeds.get(node.id)!;
+      return [node.id, { x: point.x + (index % 7) * 11, y: point.y + (index % 5) * 13 }];
+    }));
+    const detailed = clearOverlapsDetailed(fixture.nodes, nudged);
+    const fullSweep = detailed.passes * fixture.nodes.length * (fixture.nodes.length - 1) / 2;
+    expect(detailed.pairTests).toBeGreaterThan(0);
+    expect(detailed.pairTests).toBeLessThan(fullSweep / 10);
+    // Broadphase must stay order-independent and keep the full clearance gap.
+    expect(clearOverlapsDetailed([...fixture.nodes].reverse(), nudged).positions).toEqual(detailed.positions);
+    const ordered = [...fixture.nodes].sort((a, b) => a.id.localeCompare(b.id));
+    for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
+      const a = ordered[i], b = ordered[j], p = detailed.positions.get(a.id)!, q = detailed.positions.get(b.id)!;
+      expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeGreaterThanOrEqual(nodeRadius(a) + nodeRadius(b) + CLEARANCE_GAP - 1e-6);
     }
   });
   test('status, labels, heartbeat and ordering are not topology changes', () => {
