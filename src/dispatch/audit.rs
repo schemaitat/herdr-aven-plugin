@@ -374,7 +374,8 @@ pub(crate) fn run(args: AuditArgs) -> Result<()> {
         let task_attempts = attempts_by_task.get(&task.id).cloned().unwrap_or_default();
 
         // F1 — accepted code without verified delivery or a mapped obligation.
-        if task.status == "done" {
+        let aggregates_child_delivery = task.is_epic && !task.epic_children.is_empty();
+        if task.status == "done" && !aggregates_child_delivery {
             let state = task.metadata("delivery.state");
             if !matches!(
                 state,
@@ -572,6 +573,25 @@ pub(crate) fn run(args: AuditArgs) -> Result<()> {
                             child.metadata("delivery.state")
                         ),
                         "resolve the child delivery obligation before closing the root",
+                    );
+                }
+                if child.status == "done"
+                    && let Some((_, obligation)) =
+                        obligations.iter().find(|(source, obligation)| {
+                            source == &child.reference
+                                && !matches!(obligation.status.as_str(), "done" | "canceled")
+                        })
+                {
+                    add(
+                        &mut findings,
+                        "root_closed_with_obligations",
+                        Severity::Violation,
+                        task,
+                        format!(
+                            "closed root child {child_ref} retains open delivery obligation {} ({})",
+                            obligation.reference, obligation.status
+                        ),
+                        "resolve the matching delivery obligation before closing the root",
                     );
                 }
             }

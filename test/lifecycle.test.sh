@@ -70,6 +70,9 @@ tasks = {
     "APP-EPIC-CODE": ("EPICCODE", "accepted childless epic code result", "done", True, False, "app"),
     "APP-EPIC-RETAINED": ("EPICRETAINED", "accepted childless epic with retained result", "done", True, False, "app"),
     "APP-EPIC-PLANNING": ("EPICPLAN", "accepted childless planning epic", "done", True, False, "app"),
+    "APP-AGGREGATE": ("AGGREGATE", "accepted aggregate root", "done", True, False, "app"),
+    "APP-AGG-CHILD": ("AGGCHILD", "accepted delivered child", "done", False, False, "app"),
+    "APP-AGG-OBLIGATION": ("AGGOBLIGATION", "open child delivery obligation", "todo", False, False, "app"),
     "APP-CANCELME": ("CANCELME", "active cancellation", "active", False, False, "app"),
     "APP-CANCEL-SUCCESSOR": ("CANCELSUCCESSOR", "canceled task needing a successor record", "canceled", False, False, "app"),
     "APP-EPIC": ("EPIC", "childless idea", "todo", True, False, "app"),
@@ -92,6 +95,11 @@ state["tasks"]["APP-CANCEL"]["metadata"] = {
         "kind": "phase-worktree", "path": "/preserved/phase-02",
         "branch": "app/phase-02", "commit": "deadbeef", "dirty": False,
     }])
+}
+state["tasks"]["APP-AGG-CHILD"]["epic_parent"] = "APP-AGGREGATE"
+state["tasks"]["APP-AGG-CHILD"]["metadata"] = {"delivery.state": "merged"}
+state["tasks"]["APP-AGG-OBLIGATION"]["metadata"] = {
+    "delivery.obligation-for": "APP-AGG-CHILD", "delivery.state": "pending"
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(state, handle, indent=2, sort_keys=True)
@@ -277,6 +285,23 @@ assert task["metadata"]["delivery.merged"] == sys.argv[2], task["metadata"]
 obligations = [t for t in state["tasks"].values() if t["metadata"].get("delivery.obligation-for") == "APP-CODE"]
 assert len(obligations) == 1 and obligations[0]["status"] == "done", obligations
 PY
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-CODE --project app --target main --apply --json > "$work/closeout-merged-retry"
+python3 - "$state" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+obligation = next(t for t in state["tasks"].values() if t["metadata"].get("delivery.obligation-for") == "APP-CODE")
+assert obligation["status"] == "done", obligation
+assert len([n for n in obligation["notes"] if "delivery-resolved:" in n["body"]]) == 1, obligation["notes"]
+PY
+
+# A merged child facet does not let a closed epic bypass its still-open mapped
+# delivery follow-up.
+set +e
+PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-AGGREGATE --project app --target main --json > "$work/aggregate-open-obligation" 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "aggregate closeout rejects a still-open child obligation"
+assert_file_contains "$work/aggregate-open-obligation" 'APP-AGG-CHILD delivery obligation APP-AGG-OBLIGATION is todo' "aggregate reports the exact open delivery obligation"
 
 # An unrelated merge/PR claim cannot satisfy delivery.
 assert_contains "$(PATH="$fake:$PATH" "$binary" --store "$closeout_store" closeout APP-CODE --project app --target main --pr 42 --json)" '"target": "main"' "PR identity can be recorded without pretending merged delivery"
@@ -486,6 +511,8 @@ rc=$?
 set -e
 assert_eq "$rc" "1" "audit exits 1 for policy violations"
 assert_file_contains "$work/audit-violation" '"code": "delivery_missing"' "audit finds accepted work without delivery"
+assert_file_contains "$work/audit-violation" '"code": "root_closed_with_obligations"' "audit finds a closed root with an open child obligation"
+assert_file_contains "$work/audit-violation" 'retains open delivery obligation' "audit distinguishes a merged child facet from its open follow-up"
 sha_after=$(sha256sum "$state" | cut -d' ' -f1)
 assert_eq "$sha_after" "$sha_before" "audit leaves the Aven fixture unchanged"
 

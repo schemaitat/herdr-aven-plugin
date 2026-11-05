@@ -81,6 +81,18 @@ fn task_status(task: &Value) -> &str {
         .unwrap_or_default()
 }
 
+fn delivery_evidence_matches(task: &Value, outcome: &CloseoutOutcome) -> bool {
+    delivery_state(task).as_deref() == Some(DELIVERY_MERGED)
+        && task
+            .pointer("/metadata/delivery.commit")
+            .and_then(Value::as_str)
+            == Some(outcome.commit.as_str())
+        && task
+            .pointer("/metadata/delivery.merged")
+            .and_then(Value::as_str)
+            == Some(outcome.merged.as_str())
+}
+
 pub(crate) fn invocation(workspace: Option<String>) -> Invocation {
     Invocation {
         aven_exe: env::var("AVEN_BIN")
@@ -360,27 +372,88 @@ fn resolve_obligations(
             .or_else(|| task.get("display_ref"))
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if reference.is_empty() || task.get("status").and_then(Value::as_str) == Some("done") {
+        let current_status = task
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if reference.is_empty() || current_status == "canceled" {
             continue;
         }
-        let mut pairs = delivery_metadata(outcome);
-        pairs.push(("delivery.state".into(), DELIVERY_MERGED.into()));
-        edit_metadata(invocation, reference, &pairs)?;
-        aven(invocation, &["edit", reference, "--status", "done"], None)?;
-        append_note(
-            invocation,
-            reference,
-            &format!(
-                "## Delivery resolved\n\nVerified source `{}` at commit `{}` is an ancestor of local `{}` ({}) after a human-triggered merge. Closeout recorded the evidence and resolved this obligation.",
-                outcome.task, outcome.commit, outcome.target, outcome.target_commit
-            ),
-        )?;
+        let current_metadata = task.get("metadata").and_then(Value::as_object);
+        let already_merged = current_metadata
+            .and_then(|metadata| metadata.get("delivery.state"))
+            .and_then(Value::as_str)
+            == Some(DELIVERY_MERGED)
+            && current_metadata
+                .and_then(|metadata| metadata.get("delivery.commit"))
+                .and_then(Value::as_str)
+                == Some(outcome.commit.as_str())
+            && current_metadata
+                .and_then(|metadata| metadata.get("delivery.merged"))
+                .and_then(Value::as_str)
+                == Some(outcome.merged.as_str());
+        if !already_merged {
+            edit_metadata(invocation, reference, &delivery_metadata(outcome))?;
+        }
+        let mut refreshed = refresh_task_by_ref(invocation, reference)?;
+        if !delivery_evidence_matches(&refreshed, outcome) {
+            bail!("delivery evidence read-back for obligation {reference} is incomplete");
+        }
+        if task_status(&refreshed) != "done" {
+            aven(invocation, &["edit", reference, "--status", "done"], None)?;
+            refreshed = refresh_task_by_ref(invocation, reference)?;
+        }
+        let marker = format!(
+            "<!-- aven-dispatch:delivery-resolved:{}:{} -->",
+            outcome.task, outcome.commit
+        );
+        let note_exists = refreshed
+            .get("notes")
+            .and_then(Value::as_array)
+            .is_some_and(|notes| {
+                notes.iter().any(|note| {
+                    note.get("body")
+                        .and_then(Value::as_str)
+                        .is_some_and(|body| body.contains(&marker))
+                })
+            });
+        if !note_exists {
+            append_note(
+                invocation,
+                reference,
+                &format!(
+                    "## Delivery resolved\n\n{marker}\n\nVerified source `{}` at commit `{}` is an ancestor of local `{}` ({}) after a human-triggered merge. Closeout recorded the evidence and resolved this obligation.",
+                    outcome.task, outcome.commit, outcome.target, outcome.target_commit
+                ),
+            )?;
+            refreshed = refresh_task_by_ref(invocation, reference)?;
+        }
+        let note_readback = refreshed
+            .get("notes")
+            .and_then(Value::as_array)
+            .is_some_and(|notes| {
+                notes.iter().any(|note| {
+                    note.get("body")
+                        .and_then(Value::as_str)
+                        .is_some_and(|body| body.contains(&marker))
+                })
+            });
+        if task_status(&refreshed) != "done"
+            || !delivery_evidence_matches(&refreshed, outcome)
+            || !note_readback
+        {
+            bail!("delivery resolution read-back for obligation {reference} is incomplete");
+        }
         resolved.push(reference.to_owned());
     }
     Ok(resolved)
 }
 
-fn unresolved_children(invocation: &Invocation, task: &Value) -> Result<Vec<String>> {
+fn unresolved_children(
+    invocation: &Invocation,
+    task: &Value,
+    project: &str,
+) -> Result<Vec<String>> {
     let empty = Vec::new();
     let children = task
         .get("epic_children")
@@ -401,6 +474,16 @@ fn unresolved_children(invocation: &Invocation, task: &Value) -> Result<Vec<Stri
         if status != "done" {
             unresolved.push(format!("{reference} is {status}"));
             continue;
+        }
+        if let Some(obligation_ref) = find_obligation(invocation, project, reference) {
+            let obligation = refresh_task_by_ref(invocation, &obligation_ref)?;
+            let obligation_status = task_status(&obligation);
+            if !matches!(obligation_status, "done" | "canceled") {
+                unresolved.push(format!(
+                    "{reference} delivery obligation {obligation_ref} is {obligation_status}"
+                ));
+                continue;
+            }
         }
         match delivery_state(&child).as_deref() {
             Some(
@@ -477,7 +560,7 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
         outcome.state = DELIVERY_SUPERSEDED.into();
         outcome.provenance = format!("superseded-by:{superseded}");
     } else if is_epic && has_children {
-        outcome.unresolved = unresolved_children(&invocation, &task)?;
+        outcome.unresolved = unresolved_children(&invocation, &task, &project)?;
         if outcome.unresolved.is_empty() {
             outcome.state = DELIVERY_NOT_APPLICABLE.into();
             outcome.provenance = "aggregate-child-obligations".into();
@@ -628,7 +711,7 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
     outcome.unresolved = if outcome.state == DELIVERY_NOT_APPLICABLE
         && outcome.provenance.starts_with("aggregate")
     {
-        unresolved_children(&invocation, &task)?
+        unresolved_children(&invocation, &task, &project)?
     } else {
         Vec::new()
     };

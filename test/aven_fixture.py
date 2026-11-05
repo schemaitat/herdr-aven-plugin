@@ -255,6 +255,7 @@ def main(argv):
         return
     if command == "edit":
         task = find(state, argv[1])
+        metadata_keys = set()
         i = 2
         while i < len(argv):
             if argv[i] == "--status" and i + 1 < len(argv):
@@ -262,6 +263,9 @@ def main(argv):
                 i += 2
             elif argv[i] == "--metadata" and i + 1 < len(argv):
                 key, value = argv[i + 1].split("=", 1)
+                if key in metadata_keys:
+                    raise SystemExit("duplicate-metadata-key")
+                metadata_keys.add(key)
                 task.setdefault("metadata", {})[key] = value
                 i += 2
             elif argv[i] == "--remove-metadata" and i + 1 < len(argv):
