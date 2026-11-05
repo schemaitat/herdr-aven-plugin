@@ -674,11 +674,10 @@ pub(crate) fn parse_context(text: &str) -> Result<CommandContext> {
             );
         }
     }
-    if let Some(selected) = context.selection.primary.as_ref()
-        && !target_ids.contains(&selected.task.id)
-    {
-        bail!("selection.primary does not belong to targeting.targets");
-    }
+    // Aven resolves `marked-or-focused` to the marked tasks in `targeting`
+    // while `selection.primary` still points at the focused row, which may be a
+    // different task. Batch dispatch therefore cares only about the targets and
+    // never singles out the focused selection.
     Ok(context)
 }
 pub(crate) fn selected_for(context: &CommandContext) -> Result<&Selected> {
@@ -1053,8 +1052,20 @@ mod tests {
         ));
     }
     #[test]
-    fn targets_not_focused_selection_drive_validation() {
-        assert!(parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"two"}}}}"#).is_err());
+    fn marked_batch_is_accepted_when_focus_is_outside_the_targets() {
+        let context = parse_context(r#"{"version":1,"invocation":{},"targeting":{"targets":[{"id":"one","ref":"APP-1"},{"id":"two","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-9","task":{"id":"focused"}}}}"#).unwrap();
+        assert_eq!(
+            context
+                .targeting
+                .targets
+                .iter()
+                .map(|target| target.id.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+        // Focused-only operations such as reset still require the focused
+        // selection to be one of the targets.
+        assert!(selected_for(&context).is_err());
     }
     #[test]
     fn multiple_targets_are_validated_in_supplied_order() {

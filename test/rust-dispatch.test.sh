@@ -136,6 +136,16 @@ assert_eq "$after" "$((before + 2))" 'bulk dispatch admits every selected target
 [ -d "$work/worktrees/repo/app-dispatch-immutable-task" ] || fail 'bulk dispatch creates first selected worktree'
 [ -d "$work/worktrees/repo/app-dispatch-bulk-task" ] || fail 'bulk dispatch creates second selected worktree'
 
+# A marked batch is dispatched identically when focus sits on a task that is
+# not marked; the focused selection never takes part in the batch.
+detached_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"bulk-task","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-9","task":{"id":"focused-elsewhere","title":"focused elsewhere"},"project":{"key":"app"}}}}'
+before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/detached-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+$detached_context
+EOF
+after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+assert_eq "$after" "$((before + 2))" 'focused task outside the marks does not block or join the batch'
+
 # Malformed batches are rejected during preflight before a worktree or session
 # can be created for any selected task.
 before=$(wc -l < "$work/opencode.log")
