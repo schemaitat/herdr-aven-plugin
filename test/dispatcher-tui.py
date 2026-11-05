@@ -402,3 +402,62 @@ finally:
         os.close(fd)
     except OSError:
         pass
+
+# A real refresh key must wake the base lane before its five-second deadline.
+# An intentionally failing, fast Aven command makes each base cycle observable.
+refresh_dir = tempfile.mkdtemp(prefix="aven-tui-refresh.")
+refresh_bin = os.path.join(refresh_dir, "bin")
+refresh_repo = os.path.join(refresh_dir, "repo")
+refresh_log = os.path.join(refresh_dir, "calls")
+os.makedirs(refresh_bin)
+os.makedirs(refresh_repo)
+with open(os.path.join(refresh_bin, "aven"), "w", encoding="utf-8") as handle:
+    handle.write('#!/bin/sh\nprintf "call\\n" >> "$REFRESH_LOG"\nexit 1\n')
+with open(os.path.join(refresh_bin, "git"), "w", encoding="utf-8") as handle:
+    handle.write('#!/bin/sh\nprintf "%s\\n" "$REFRESH_REPO"\n')
+for name in ("aven", "git"):
+    os.chmod(os.path.join(refresh_bin, name), 0o755)
+refresh_env = dict(env)
+refresh_env.pop("AVEN_DISPATCH_TUI_FIXTURE", None)
+refresh_env.update(
+    {
+        "PATH": refresh_bin + os.pathsep + refresh_env["PATH"],
+        "AVEN_DISPATCH_STORE": os.path.join(refresh_dir, "missing.sqlite"),
+        "REFRESH_LOG": refresh_log,
+        "REFRESH_REPO": refresh_repo,
+    }
+)
+
+
+def refresh_calls():
+    try:
+        with open(refresh_log, encoding="utf-8") as handle:
+            return len(handle.readlines())
+    except FileNotFoundError:
+        return 0
+
+
+pid, fd = spawn(refresh_env, ["tui", "--project", "app", "--cwd", refresh_repo])
+try:
+    output, ok = read_until(fd, [b"overview"], time.time() + 5)
+    assert ok, f"refresh inspector did not render: {output[-800:]!r}"
+    deadline = time.time() + 3
+    while refresh_calls() < 1 and time.time() < deadline:
+        time.sleep(0.02)
+    assert refresh_calls() == 1, "initial base read missing or repeated"
+    time.sleep(0.3)
+    assert refresh_calls() == 1, "base read repeated while idle"
+    os.write(fd, b"r")
+    deadline = time.time() + 2
+    while refresh_calls() < 2 and time.time() < deadline:
+        time.sleep(0.02)
+    assert refresh_calls() >= 2, "refresh key did not wake the base lane"
+    os.write(fd, b"q")
+    status = wait_exit(pid, time.time() + 3)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, status
+    print("tui refresh key woke the base lane before its deadline")
+finally:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
