@@ -25,15 +25,15 @@ use crate::process::now;
 
 const PROJECT_LIMIT: usize = 100;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct Options {
     pub(crate) project: Option<String>,
     pub(crate) workspace: Option<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) store: PathBuf,
-    /// Rotating context-hydration offset; the long-lived collector advances it
-    /// per cycle so projects above the admission cap eventually gain coverage.
-    pub(crate) hydration_offset: usize,
+    /// Hydrated Aven contexts reused across base-lane cycles; cleared with the
+    /// process, never persisted.
+    pub(crate) context_cache: aven::ContextCache,
     /// Selected immutable task id to hydrate first in the next bounded cycle.
     pub(crate) priority_task: Option<String>,
 }
@@ -65,7 +65,7 @@ pub(crate) fn read_base(options: &Options) -> Result<BaseRead> {
     let scope = resolve_scope(options, &secrets)?;
     let (tasks, contexts, aven_health) = aven::read_aven(
         &scope,
-        options.hydration_offset,
+        &options.context_cache,
         options.priority_task.as_deref(),
         &secrets,
     )?;

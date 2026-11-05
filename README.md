@@ -70,6 +70,10 @@ activity expires after 4.5 seconds and becomes unknown rather than idle. Reads
 are bounded (500 tasks per list, 80 context admissions per cycle, 2,000
 attempts, 64 linked sessions, 4,000 terminals, 4 MiB responses, four workers,
 four-second timeouts) and never migrate or mutate the dispatcher store.
+Hydrated contexts are cached per task id across cycles and only re-read when the
+listed `updated_at` changes, the task was not seen before, or the entry is older
+than 30 seconds; uncovered and stale tasks are hydrated ahead of warm ones so
+coverage still converges above the 80-task window.
 
 Enter resolves only explicitly persisted terminal ownership from an attempt,
 phase, session or terminal row. Multiple candidates open an in-TUI chooser;
