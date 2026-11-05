@@ -69,8 +69,59 @@ pub(crate) fn status(path: PathBuf, task: &str, workflow: Option<&str>) -> Resul
     Ok(())
 }
 
-// Supervisor attempt list command.
-pub(crate) fn list(path: PathBuf, running: bool) -> Result<()> {
+const SUMMARY_DEFAULT_LIMIT: usize = 500;
+const LIST_LIMIT_MAX: usize = 2_000;
+
+fn list_limit(limit: Option<usize>) -> Result<usize> {
+    let limit = limit.unwrap_or(SUMMARY_DEFAULT_LIMIT);
+    if limit == 0 || limit > LIST_LIMIT_MAX {
+        bail!("list limit must be between 1 and {LIST_LIMIT_MAX}");
+    }
+    Ok(limit)
+}
+
+fn summary_values(attempts: &[Attempt]) -> Result<Vec<Value>> {
+    attempts
+        .iter()
+        .map(|attempt| {
+            let mut value = serde_json::to_value(attempt)?;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("pending_prompt");
+                object.remove("aven");
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+// Supervisor attempt list command. Summary reads are bounded, read-only and
+// prompt-free; exceeding the cap is an error instead of silent truncation.
+pub(crate) fn list(
+    path: PathBuf,
+    running: bool,
+    limit: Option<usize>,
+    summary: bool,
+) -> Result<()> {
+    if summary && !running {
+        let limit = list_limit(limit)?;
+        let payloads = if path.exists() {
+            crate::store::read_only::read_only_store_payloads(&path, limit)?
+        } else {
+            Vec::new()
+        };
+        let attempts = payloads
+            .into_iter()
+            .map(|payload| {
+                serde_json::from_str::<Attempt>(&payload).context("invalid attempt payload")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary_values(&attempts)?)?
+        );
+        return Ok(());
+    }
+
     let mut store = LockedStore::open(path)?;
     let mut attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
     if running {
@@ -93,7 +144,23 @@ pub(crate) fn list(path: PathBuf, running: bool) -> Result<()> {
             )
         });
     }
-    println!("{}", serde_json::to_string_pretty(&attempts)?);
+    if let Some(limit) = limit {
+        let limit = list_limit(Some(limit))?;
+        if summary && attempts.len() > limit {
+            bail!("dispatcher store exceeds the {limit}-attempt limit");
+        }
+        attempts.truncate(limit);
+    } else if summary && attempts.len() > SUMMARY_DEFAULT_LIMIT {
+        bail!("dispatcher store exceeds the {SUMMARY_DEFAULT_LIMIT}-attempt limit");
+    }
+    if summary {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary_values(&attempts)?)?
+        );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&attempts)?);
+    }
     Ok(())
 }
 
@@ -236,16 +303,29 @@ pub(crate) fn reconcile_all_with(store: &mut LockedStore, path: &Path) -> Result
     }
     Ok(reconciled)
 }
-pub(crate) fn message(
-    path: PathBuf,
-    task: &str,
-    workflow: Option<&str>,
+fn message_terminal<'a>(
+    attempt: &'a Attempt,
     role: &str,
-    text: &str,
-    wait: bool,
-) -> Result<()> {
-    let store = LockedStore::open(path)?;
-    let attempt = find_attempt(&store, task, workflow)?;
+    expected_attempt_id: Option<&str>,
+    expected_generation: Option<u64>,
+    expected_terminal: Option<&str>,
+) -> Result<&'a crate::model::TerminalRef> {
+    if expected_attempt_id.is_some_and(|expected| expected != attempt.attempt_id) {
+        bail!(
+            "attempt ID changed for {}; expected {:?}, found {:?}; refusing to message a replacement attempt",
+            attempt.task_ref,
+            expected_attempt_id.unwrap_or_default(),
+            attempt.attempt_id
+        );
+    }
+    if expected_generation.is_some_and(|expected| expected != attempt.generation) {
+        bail!(
+            "reset generation changed for {}; expected {:?}, found {}; refusing to message a replacement attempt",
+            attempt.task_ref,
+            expected_generation,
+            attempt.generation
+        );
+    }
     let terminal = match role {
         "builder" => &attempt.terminal,
         "coordinator" => &attempt.coordinator_terminal,
@@ -270,6 +350,39 @@ pub(crate) fn message(
             attempt.attempt_id
         );
     }
+    if expected_terminal.is_some_and(|expected| expected != terminal.address) {
+        bail!(
+            "terminal changed for {} role {role}; expected {:?}, found {:?}; refusing to message a replacement attempt",
+            attempt.task_ref,
+            expected_terminal.unwrap_or_default(),
+            terminal.address
+        );
+    }
+    Ok(terminal)
+}
+
+pub(crate) fn message(
+    path: PathBuf,
+    task: &str,
+    workflow: Option<&str>,
+    role: &str,
+    text: &str,
+    expected_attempt_id: Option<&str>,
+    expected_generation: Option<u64>,
+    expected_terminal: Option<&str>,
+    wait: bool,
+) -> Result<()> {
+    // Keep the store lock through validation and send so a reset/re-dispatch
+    // cannot replace the selected attempt between the check and the effect.
+    let store = LockedStore::open(path)?;
+    let attempt = find_attempt(&store, task, workflow)?;
+    let terminal = message_terminal(
+        attempt,
+        role,
+        expected_attempt_id,
+        expected_generation,
+        expected_terminal,
+    )?;
     let core = core::identity()?;
     if !terminal.matches_core(&core.id) {
         bail!(
@@ -539,6 +652,50 @@ mod tests {
             "created_at": 0
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn message_identity_expectations_fail_before_a_terminal_can_be_used() {
+        let mut attempt = test_attempt("task-one");
+        attempt.attempt_id = "att-new".into();
+        attempt.generation = 2;
+        attempt.terminal.core_id = "core".into();
+        attempt.terminal.address = "t-new".into();
+
+        let replaced =
+            message_terminal(&attempt, "builder", Some("att-old"), Some(2), Some("t-new"))
+                .unwrap_err()
+                .to_string();
+        assert!(replaced.contains("attempt ID changed"));
+        let generation =
+            message_terminal(&attempt, "builder", Some("att-new"), Some(1), Some("t-new"))
+                .unwrap_err()
+                .to_string();
+        assert!(generation.contains("reset generation changed"));
+        let terminal =
+            message_terminal(&attempt, "builder", Some("att-new"), Some(2), Some("t-old"))
+                .unwrap_err()
+                .to_string();
+        assert!(terminal.contains("terminal changed"));
+        assert_eq!(
+            message_terminal(&attempt, "builder", Some("att-new"), Some(2), Some("t-new"))
+                .unwrap()
+                .address,
+            "t-new"
+        );
+    }
+
+    #[test]
+    fn summary_values_omit_prompt_and_invocation_details() {
+        let mut attempt = test_attempt("task-one");
+        attempt.pending_prompt = "SECRET PROMPT".into();
+        attempt.aven.origin_cwd = "/private/checkout".into();
+        let values = summary_values(&[attempt]).unwrap();
+        let serialized = serde_json::to_string(&values).unwrap();
+        assert!(!serialized.contains("SECRET PROMPT"));
+        assert!(!serialized.contains("/private/checkout"));
+        assert!(values[0].get("pending_prompt").is_none());
+        assert!(values[0].get("aven").is_none());
     }
 
     #[test]

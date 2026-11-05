@@ -2,7 +2,7 @@
 # Install the repository-owned herdr-app mods for Aven.
 #
 # Owned files only: mods/aven-tasks, mods/aven-worktree, mods/aven-panel,
-# mods/aven-panel-tabs, and layouts/aven-right.json. Keys are merged into
+# mods/aven-kanban, mods/aven-panel-tabs, and layouts/aven-right.json. Keys are merged into
 # the person's keys.json only when the chord is free; an existing binding is
 # never replaced. Shipped mods and the app's generated guide/types are never
 # edited. The mods are optional: headless dispatch does not require herdr-app.
@@ -13,6 +13,7 @@
 #   installed: mods/aven-tasks
 #   installed: mods/aven-worktree
 #   installed: mods/aven-panel
+#   installed: mods/aven-kanban
 #   installed: mods/aven-panel-tabs
 #   installed: layouts/aven-right.json
 #   bound KEY -> ACTION
@@ -49,6 +50,7 @@ assert_owned_or_missing() {
   fi
 }
 assert_owned_or_missing "$app_home/mods/aven-panel" "$app_home/mods/aven-panel/.herdr-aven-plugin-owner"
+assert_owned_or_missing "$app_home/mods/aven-kanban" "$app_home/mods/aven-kanban/.herdr-aven-plugin-owner"
 assert_owned_or_missing "$app_home/mods/aven-panel-tabs" "$app_home/mods/aven-panel-tabs/.herdr-aven-plugin-owner"
 assert_owned_or_missing "$app_home/layouts/aven-right.json" "$app_home/layouts/.aven-right.herdr-aven-plugin-owner"
 
@@ -64,7 +66,7 @@ cp "$PLUGIN_ROOT/app/aven-worktree/main.js" "$mod_dir/main.js"
 cp "$PLUGIN_ROOT/app/aven-worktree/mod.json" "$mod_dir/mod.json"
 printf 'installed: mods/aven-worktree\n'
 
-for name in aven-panel aven-panel-tabs; do
+for name in aven-panel aven-kanban aven-panel-tabs; do
   mkdir -p "$app_home/mods/$name"
   cp -R "$PLUGIN_ROOT/app/$name/." "$app_home/mods/$name/"
   printf 'installed: mods/%s\n' "$name"
@@ -116,7 +118,7 @@ PY
 fi
 
 if command -v herdr-app >/dev/null 2>&1; then
-  for name in aven-tasks aven-worktree aven-panel aven-panel-tabs; do
+  for name in aven-tasks aven-worktree aven-panel aven-kanban aven-panel-tabs; do
     if ! herdr-app check "$app_home/mods/$name" >/dev/null 2>&1; then
       printf 'warning: herdr-app rejected %s; inspect it before relying on the mod\n' "$app_home/mods/$name" >&2
       exit 1

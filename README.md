@@ -25,8 +25,9 @@ just install
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
 commands, installs the global OpenCode `/ha-merge` command and the
 `herdr-aven-tasks` skill, and installs `mods/aven-tasks`,
-`mods/aven-worktree`, `mods/aven-panel`, `mods/aven-panel-tabs`, and the personal
-`layouts/aven-right.json` into `$HERDR_APP_HOME` (or `~/.config/herdr-app`), and
+`mods/aven-worktree`, `mods/aven-panel`, `mods/aven-kanban`,
+`mods/aven-panel-tabs`, and the personal `layouts/aven-right.json` into
+`$HERDR_APP_HOME` (or `~/.config/herdr-app`), and
 reports readiness with `just doctor`. The app mods are optional; when
 `herdr-app` is absent the same dispatch, supervision, and recovery work
 headlessly. The installer preserves unrelated app settings, never overwrites an
@@ -34,8 +35,8 @@ existing key binding, and refuses a differing skill file. Re-run
 `just install-app-mod` after an upgrade to refresh owned assets. Both commands
 install the Aven-right assets by default, including with `--no-keys`, but never
 select a layout, open a panel, or change panel preferences. A foreign asset
-named `aven-right`, `aven-panel`, or `aven-panel-tabs` is refused rather than
-overwritten.
+named `aven-right`, `aven-panel`, `aven-kanban`, or `aven-panel-tabs` is refused
+rather than overwritten.
 
 There is no legacy `herdr` plugin manifest, popup entrypoint, or keybinding
 installer to install. The retired runtime is not started or migrated in place.
@@ -541,6 +542,93 @@ started, so the first open reveals it instead of reporting that the terminal
 was not found. Pressing the key again while that terminal is still starting
 reuses it rather than opening a second Aven.
 
+### Aven Kanban board
+
+Open the native **Aven Kanban** overlay with `ctrl-shift-h` (requested only when
+that chord is free), with `ctrl-shift-a` followed by `k`, or with:
+
+```sh
+herdr-app do mod.open --name aven-kanban
+```
+
+The board lists nondeleted root epics from the repository's inferred Aven
+project in the explicit local `default` workspace. Scheduled open epics and
+terminal done/canceled epics are included. Five horizontally scrollable columns
+combine independent Aven and dispatcher facts instead of creating another task
+store:
+
+| Column | Contents |
+| --- | --- |
+| **Backlog** | Unplanned inbox, backlog, and todo epics. |
+| **Planned** | Todo epics with `sdd.plan-worked-out=true` and no current execution/review attempt. |
+| **In progress** | Active epics and running, pending, failed, or interrupted execution. |
+| **Review** | Needs-review/completed execution awaiting acceptance or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
+| **Done** | Delivered or legacy accepted done epics, terminal work whose exact attempt result is verified on local main, and canceled epics. |
+
+Cards show the qualified ref, title, Aven status, phase progress, and known
+plan/execution/delivery badges. Contradictory terminal/execution evidence and
+incomplete metadata reads stay visible. For terminal done/canceled cards, the
+board performs a bounded read-only check of the exact attempt branch/worktree
+commit against the current local `main`; verified ancestry moves the card to
+Done with an `on main` badge and, when closeout is absent or pending, an explicit
+**closeout not recorded** warning. This is presentation evidence only: it
+never edits Aven delivery metadata or treats active epics as complete. HAP-SZ57
+therefore remains Review while its implementation is merged but its epic/child
+are still open. Legacy done epics without delivery metadata remain Done as
+accepted historical work. Failed/interrupted non-merged execution stays In
+progress rather than appearing ready to merge.
+
+**Open** starts or reveals the exact epic's Aven TUI. **Dispatch** offers the
+same dispatch, plan, plan-and-implement, implement, reset, and babysitter
+variants as Aven detail: the board opens that exact detail and sends its
+existing lower-case shortcut, so dispatcher eligibility and picker behavior are
+not bypassed. Live terminals are reused only by workspace and immutable epic
+identity; repeated activation is deduplicated.
+
+| Board key | Action |
+| --- | --- |
+| `j` / `k` or arrows | Select next / previous card |
+| `Enter` or `o` | Open the selected epic |
+| `d` | Toggle the selected epic's Dispatch menu |
+| `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
+| `m` | Merge an eligible Review epic into local main through `/ha-merge` |
+| `r` | Refresh |
+| `Esc` | Close a Dispatch menu, then the board |
+
+**Merge into main** appears only on a Review card with review execution
+(`needs-review`/`completed`), no contradiction, one unambiguous matching attempt,
+and an owned terminal. It sends `/ha-merge merge into local main` to the builder
+for single-session execution or the coordinator for worktrees execution. The
+command carries the immutable task ID, attempt ID, reset generation, and expected
+role-terminal address; the dispatcher validates all four under its store lock
+before messaging. A reset/re-dispatch or terminal replacement therefore refuses
+the click before any message, and only the validated terminal is revealed. A
+busy, missing, ambiguous, unknown, or failed terminal is an inline error, never a
+fallback target. This is a handoff to the existing
+[finish workflow](#finish-a-dispatched-worktree), not a one-click Git mutation:
+`/ha-merge` still checks acceptance and clean worktrees and asks for explicit
+confirmation. The board itself never commits, merges, pushes, opens a PR,
+changes Aven acceptance, applies closeout, or closes a space.
+
+Refresh is non-overlapping. Full Aven metadata is cached by immutable epic ID
+and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
+the merged epic set, and dispatcher attempts. Dispatcher reads use read-only,
+prompt-free `aven-dispatch list --summary --limit 500`; exceeding a cap is an
+explicit error, not silent truncation. Attempts are indexed once per refresh by
+immutable task ID. Local-main ancestry checks are limited to terminal cards with
+a matching attempt and cached by resolved main head plus commit. An unavailable
+`main` leaves cards in their metadata-derived lifecycle and reports incomplete
+evidence instead of asserting delivery. Failed refreshes retain clearly labeled
+stale results; partial metadata failures are not presented as complete coverage.
+
+For native verification, `just app-test-e2e` creates an isolated app home, core
+session, Aven DB, dispatcher store, and five dummy epics. It checks keyboard
+selection and the exact merge handoff, peeks an owned fixture terminal, and
+retains `kanban-board.png` and `kanban-handoff.png` under
+`/tmp/opencode/aven-kanban-e2e.*` for visual inspection. The test needs
+herdr-app, herdr-core, Aven, and a display; it is intentionally separate from
+headless `just test` and cleans up only the app/core/resources it created.
+
 The companion `aven-worktree` panel is installed with the same command. Every
 dispatched worktree space opens an **Aven** pane beside the agent showing the
 root epic, its phases and progress, the current task, and the persisted
@@ -563,18 +651,20 @@ selector remembers only an explicit valid choice per space in its own mod-local
 storage. A new space starts with the panel hidden, and the shipped main layout's
 panel preference is neither read nor changed.
 
-The Aven panel is read-only. It lists nondeleted open epics (inbox, backlog,
-todo, active), including future-available epics, from every project in the
+The Aven panel lists nondeleted open epics (inbox, backlog, todo, active),
+including future-available epics, from the repository's inferred project in the
 explicit local `default` workspace. It merges normal open-epic and per-project
 upcoming reads, deduplicates canonical IDs, orders valid `created_at` values
 newest first (stable ID ties; invalid dates last), and labels loading, empty,
 stale, errors, and incomplete coverage separately. A list cap, malformed data,
 timeout, or project failure is never displayed as a complete empty list.
 
-Only clicking an epic starts or reveals its exact `aven --workspace default tui
-<ref>` terminal. The panel reuses only a live terminal with the same workspace
-and canonical epic identity, suppresses duplicate launches while one is pending,
-and does not kill a terminal when the panel closes. Polling is gentle (about ten
+Clicking an epic starts or reveals its exact `aven --workspace default tui
+<ref>` terminal. Its Dispatch menu sends the same existing Aven detail shortcuts
+as the Kanban board; the panel does not edit task fields directly. The panel
+reuses only a live terminal with the same workspace and canonical epic identity,
+suppresses duplicate launches while one is pending, and does not kill a terminal
+when the panel closes. Polling is gentle (about ten
 seconds, never overlapping) and cannot select or open a panel. Native app review
 requires an isolated `HERDR_APP_HOME` **and** isolated core/window; do not use a
 personal active app/core as a test target.
@@ -588,8 +678,10 @@ aven project create "My app" --path "$PWD"
 | Keys | Action |
 | --- | --- |
 | `ctrl-shift-a` | Open the Aven overlay (when the app mod is installed) |
+| `ctrl-shift-h` | Open the Kanban board when the chord is free |
 | `o` | In the overlay: open the Aven TUI |
 | `a` | In the overlay: open Aven's add-task composer |
+| `k` | In the overlay: open the Kanban board |
 | `r` | In the overlay: refresh live terminals |
 | `Esc` | In the overlay: close it |
 | `z d` in Aven | Dispatch the marked or focused task(s) (list or detail) |
@@ -821,6 +913,7 @@ The bundled copy lives at `opencode-skills/herdr-aven-tasks/SKILL.md`.
 ```sh
 aven-dispatch doctor
 aven-dispatch list --running
+aven-dispatch list --summary --limit 500  # bounded read-only, prompt-free JSON
 aven-dispatch status HAP-XXXX
 aven-dispatch reconcile HAP-XXXX
 aven-dispatch interrupt HAP-XXXX
@@ -849,7 +942,11 @@ events only as triggers to reconcile authoritative OpenCode/Aven state. A
 bounded periodic pass covers changes that have no core event. Duplicate
 notifications, reconnects, and watcher restarts never submit a prompt or launch
 a worker twice. `message` uses guarded `hc send --if idle --wait`; it refuses
-blocked programs rather than bypassing a permission dialog.
+blocked programs rather than bypassing a permission dialog. Callers that rendered
+an attempt earlier can also supply `--attempt-id`, `--generation`, and
+`--terminal`; each supplied expectation is validated under the store lock before
+any core/message call, so replacement attempts fail closed. The positional task
+accepts either its immutable ID or qualified ref.
 
 A legacy attempt created by the retired `herdr` runtime remains read-only
 evidence. Move its durable OpenCode session to herdr-core explicitly with
@@ -962,8 +1059,9 @@ just check     # Compile checks
 just test      # Rust unit tests and shell/integration fixtures
 just test-tui  # Inspector rendering, stalled-source, terminal and focus-effect PTY checks
 just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
-just app-test  # Node 24 behavioral fixtures for Aven right-panel model/tabs
+just app-test  # Node 24 Kanban and right-panel model/tabs fixtures
 just app-check # herdr-app check all optional Aven mods
+just app-test-e2e # Isolated native Kanban dummy epics, handoff and screenshots
 just ui-check  # Dashboard TypeScript
 just ui-test   # Dashboard unit tests
 ```

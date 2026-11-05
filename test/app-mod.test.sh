@@ -12,6 +12,9 @@ set -eu
 [ -f "$PLUGIN_ROOT/app/aven-panel/main.js" ] || fail 'missing app/aven-panel/main.js'
 [ -f "$PLUGIN_ROOT/app/aven-panel/logic.js" ] || fail 'missing app/aven-panel/logic.js'
 [ -f "$PLUGIN_ROOT/app/aven-panel/mod.json" ] || fail 'missing app/aven-panel/mod.json'
+[ -f "$PLUGIN_ROOT/app/aven-kanban/main.js" ] || fail 'missing app/aven-kanban/main.js'
+[ -f "$PLUGIN_ROOT/app/aven-kanban/logic.js" ] || fail 'missing app/aven-kanban/logic.js'
+[ -f "$PLUGIN_ROOT/app/aven-kanban/mod.json" ] || fail 'missing app/aven-kanban/mod.json'
 [ -f "$PLUGIN_ROOT/app/aven-panel-tabs/main.js" ] || fail 'missing app/aven-panel-tabs/main.js'
 [ -f "$PLUGIN_ROOT/app/aven-panel-tabs/logic.js" ] || fail 'missing app/aven-panel-tabs/logic.js'
 [ -f "$PLUGIN_ROOT/app/aven-panel-tabs/mod.json" ] || fail 'missing app/aven-panel-tabs/mod.json'
@@ -33,6 +36,19 @@ assert_file_contains "$PLUGIN_ROOT/app/keys.json" '"mod:aven-tasks"' 'overlay ke
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.open' 'overlay has an open key'
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.add' 'overlay has an add key'
 assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'aven-tasks.inspect' 'overlay has an inspector key'
+assert_file_contains "$PLUGIN_ROOT/app/keys.json" 'mod.open:aven-kanban' 'Kanban has a global open binding'
+assert_file_contains "$PLUGIN_ROOT/app/keys.json" '"mod:aven-kanban"' 'Kanban keys are scoped to the board'
+assert_file_contains "$PLUGIN_ROOT/app/main.js" 'openKanban' 'launcher exposes the Kanban board'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'overflow_x_scrollbar' 'Kanban columns scroll horizontally'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'Merge into main' 'review cards expose the merge handoff'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'mergeArgs(epic' 'merge uses dispatcher messaging rather than Git mutation'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"message", epic.id' 'merge command targets the immutable epic task ID'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"--attempt-id", attempt.attemptId' 'merge pins the selected attempt ID'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"--generation", String(attempt.generation)' 'merge pins the selected generation'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"--terminal", target.address' 'merge pins the selected role terminal'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" '"--summary"' 'dispatcher reads use bounded prompt-free summaries'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"/ha-merge merge into local main"' 'merge handoff selects the existing local-main workflow'
+assert_file_lacks "$PLUGIN_ROOT/app/aven-kanban/main.js" '"git", ["merge"' 'board never merges Git directly'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" 'aven-inspector-' 'mod reuses a live inspector terminal'
 assert_file_contains "$PLUGIN_ROOT/app/main.js" '"aven-dispatch", "tui"' 'mod launches the Rust inspector'
 assert_file_contains "$PLUGIN_ROOT/app/aven-worktree/mod.json" '"place": "none"' 'worktree panel does not take layout space'
@@ -62,7 +78,7 @@ assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"id": "aven"' '
 [ ! -e "$PLUGIN_ROOT/scripts/install-keybindings.sh" ] || fail 'legacy herdr keybinding installer must be retired'
 
 if command -v herdr-app >/dev/null 2>&1; then
-  for mod in app app/aven-worktree app/aven-panel app/aven-panel-tabs; do
+  for mod in app app/aven-worktree app/aven-panel app/aven-kanban app/aven-panel-tabs; do
     if herdr-app check "$PLUGIN_ROOT/$mod" >/tmp/app-check.log 2>&1; then
       assert_file_contains /tmp/app-check.log 'check passed' "herdr-app accepts $mod"
     else

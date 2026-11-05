@@ -104,6 +104,12 @@ enum Commands {
     List {
         #[arg(long)]
         running: bool,
+        /// Bound results; bounded summary reads fail instead of truncating.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Omit prompts and Aven invocation details from the JSON payloads.
+        #[arg(long)]
+        summary: bool,
     },
     /// Repair pending Aven updates and refresh session state.
     Reconcile {
@@ -142,6 +148,15 @@ enum Commands {
         role: String,
         #[arg(long)]
         workflow: Option<String>,
+        /// Refuse if the selected attempt was replaced after the caller read it.
+        #[arg(long)]
+        attempt_id: Option<String>,
+        /// Refuse if the selected reset generation changed.
+        #[arg(long)]
+        generation: Option<u64>,
+        /// Refuse if the selected role now has a different terminal address.
+        #[arg(long)]
+        terminal: Option<String>,
         #[arg(long)]
         wait: bool,
     },
@@ -378,7 +393,11 @@ fn main() -> Result<()> {
         }),
         Commands::Resume { task, workflow } => reconcile(path, &task, workflow.as_deref()),
         Commands::Status { task, workflow } => status(path, &task, workflow.as_deref()),
-        Commands::List { running } => list(path, running),
+        Commands::List {
+            running,
+            limit,
+            summary,
+        } => list(path, running, limit, summary),
         Commands::Reconcile { task, workflow } => reconcile(path, &task, workflow.as_deref()),
         Commands::Log {
             task,
@@ -393,8 +412,21 @@ fn main() -> Result<()> {
             text,
             role,
             workflow,
+            attempt_id,
+            generation,
+            terminal,
             wait,
-        } => message(path, &task, workflow.as_deref(), &role, &text, wait),
+        } => message(
+            path,
+            &task,
+            workflow.as_deref(),
+            &role,
+            &text,
+            attempt_id.as_deref(),
+            generation,
+            terminal.as_deref(),
+            wait,
+        ),
         Commands::Watch {
             once,
             stop,

@@ -1,13 +1,30 @@
 {
   "global": {
     "ctrl-shift-a": "mod.open:aven-tasks",
-    "ctrl-shift-u": "mod.open:aven-tasks"
+    "ctrl-shift-u": "mod.open:aven-tasks",
+    "ctrl-shift-h": "mod.open:aven-kanban"
   },
   "mod:aven-tasks": {
     "o": "aven-tasks.open",
     "a": "aven-tasks.add",
+    "k": "aven-tasks.kanban",
     "i": "aven-tasks.inspect",
     "r": "aven-tasks.refresh",
     "escape": "aven-tasks.close"
+  },
+  "mod:aven-kanban": {
+    "j": "aven-kanban.next",
+    "down": "aven-kanban.next",
+    "k": "aven-kanban.previous",
+    "up": "aven-kanban.previous",
+    "enter": "aven-kanban.open",
+    "o": "aven-kanban.open",
+    "d": "aven-kanban.dispatch",
+    "s": "aven-kanban.plan-implement",
+    "p": "aven-kanban.plan",
+    "i": "aven-kanban.implement",
+    "m": "aven-kanban.merge",
+    "r": "aven-kanban.refresh",
+    "escape": "aven-kanban.close"
   }
 }

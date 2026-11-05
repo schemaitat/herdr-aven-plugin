@@ -37,6 +37,7 @@ export default class AvenTasks extends View {
         const name = String(command).split(".").pop();
         if (name === "open") await this.launch("tui");
         else if (name === "add") await this.launch("compose");
+        else if (name === "kanban") this.openKanban();
         else if (name === "inspect") await this.launchInspector();
         else if (name === "refresh") await this.refresh();
         else if (name === "close") this.close();
@@ -48,6 +49,11 @@ export default class AvenTasks extends View {
   close() {
     this.closed = true;
     closeOverlay(props().overlay);
+  }
+
+  openKanban() {
+    this.close();
+    run("mod.open", { name: "aven-kanban" });
   }
 
   tick(cx) {
@@ -196,6 +202,7 @@ export default class AvenTasks extends View {
         if (key === "escape") this.close();
         else if (key === "o") this.launch("tui");
         else if (key === "a") this.launch("compose");
+        else if (key === "k") this.openKanban();
         else if (key === "i") this.launchInspector();
         else if (key === "r") this.refresh();
         else return;
@@ -205,6 +212,7 @@ export default class AvenTasks extends View {
       .child(h_flex().px(10).pb(6).items_center().child(div().flex_1().text_size(15).font_semibold().text_color(t.foreground).child("Aven tasks")).child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(this.action("Open aven", "o", () => this.launch("tui")))
       .child(this.action("Add a task", "a", () => this.launch("compose")))
+      .child(this.action("Kanban board", "k", () => this.openKanban()))
       .child(this.action("Dispatcher inspector", "i", () => this.launchInspector()))
       .child(this.action("Refresh terminals", "r", () => this.refresh()))
       .when(this.error, el => el.child(div().px(10).py(6).text_size(11).text_color(t.blocked).child(this.error)))

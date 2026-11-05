@@ -8,7 +8,7 @@ work=$(mkworkdir)
 app_home=$work/herdr-app
 mkdir -p "$app_home"
 printf '%s\n' '{' \
-  '  "global": { "ctrl-shift-a": "mod.open:other", "ctrl-shift-k": "mod.open:picker" },' \
+  '  "global": { "ctrl-shift-a": "mod.open:other", "ctrl-shift-h": "mod.open:picker" },' \
   '  "terminal": { "ctrl-shift-c": "terminal.copy" }' \
   '}' > "$app_home/keys.json"
 
@@ -21,9 +21,11 @@ out=$(PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/insta
 assert_contains "$out" "installed: mods/aven-tasks" "overlay mod installed"
 assert_contains "$out" "installed: mods/aven-worktree" "worktree panel mod installed"
 assert_contains "$out" "installed: mods/aven-panel" "browser mod installed"
+assert_contains "$out" "installed: mods/aven-kanban" "Kanban mod installed"
 assert_contains "$out" "installed: mods/aven-panel-tabs" "selector mod installed"
 assert_contains "$out" "installed: layouts/aven-right.json" "right layout installed"
 assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding is preserved"
+assert_contains "$out" "kept: ctrl-shift-h -> mod.open:picker" "existing Kanban chord is preserved"
 [ -f "$app_home/mods/aven-tasks/main.js" ] || fail 'mod main.js not installed'
 [ -f "$app_home/mods/aven-tasks/mod.json" ] || fail 'mod.json not installed'
 [ -f "$app_home/mods/aven-worktree/main.js" ] || fail 'worktree panel main.js not installed'
@@ -31,6 +33,8 @@ assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding 
 assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "plan", "Plan")' 'plan tab installed'
 assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "implementation", "Implementation")' 'implementation tab installed'
 [ -f "$app_home/mods/aven-panel/main.js" ] || fail 'browser main.js not installed'
+[ -f "$app_home/mods/aven-kanban/main.js" ] || fail 'Kanban main.js not installed'
+[ -f "$app_home/mods/aven-kanban/logic.js" ] || fail 'Kanban logic.js not installed'
 [ -f "$app_home/mods/aven-panel-tabs/main.js" ] || fail 'selector main.js not installed'
 [ -f "$app_home/layouts/aven-right.json" ] || fail 'layout not installed'
 assert_file_contains "$app_home/keys.json" '"ctrl-shift-a": "mod.open:other"' 'conflicting key unchanged'
@@ -38,6 +42,9 @@ assert_file_contains "$app_home/keys.json" '"ctrl-shift-c": "terminal.copy"' 'un
 assert_file_contains "$app_home/keys.json" '"mod:aven-tasks"' 'overlay key section installed'
 assert_file_contains "$app_home/keys.json" '"o": "aven-tasks.open"' 'overlay open key installed'
 assert_file_contains "$app_home/keys.json" '"a": "aven-tasks.add"' 'overlay add key installed'
+assert_file_contains "$app_home/keys.json" '"ctrl-shift-h": "mod.open:picker"' 'conflicting Kanban key unchanged'
+assert_file_contains "$app_home/keys.json" '"mod:aven-kanban"' 'Kanban key section installed'
+assert_file_contains "$app_home/keys.json" '"m": "aven-kanban.merge"' 'Kanban merge key installed'
 [ -f "$app_home/keys.json.aven-backup" ] || fail 'changed keys need a backup'
 
 before=$(cat "$app_home/keys.json")
@@ -49,8 +56,15 @@ mkdir -p "$fresh"
 PATH="$fake:$PATH" HERDR_APP_HOME=$fresh sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" --no-keys >/dev/null
 [ ! -e "$fresh/keys.json" ] || fail '--no-keys must not write keys.json'
 [ -f "$fresh/mods/aven-panel/main.js" ] || fail '--no-keys must still install browser'
+[ -f "$fresh/mods/aven-kanban/main.js" ] || fail '--no-keys must still install Kanban'
+[ -f "$fresh/mods/aven-kanban/logic.js" ] || fail '--no-keys must still install Kanban logic'
 [ -f "$fresh/mods/aven-panel-tabs/main.js" ] || fail '--no-keys must still install selector'
 [ -f "$fresh/layouts/aven-right.json" ] || fail '--no-keys must still install layout'
+
+free=$work/free
+mkdir -p "$free"
+PATH="$fake:$PATH" HERDR_APP_HOME=$free sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" >/dev/null
+assert_file_contains "$free/keys.json" '"ctrl-shift-h": "mod.open:aven-kanban"' 'free board chord is installed'
 
 foreign=$work/foreign
 mkdir -p "$foreign/mods/aven-panel" "$foreign/layouts"
@@ -60,6 +74,15 @@ if PATH="$fake:$PATH" HERDR_APP_HOME=$foreign sh "$PLUGIN_ROOT/scripts/install-a
 fi
 assert_file_contains /tmp/install-foreign.log 'refusing to overwrite foreign asset' 'foreign mod collision is reported'
 assert_file_contains "$foreign/mods/aven-panel/main.js" 'not ours' 'foreign mod stays unchanged'
+
+foreign_kanban=$work/foreign-kanban
+mkdir -p "$foreign_kanban/mods/aven-kanban"
+printf 'not ours\n' > "$foreign_kanban/mods/aven-kanban/main.js"
+if PATH="$fake:$PATH" HERDR_APP_HOME=$foreign_kanban sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" >/tmp/install-kanban-foreign.log 2>&1; then
+  fail 'foreign Kanban collision must fail'
+fi
+assert_file_contains /tmp/install-kanban-foreign.log 'refusing to overwrite foreign asset' 'foreign Kanban collision is reported'
+assert_file_contains "$foreign_kanban/mods/aven-kanban/main.js" 'not ours' 'foreign Kanban stays unchanged'
 
 foreign_layout=$work/foreign-layout
 mkdir -p "$foreign_layout/layouts"
@@ -93,6 +116,7 @@ chmod +x "$top/bin"/*
 top_out=$(PATH="$top/bin:$PATH" HOME="$top/home" XDG_CONFIG_HOME="$top/home/config" HERDR_APP_HOME="$top/home/herdr" just install)
 assert_contains "$top_out" 'installed: layouts/aven-right.json' 'top-level install includes right layout'
 [ -f "$top/home/herdr/mods/aven-panel/main.js" ] || fail 'top-level install browser missing'
+[ -f "$top/home/herdr/mods/aven-kanban/main.js" ] || fail 'top-level install Kanban missing'
 [ -f "$top/home/herdr/mods/aven-panel-tabs/main.js" ] || fail 'top-level install selector missing'
 [ -f "$top/home/herdr/layouts/aven-right.json" ] || fail 'top-level install layout missing'
 

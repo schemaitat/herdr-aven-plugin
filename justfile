@@ -79,12 +79,18 @@ app-check:
     herdr-app check app
     herdr-app check app/aven-worktree
     herdr-app check app/aven-panel
+    herdr-app check app/aven-kanban
     herdr-app check app/aven-panel-tabs
 
 # Node 24 is a development-only dependency for deterministic desktop-mod tests.
 app-test:
+    node test/aven-kanban.test.mjs
     node test/aven-panel.test.mjs
     node test/aven-panel-tabs.test.mjs
+
+# Real isolated herdr-app/core, dummy Aven epics, merge-handoff assertion and screenshots.
+app-test-e2e:
+    sh test/aven-kanban-e2e.sh
 
 # Optional local read-only dashboard (Node 24 LTS).
 ui-install:
