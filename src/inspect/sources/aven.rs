@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -210,9 +210,37 @@ struct AvenRead {
     health: SourceHealth,
 }
 
+/// How long a hydrated context stays usable before a background re-read.
+///
+/// The TUI base lane refreshes every 5 s, so a 5 s window would expire every
+/// entry on every cycle and the cache would never hit. `updated_at` changes
+/// still invalidate immediately; the window only bounds how long an otherwise
+/// unchanged context is trusted without re-reading it.
+const CONTEXT_CACHE_TTL_MS: u64 = 30_000;
+
+#[derive(Debug, Clone)]
+struct CachedContext {
+    updated_at: String,
+    context: AvenContext,
+    observed_at: u64,
+}
+
+/// Hydrated contexts keyed by immutable task id, shared by long-lived base
+/// lanes across cycles. The one-shot `inspect` path gets a fresh cache.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ContextCache {
+    entries: Arc<Mutex<BTreeMap<String, CachedContext>>>,
+}
+
+impl ContextCache {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, CachedContext>> {
+        self.entries.lock().expect("context cache lock")
+    }
+}
+
 pub(super) fn read_aven(
     scope: &Scope,
-    hydration_offset: usize,
+    cache: &ContextCache,
     priority_task: Option<&str>,
     secrets: &[String],
 ) -> Result<(
@@ -264,8 +292,9 @@ pub(super) fn read_aven(
     }
     let tasks = list_tasks.into_values().collect::<Vec<_>>();
     let total = tasks.len();
+    retain_live(cache, &tasks);
     let (contexts, hydration_failed, hydration_capped) =
-        hydrate_contexts(&tasks, scope, hydration_offset, priority_task, secrets);
+        hydrate_contexts(&tasks, scope, cache, priority_task, secrets);
     let aven_read = AvenRead {
         tasks: build_task_records(&tasks, &contexts, secrets),
         contexts,
@@ -315,28 +344,103 @@ fn read_list(scope: &Scope, upcoming: bool, secrets: &[String]) -> Result<Vec<Av
     Ok(tasks)
 }
 
-fn hydrate_contexts(
-    tasks: &[AvenTask],
-    scope: &Scope,
-    hydration_offset: usize,
+/// Drop cached contexts for tasks that left the scoped list so the map stays
+/// bounded by live coverage.
+fn retain_live(cache: &ContextCache, tasks: &[AvenTask]) {
+    let live = tasks
+        .iter()
+        .map(|task| task.id.as_str())
+        .collect::<BTreeSet<_>>();
+    cache.lock().retain(|id, _| live.contains(id.as_str()));
+}
+
+/// Tasks that need a context read, in hydration order.
+///
+/// Uncovered and invalidated tasks come before merely stale ones, and within
+/// each tier the oldest task goes first. Hydrated tasks leave the pending set,
+/// so repeated bounded cycles converge even when the project exceeds the
+/// admission window. The selected/priority task is pinned to the front.
+fn pending_tasks<'a>(
+    tasks: &'a [AvenTask],
+    entries: &BTreeMap<String, CachedContext>,
+    now_ms: u64,
     priority_task: Option<&str>,
-    secrets: &[String],
-) -> (BTreeMap<String, (AvenContext, u64)>, bool, bool) {
-    let mut selected = tasks.to_vec();
-    selected.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+) -> Vec<&'a AvenTask> {
+    let mut uncovered = Vec::new();
+    let mut stale = Vec::new();
+    for task in tasks {
+        match entries.get(&task.id) {
+            None => uncovered.push(task),
+            Some(entry) if entry.updated_at != task.updated_at => uncovered.push(task),
+            Some(entry) if now_ms.saturating_sub(entry.observed_at) >= CONTEXT_CACHE_TTL_MS => {
+                stale.push(task);
+            }
+            Some(_) => {}
+        }
+    }
+    uncovered.sort_by(|left, right| {
+        left.updated_at
+            .cmp(&right.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    stale.sort_by(|left, right| {
+        entries[&left.id]
+            .observed_at
+            .cmp(&entries[&right.id].observed_at)
+            .then_with(|| left.updated_at.cmp(&right.updated_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut ordered = uncovered;
+    ordered.extend(stale);
     if let Some(priority) = priority_task
-        && let Some(index) = selected
+        && let Some(index) = ordered
             .iter()
             .position(|task| task.id == priority || task.reference == priority)
     {
-        let task = selected.remove(index);
-        selected.insert(0, task);
-    } else if !selected.is_empty() {
-        let length = selected.len();
-        selected.rotate_left(hydration_offset % length);
+        let task = ordered.remove(index);
+        ordered.insert(0, task);
     }
-    selected.truncate(CONTEXT_ADMISSION_LIMIT);
-    let capped = selected.len() < tasks.len();
+    ordered
+}
+
+/// Contexts that still match the currently listed `updated_at`, so a failed or
+/// skipped refresh is never served as fresh evidence.
+fn cached_contexts(
+    tasks: &[AvenTask],
+    entries: &BTreeMap<String, CachedContext>,
+) -> BTreeMap<String, (AvenContext, u64)> {
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let entry = entries.get(&task.id)?;
+            (entry.updated_at == task.updated_at)
+                .then(|| (task.id.clone(), (entry.context.clone(), entry.observed_at)))
+        })
+        .collect()
+}
+
+fn hydrate_contexts(
+    tasks: &[AvenTask],
+    scope: &Scope,
+    cache: &ContextCache,
+    priority_task: Option<&str>,
+    secrets: &[String],
+) -> (BTreeMap<String, (AvenContext, u64)>, bool, bool) {
+    let (selected, capped) = {
+        let entries = cache.lock();
+        let pending = pending_tasks(tasks, &entries, now(), priority_task);
+        let capped = pending.len() > CONTEXT_ADMISSION_LIMIT;
+        let selected = pending
+            .into_iter()
+            .take(CONTEXT_ADMISSION_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
+        (selected, capped)
+    };
+    if selected.is_empty() {
+        let entries = cache.lock();
+        return (cached_contexts(tasks, &entries), false, capped);
+    }
     let deadline = Instant::now() + Duration::from_millis(SOURCE_TIMEOUT_MS);
     let next = AtomicUsize::new(0);
     let results = Mutex::new(Vec::new());
@@ -352,27 +456,38 @@ fn hydrate_contexts(
                         break;
                     }
                     let result = read_context(&task.reference, scope, secrets);
-                    results
-                        .lock()
-                        .expect("context result lock")
-                        .push((task.id.clone(), result));
+                    results.lock().expect("context result lock").push((
+                        task.id.clone(),
+                        task.updated_at.clone(),
+                        result,
+                    ));
                 }
             });
         }
     });
-    let mut contexts = BTreeMap::new();
     let mut failed = false;
-    let mut observed = now();
-    for (task_id, result) in results.into_inner().expect("context result lock") {
+    let mut entries = cache.lock();
+    for (task_id, updated_at, result) in results.into_inner().expect("context result lock") {
         match result {
             Ok((context, observed_at)) => {
-                observed = observed.max(observed_at);
-                contexts.insert(task_id, (context, observed_at));
+                entries.insert(
+                    task_id,
+                    CachedContext {
+                        updated_at,
+                        context,
+                        observed_at,
+                    },
+                );
             }
-            Err(_) => failed = true,
+            Err(_) => {
+                // Never keep a context the list no longer corroborates.
+                entries.remove(&task_id);
+                failed = true;
+            }
         }
     }
     let timed_out = Instant::now() >= deadline;
+    let contexts = cached_contexts(tasks, &entries);
     (contexts, failed || timed_out, capped)
 }
 
@@ -380,7 +495,6 @@ fn read_context(reference: &str, scope: &Scope, secrets: &[String]) -> Result<(A
     if !valid_reference(reference) {
         bail!("invalid task reference");
     }
-    let observed_at = now();
     let output = aven_read(
         &[
             "context".into(),
@@ -412,7 +526,9 @@ fn read_context(reference: &str, scope: &Scope, secrets: &[String]) -> Result<(A
     {
         bail!("Aven context contains an invalid epic child identity");
     }
-    Ok((context, observed_at))
+    // Stamp the cache when the read completes so the freshness window starts
+    // from the observation, not from before the subprocess ran.
+    Ok((context, now()))
 }
 
 fn build_task_records(
@@ -578,4 +694,138 @@ fn aven_read(args: &[String], cwd: &Path, secrets: &[String]) -> Result<String> 
         SOURCE_OUTPUT_LIMIT,
     )
     .map_err(|error| anyhow!(sanitize(&format!("{error:#}"), 240, secrets)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(id: &str, reference: &str, updated_at: &str) -> AvenTask {
+        AvenTask {
+            id: id.into(),
+            reference: reference.into(),
+            title: String::new(),
+            project: "app".into(),
+            status: "todo".into(),
+            is_epic: false,
+            epic_parent: None,
+            epic_children: Vec::new(),
+            updated_at: updated_at.into(),
+        }
+    }
+
+    fn cached(updated_at: &str, observed_at: u64) -> CachedContext {
+        CachedContext {
+            updated_at: updated_at.into(),
+            context: test_context(BTreeMap::new()),
+            observed_at,
+        }
+    }
+
+    fn ids(tasks: Vec<&AvenTask>) -> Vec<&str> {
+        tasks.into_iter().map(|task| task.id.as_str()).collect()
+    }
+
+    #[test]
+    fn warm_cache_needs_no_context_reads() {
+        let tasks = vec![
+            task("task-a", "APP-1", "2026-01-01T00:00:00Z"),
+            task("task-b", "APP-2", "2026-01-02T00:00:00Z"),
+        ];
+        let entries = BTreeMap::from([
+            ("task-a".to_owned(), cached("2026-01-01T00:00:00Z", 1_000)),
+            ("task-b".to_owned(), cached("2026-01-02T00:00:00Z", 2_000)),
+        ]);
+        assert!(pending_tasks(&tasks, &entries, 1_000 + CONTEXT_CACHE_TTL_MS - 1, None).is_empty());
+        assert_eq!(cached_contexts(&tasks, &entries).len(), 2);
+    }
+
+    #[test]
+    fn updated_at_change_invalidates_only_that_context() {
+        let tasks = vec![
+            task("task-a", "APP-1", "2026-01-03T00:00:00Z"),
+            task("task-b", "APP-2", "2026-01-02T00:00:00Z"),
+        ];
+        let entries = BTreeMap::from([
+            ("task-a".to_owned(), cached("2026-01-01T00:00:00Z", 1_000)),
+            ("task-b".to_owned(), cached("2026-01-02T00:00:00Z", 1_000)),
+        ]);
+        assert_eq!(
+            ids(pending_tasks(&tasks, &entries, 1_500, None)),
+            vec!["task-a"]
+        );
+        let contexts = cached_contexts(&tasks, &entries);
+        assert_eq!(
+            contexts.keys().cloned().collect::<Vec<_>>(),
+            vec!["task-b"],
+            "the invalidated context must not be served"
+        );
+    }
+
+    #[test]
+    fn aged_context_becomes_pending_again() {
+        let tasks = vec![task("task-a", "APP-1", "2026-01-01T00:00:00Z")];
+        let entries =
+            BTreeMap::from([("task-a".to_owned(), cached("2026-01-01T00:00:00Z", 1_000))]);
+        assert!(pending_tasks(&tasks, &entries, 1_000 + CONTEXT_CACHE_TTL_MS - 1, None).is_empty());
+        assert_eq!(
+            ids(pending_tasks(
+                &tasks,
+                &entries,
+                1_000 + CONTEXT_CACHE_TTL_MS,
+                None
+            )),
+            vec!["task-a"]
+        );
+    }
+
+    #[test]
+    fn pending_priority_task_is_pinned_first() {
+        let tasks = vec![
+            task("task-a", "APP-1", "2026-01-01T00:00:00Z"),
+            task("task-b", "APP-2", "2026-01-02T00:00:00Z"),
+        ];
+        let entries = BTreeMap::new();
+        assert_eq!(
+            ids(pending_tasks(&tasks, &entries, 1_000, Some("APP-2"))),
+            vec!["task-b", "task-a"]
+        );
+    }
+
+    #[test]
+    fn bounded_rotation_hydrates_every_task() {
+        let tasks = (0..200)
+            .map(|index| {
+                task(
+                    &format!("task-{index:03}"),
+                    &format!("APP-{index}"),
+                    "2026-01-01T00:00:00Z",
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut entries = BTreeMap::new();
+        let mut rounds = 0;
+        while cached_contexts(&tasks, &entries).len() < tasks.len() {
+            rounds += 1;
+            let observed_at = rounds as u64 * 1_000;
+            let selected = pending_tasks(&tasks, &entries, observed_at, None)
+                .into_iter()
+                .take(CONTEXT_ADMISSION_LIMIT)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(!selected.is_empty());
+            for (index, task) in selected.iter().enumerate() {
+                entries.insert(
+                    task.id.clone(),
+                    cached(&task.updated_at, observed_at + index as u64),
+                );
+            }
+            assert!(
+                rounds <= 3,
+                "200 tasks at 80 per cycle must converge in 3 rounds"
+            );
+        }
+        assert_eq!(rounds, 3);
+        assert_eq!(cached_contexts(&tasks, &entries).len(), 200);
+    }
 }

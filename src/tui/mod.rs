@@ -60,8 +60,7 @@ pub(crate) fn run(args: Args) -> Result<()> {
         workspace: args.workspace,
         cwd: args.cwd,
         store: args.store,
-        hydration_offset: 0,
-        priority_task: None,
+        ..Default::default()
     };
     let _guard = TerminalGuard::new()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -125,9 +124,8 @@ fn spawn_base_lane(
                     // attempts without waiting for its full interval.
                     shared.refresh_live.store(true, Ordering::SeqCst);
                 }
-                // Fair rotation: each cycle advances the bounded context
-                // admission window so large projects gain coverage.
-                options.hydration_offset = options.hydration_offset.wrapping_add(80);
+                // Contexts are cached across cycles; the next read only spawns
+                // `aven context` for missing, changed, or aged-out tasks.
                 let update = match result {
                     Ok(base) => LaneUpdate::Base(Ok(base)),
                     Err(error) => LaneUpdate::Base(Err(error)),

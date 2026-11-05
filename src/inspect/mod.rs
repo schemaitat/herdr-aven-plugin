@@ -27,8 +27,7 @@ pub(crate) fn run(args: Args) -> Result<()> {
         workspace: args.workspace,
         cwd: args.cwd,
         store: args.store,
-        hydration_offset: 0,
-        priority_task: None,
+        ..Default::default()
     })?;
     let output = if args.json {
         serde_json::to_string_pretty(&snapshot)?
