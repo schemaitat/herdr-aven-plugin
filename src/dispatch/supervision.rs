@@ -121,15 +121,14 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
         &attempt,
     )?;
     refresh_attempt_execution_state(&mut attempt)?;
-    // Persist authoritative execution state even when no Aven repair is due;
-    // task acceptance remains exclusively under the task workflow.
+    // Stage authoritative execution state even when no Aven repair is due;
+    // task acceptance remains exclusively under the task workflow. Callers
+    // flush the staged attempts once for the whole reconciliation pass.
     store_attempt(store, attempt.clone());
-    store.save()?;
     if attempt.execution_mode == ExecutionMode::Worktrees
         && advance_worktree_phases(&mut attempt, store)?
     {
         store_attempt(store, attempt.clone());
-        store.save()?;
         println!("advanced cumulative worktree phases");
     }
     if attempt.aven_update_pending {
@@ -137,7 +136,6 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
             Ok(()) => {
                 attempt.aven_update_pending = false;
                 store_attempt(store, attempt.clone());
-                store.save()?;
                 println!("repaired pending Aven status, metadata, and handoff update");
             }
             Err(error) => eprintln!("pending Aven update could not be repaired: {error:#}"),
@@ -159,7 +157,6 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
     {
         attempt.log_cursor = cursor.to_owned();
         store_attempt(store, attempt.clone());
-        store.save()?;
         println!("replayed durable session log through cursor {cursor}");
     }
     Ok(attempt)
@@ -168,7 +165,10 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
 pub(crate) fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Result<()> {
     let mut store = LockedStore::open(path)?;
     let attempt = find_attempt(&store, task, workflow)?.clone();
-    let attempt = reconcile_attempt(&mut store, attempt)?;
+    let result = reconcile_attempt(&mut store, attempt);
+    let flush = store.save();
+    let attempt = result?;
+    flush?;
     println!(
         "attempt {} state={} aven_update_pending={}",
         attempt.attempt_id, attempt.state, attempt.aven_update_pending
@@ -176,24 +176,41 @@ pub(crate) fn reconcile(path: PathBuf, task: &str, workflow: Option<&str>) -> Re
     Ok(())
 }
 
-/// Bounded periodic reconciliation for changes Aven/OpenCode make without a
-/// core event. Stops at the first Aven/API outage instead of guessing.
-pub(crate) fn reconcile_all(path: &Path) -> Result<usize> {
-    let mut store = LockedStore::open(path.to_path_buf())?;
-    let attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
+fn reconcile_batch<F>(
+    store: &mut LockedStore,
+    attempts: Vec<Attempt>,
+    mut reconcile_one: F,
+) -> Result<usize>
+where
+    F: FnMut(&mut LockedStore, Attempt) -> Result<()>,
+{
     let mut reconciled = 0;
     for attempt in attempts {
         if attempt_is_legacy(&attempt) {
             continue;
         }
-        match reconcile_attempt(&mut store, attempt.clone()) {
-            Ok(_) => reconciled += 1,
+        match reconcile_one(store, attempt.clone()) {
+            Ok(()) => reconciled += 1,
             Err(error) => eprintln!(
                 "supervision left {} ({}) unchanged: {error:#}",
                 attempt.task_ref, attempt.attempt_id
             ),
         }
     }
+    // Flush once for the whole pass. Earlier repairs survive a later
+    // attempt's Aven/OpenCode outage instead of being rolled back with it.
+    store.save()?;
+    Ok(reconciled)
+}
+
+/// Bounded periodic reconciliation for changes Aven/OpenCode make without a
+/// core event. Stops at the first Aven/API outage instead of guessing.
+pub(crate) fn reconcile_all(path: &Path) -> Result<usize> {
+    let mut store = LockedStore::open(path.to_path_buf())?;
+    let attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
+    let reconciled = reconcile_batch(&mut store, attempts, |store, attempt| {
+        reconcile_attempt(store, attempt).map(|_| ())
+    })?;
     if let Err(error) = watch::refresh_inventory(path) {
         eprintln!("core inventory unavailable: {error:#}");
     }
@@ -290,26 +307,15 @@ pub(crate) fn apply_terminal_fact(
     Ok(keys)
 }
 
-pub(crate) fn reconcile_key(store: &mut LockedStore, key: &str) {
-    let Some(attempt) = store.store.attempts.get(key).cloned() else {
-        return;
-    };
-    if attempt_is_legacy(&attempt) {
-        return;
-    }
-    if let Err(error) = reconcile_attempt(store, attempt.clone()) {
-        eprintln!(
-            "supervision left {} ({}) unchanged: {error:#}",
-            attempt.task_ref, attempt.attempt_id
-        );
-    }
-}
-
 pub(crate) fn reconcile_keys(path: &Path, keys: &[String]) -> Result<()> {
     let mut store = LockedStore::open(path.to_path_buf())?;
-    for key in keys {
-        reconcile_key(&mut store, key);
-    }
+    let attempts = keys
+        .iter()
+        .filter_map(|key| store.store.attempts.get(key).cloned())
+        .collect();
+    reconcile_batch(&mut store, attempts, |store, attempt| {
+        reconcile_attempt(store, attempt).map(|_| ())
+    })?;
     Ok(())
 }
 
@@ -503,12 +509,73 @@ pub(crate) fn log_event(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn test_attempt(task_id: &str) -> Attempt {
+        serde_json::from_value(json!({
+            "task_id": task_id,
+            "task_ref": format!("APP-{}", task_id.to_uppercase()),
+            "workflow": "implementation",
+            "attempt_id": format!("att_{task_id}"),
+            "branch": format!("app/{task_id}"),
+            "worktree": "",
+            "prompt_id": "",
+            "state": "running",
+            "aven": {"aven_exe": "", "db_path": null, "workspace": null, "origin_cwd": ""},
+            "created_at": 0
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn running_list_excludes_non_running_attempts() {
         let attempts = ["running", "interrupted"];
         assert_eq!(
             attempts.iter().filter(|state| **state == "running").count(),
             1
+        );
+    }
+
+    #[test]
+    fn batch_reconcile_flushes_once_and_keeps_partial_repairs() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("dispatch.sqlite");
+        let mut store = LockedStore::open(path.clone()).unwrap();
+        store_attempt(&mut store, test_attempt("task-one"));
+        store_attempt(&mut store, test_attempt("task-two"));
+        store.save().unwrap();
+        let transactions = store.transaction_count();
+
+        let attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
+        let reconciled = reconcile_batch(&mut store, attempts, |store, mut attempt| {
+            if attempt.task_id == "task-two" {
+                bail!("simulated Aven outage");
+            }
+            attempt.state = "reconciled".into();
+            store_attempt(store, attempt);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(reconciled, 1);
+        assert_eq!(store.transaction_count() - transactions, 1);
+
+        let after_pass = store.transaction_count();
+        assert_eq!(
+            reconcile_batch(&mut store, Vec::new(), |_, _| Ok(())).unwrap(),
+            0
+        );
+        assert_eq!(store.transaction_count(), after_pass);
+
+        drop(store);
+        let reopened = LockedStore::open(path).unwrap();
+        assert_eq!(
+            reopened.store.attempts[&attempt_key("task-one", "implementation")].state,
+            "reconciled"
+        );
+        assert_eq!(
+            reopened.store.attempts[&attempt_key("task-two", "implementation")].state,
+            "running"
         );
     }
 }

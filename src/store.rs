@@ -32,6 +32,8 @@ pub(crate) struct LockedStore {
     // unrelated tasks/projects never serialize or overwrite each other.
     pub(crate) store: Store,
     dirty: BTreeSet<String>,
+    #[cfg(test)]
+    transactions: usize,
 }
 impl LockedStore {
     pub(crate) fn open(path: PathBuf) -> Result<Self> {
@@ -60,6 +62,8 @@ impl LockedStore {
             connection,
             store,
             dirty: BTreeSet::new(),
+            #[cfg(test)]
+            transactions: 0,
         })
     }
     fn put(&mut self, attempt: Attempt) {
@@ -86,8 +90,16 @@ impl LockedStore {
             }
         }
         transaction.commit()?;
+        #[cfg(test)]
+        {
+            self.transactions += 1;
+        }
         self.dirty.clear();
         Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn transaction_count(&self) -> usize {
+        self.transactions
     }
     /// Atomically reserve (task_id, workflow). Returns the existing attempt when
     /// another dispatcher already owns that key.
