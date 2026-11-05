@@ -426,6 +426,7 @@ mod tests {
             blocks: vec![],
             related: vec![],
             plan: PlanMetadata::default(),
+            delivery: None,
             hydrated: true,
             context_observed_at_ms: Some(1),
         }

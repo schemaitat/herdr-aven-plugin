@@ -54,8 +54,17 @@ When the build agent is idle, stalled, unclear, or has a recoverable blocker:
 4. Continue coordinating implementation, tests, review, and task-status updates
    until the acceptance criteria are actually satisfied. Ask the build agent to
    correct incomplete work and verify it with the project's own checks.
-5. Never approve an unknown permission request, destructive operation, or
-   ambiguous external action merely to unblock progress.
+5. Do not treat `done` as delivered. Check
+   `aven-dispatch closeout <ref> --project <key>` read-only. If delivery is
+   pending, confirm that exactly one related delivery follow-up exists and keep
+   it open; require a human-triggered merge before any `--apply` resolution.
+   Confirm logs close only from proven stopped execution, and use
+   `aven-dispatch disposition` for cancellation decisions rather than a bare
+   status edit.
+6. Never approve an unknown permission request, destructive operation, or
+   ambiguous external action merely to unblock progress. Commit, push, PR,
+   merge, interruption, destructive cleanup and historical repair always need
+   the human's explicit approval.
 
 ## Escalate only as a last resort
 

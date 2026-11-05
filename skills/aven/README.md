@@ -19,6 +19,22 @@ drops the YAML front matter, fills `$ARGUMENTS`/`{ARGS}`, `{ref}`, and
   `sdd.plan-worked-out=true`; otherwise it stops and directs the user to plan
   first. It handles a selected phase child or planned root epic.
 
+All three workflows treat `done` as acceptance and require a separate delivery
+checkpoint. Use the dispatcher commands rather than prose-only promises:
+
+- `aven-dispatch closeout <ref> --project <key>` — read-only delivery
+  verification against the configured local target; `--apply` records evidence
+  and resolves only matching obligations after a human-triggered merge.
+- `aven-dispatch disposition <ref>` — read-only cancellation inventory;
+  `--apply --reason ... --successor ...|--no-successor` preserves artifacts and
+  an auditable decision.
+- `aven-dispatch recovery` — read-only recovery-record inventory; retirement
+  needs `--apply --task ... --reason ...` and is non-destructive.
+- `aven-dispatch board --project <key>` — reviewed proposals for childless or
+  incomplete epics; apply only explicit task refs.
+- `aven-dispatch audit --project <key>` — read-only lifecycle audit. Exit codes:
+  `0` complete and clean, `1` violations, `2` incomplete/unknown required source.
+
 These are examples to make your own: edit them, copy the pattern into a new
 `<name>.md`, and point an `aven-commands.yaml` entry at it with
 `--skill <namespace>/<name>`. Nothing here is required by the plugin, and a

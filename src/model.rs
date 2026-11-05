@@ -147,10 +147,53 @@ pub(crate) struct TerminalObservation {
     pub(crate) recovery: String,
 }
 
+/// Independent lifecycle facts reduced from Aven acceptance, owned execution
+/// observations and synchronization. This is never acceptance itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LifecycleState {
+    /// unknown / stopped-success / stopped-failure / stopped-interrupted / live
+    #[serde(default)]
+    pub(crate) observation: String,
+    /// Stable finding code when acceptance and execution contradict.
+    #[serde(default)]
+    pub(crate) contradiction: String,
+    /// Monotonic revision of the durable reduction.
+    #[serde(default)]
+    pub(crate) revision: u64,
+    #[serde(default)]
+    pub(crate) reduced_at: u64,
+}
+
+/// A durable intent/effect record. External effects (Aven note/create/edit)
+/// are published through this journal so a crash or ambiguous outcome can be
+/// inspected instead of blindly repeated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct EffectRecord {
+    pub(crate) scope: String,
+    pub(crate) task_id: String,
+    pub(crate) task_ref: String,
+    pub(crate) workflow: String,
+    pub(crate) attempt_id: String,
+    pub(crate) operation_id: String,
+    /// aven_metadata / handoff-note / log-task / delivery-follow-up / disposition-note
+    pub(crate) kind: String,
+    /// pending / completed / unknown / failed
+    pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) payload: String,
+    #[serde(default)]
+    pub(crate) generation: u64,
+    #[serde(default)]
+    pub(crate) revision: u64,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
+}
+
 /// In-memory working set loaded from the central SQLite `attempts` table.
 #[derive(Debug, Default)]
 pub(crate) struct Store {
     pub(crate) attempts: BTreeMap<String, Attempt>,
+    pub(crate) effects: BTreeMap<String, EffectRecord>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Attempt {
@@ -214,6 +257,9 @@ pub(crate) struct Attempt {
     #[serde(default)]
     pub(crate) pending_prompt: String,
     pub(crate) state: String,
+    /// Separately reduced acceptance/execution/synchronization evidence.
+    #[serde(default)]
+    pub(crate) lifecycle: LifecycleState,
     #[serde(default)]
     pub(crate) aven_update_pending: bool,
     #[serde(default)]
@@ -320,6 +366,7 @@ pub(crate) fn normalize_attempt(mut attempt: Attempt) -> Attempt {
     if attempt.terminals.is_empty() {
         let roles = attempt_terminal_roles(&attempt)
             .into_iter()
+            .filter(|(_, terminal)| !terminal.is_empty())
             .map(|(role, terminal)| (role.to_owned(), terminal.clone()))
             .collect::<Vec<_>>();
         for (role, terminal) in roles {

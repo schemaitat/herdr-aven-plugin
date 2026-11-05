@@ -174,6 +174,119 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Verify accepted delivery and optionally record/resolve obligations.
+    Closeout {
+        task: String,
+        /// Explicit workflow selector when a task has more than one attempt.
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Record evidence and resolve matching obligations. The default is a
+        /// read-only dry run.
+        #[arg(long)]
+        apply: bool,
+        /// Configured local target branch used as the delivery provider.
+        #[arg(long, default_value = "main")]
+        target: String,
+        /// Exact accepted source commit; defaults to the attempt worktree HEAD.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Supplied PR identity/state. An open PR is never treated as merged.
+        #[arg(long)]
+        pr: Option<String>,
+        /// Explicitly reviewed no-code disposition.
+        #[arg(long)]
+        not_applicable: bool,
+        /// Explicit human waiver reason. Retains artifacts and is never inferred.
+        #[arg(long)]
+        waive: Option<String>,
+        /// Explicit successor reference for superseded delivery.
+        #[arg(long)]
+        superseded_by: Option<String>,
+        /// Aven project key; inferred from the task when possible.
+        #[arg(long)]
+        project: Option<String>,
+        /// Aven workspace key.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Print the structured outcome as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inventory and apply a reviewed cancellation disposition.
+    Disposition {
+        task: String,
+        /// Publish the decision and cancel the task. The default is read-only.
+        #[arg(long)]
+        apply: bool,
+        /// Human reason retained with the decision.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Real successor task reference that carries the work forward.
+        #[arg(long)]
+        successor: Option<String>,
+        /// Explicit reviewed decision that no successor exists.
+        #[arg(long)]
+        no_successor: bool,
+        /// Explicit human waiver for a pending delivery obligation.
+        #[arg(long)]
+        waive_delivery: bool,
+        /// Aven workspace key.
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inventory and non-destructively retire owned recovery records.
+    Recovery {
+        /// Retire exactly this record. The default is a read-only inventory.
+        #[arg(long)]
+        apply: bool,
+        /// Explicit recovery record reference required with --apply.
+        #[arg(long)]
+        task: Option<String>,
+        /// Human reason required with --apply.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Aven workspace key.
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Propose (and, with explicit tasks, apply) reviewed board hygiene repairs.
+    Board {
+        /// Aven project key; inferred from the repository name when omitted.
+        #[arg(long)]
+        project: Option<String>,
+        /// Aven workspace key.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Apply only the explicitly listed proposal references.
+        #[arg(long)]
+        apply: bool,
+        /// Explicit proposal references to repair with --apply.
+        #[arg(long)]
+        task: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a scoped, read-only lifecycle audit.
+    Audit {
+        /// Aven project key; inferred from the repository name when omitted.
+        #[arg(long)]
+        project: Option<String>,
+        /// Aven workspace key.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Directory used to infer the project and repository.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Repository used for read-only worktree/ancestry evidence.
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Open the keyboard-driven read-only dispatcher inspector.
     Tui {
         /// Aven project key; inferred from the repository when omitted.
@@ -290,6 +403,101 @@ fn main() -> Result<()> {
             reconcile_all,
         } => watch_command(path, once, stop, status, interval, reconcile_all),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
+        Commands::Closeout {
+            task,
+            workflow,
+            apply,
+            target,
+            commit,
+            pr,
+            not_applicable,
+            waive,
+            superseded_by,
+            project,
+            workspace,
+            json,
+        } => dispatch::closeout::run(
+            path,
+            dispatch::closeout::CloseoutArgs {
+                task,
+                workflow,
+                apply,
+                target,
+                commit,
+                pr,
+                not_applicable,
+                waive,
+                superseded_by,
+                project,
+                workspace,
+                json,
+            },
+        ),
+        Commands::Disposition {
+            task,
+            apply,
+            reason,
+            successor,
+            no_successor,
+            waive_delivery,
+            workspace,
+            json,
+        } => dispatch::disposition::run(
+            path,
+            dispatch::disposition::DispositionArgs {
+                task,
+                apply,
+                reason,
+                successor,
+                no_successor,
+                waive_delivery,
+                workspace,
+                json,
+            },
+        ),
+        Commands::Recovery {
+            apply,
+            task,
+            reason,
+            workspace,
+            json,
+        } => dispatch::disposition::recovery(
+            path,
+            dispatch::disposition::RecoveryArgs {
+                apply,
+                task,
+                reason,
+                workspace,
+                json,
+            },
+        ),
+        Commands::Board {
+            project,
+            workspace,
+            apply,
+            task,
+            json,
+        } => dispatch::board::run(dispatch::board::BoardArgs {
+            project,
+            workspace,
+            apply,
+            tasks: task,
+            json,
+        }),
+        Commands::Audit {
+            project,
+            workspace,
+            cwd,
+            repository,
+            json,
+        } => dispatch::audit::run(dispatch::audit::AuditArgs {
+            project,
+            workspace,
+            cwd,
+            store: path,
+            repository,
+            json,
+        }),
         Commands::Inspect {
             project,
             workspace,
@@ -507,6 +715,7 @@ mod tests {
             prompt_id: String::new(),
             pending_prompt: String::new(),
             state: state.into(),
+            lifecycle: crate::model::LifecycleState::default(),
             aven_update_pending: false,
             log_cursor: String::new(),
             log_task_ref: String::new(),

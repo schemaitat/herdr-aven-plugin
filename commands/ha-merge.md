@@ -39,8 +39,17 @@ invent a task ref or include local Aven refs in commits or PR descriptions.
    content; if it cannot be isolated without changing another person's index,
    stop and ask. Never blindly stage all files, overwrite or discard changes,
    or amend an unrelated commit. If there are no changes, use the existing
-   branch commits. Stop on failure. After a successful commit, perform the task
-   and dispatcher reconciliation described below even if later integration fails.
+   branch commits. Stop on failure. After a successful commit, run the read-only
+   delivery checkpoint so accepted-but-unmerged work is visible:
+
+   ```sh
+   aven-dispatch closeout <task-ref> --project <project-key>
+   ```
+
+   A `pending`/`committed` result is not a failure of this checkout; it must
+   retain exactly one open related delivery follow-up. Then perform the task
+   and dispatcher reconciliation described below even if later integration
+   fails.
 5. For **merge into local main**, locate the one actual checkout of `main` from
    the worktree inventory. Require it to be clean (including untracked files),
    verify it still has `main` checked out, and verify the source branch has no
@@ -50,17 +59,35 @@ invent a task ref or include local Aven refs in commits or PR descriptions.
    recovery. On conflict or error, stop, leave the state intact, and report it.
    Verify the source commit is an ancestor of the resulting `main` and report
    the resulting commit. Do not push `main` unless separately authorized.
+   After a verified human-triggered merge, record the delivery evidence and
+   resolve only the matching obligation:
+
+   ```sh
+   aven-dispatch closeout <task-ref> --project <project-key> --target main --apply
+   ```
+
+   Require the output to show the exact accepted source commit and the verified
+   target commit. An unrelated merge, missing Git evidence, changed head, or
+   dirty target tree cannot satisfy delivery. For an epic root, run closeout on
+   the root and require every child and obligation to be dispositioned before
+   closeout succeeds.
 6. For **create a pull request**, push the selected branch without force and
    create or identify its PR targeting `main` using the applicable GitHub
-   workflow. Report its URL. An open PR is not a successful merge: do not ask
-   to close the space on this path. Stop and report any failure.
+   workflow. Report its URL, and record it truthfully with
+   `aven-dispatch closeout <task-ref> --project <project-key> --pr <number> --apply`
+   if approval exists. An open PR is not a successful merge: it does not satisfy
+   local delivery, so keep the delivery obligation open and do not ask to close
+   the space on this path. Stop and report any failure.
 
 ## Reconcile and optional closure
 
 7. After a commit, PR creation, or merge, re-read `aven context <ref> --full` and
    review actual verification and acceptance evidence. Add a durable Aven note
-   with the outcome, checks, and remaining work; update statuses only where
-   justified by verified acceptance, never mark unverified work done. Run
+   with the outcome, the source commit/branch, target and verified merge commit
+   when applicable, checks, and remaining work. Update statuses only where
+   justified by verified acceptance; never mark unverified work done, and never
+   treat a closeout dry run as a pass. A nonzero closeout means delivery is
+   still pending or incomplete. Run
    `aven-dispatch reconcile <ref> --workflow <workflow>` for the identified
    attempt, then inspect its output and status: a pending Aven update or failed
    repair is a failure even if the command exits successfully. Re-read the

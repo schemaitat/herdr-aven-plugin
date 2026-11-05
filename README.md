@@ -856,6 +856,76 @@ evidence. Move its durable OpenCode session to herdr-core explicitly with
 `aven-dispatch dispatch --relaunch` (it preserves the session and never
 re-admits an already admitted prompt), or reset and redispatch it.
 
+### Track delivery and close out accepted work
+
+`done` means accepted, not delivered. Acceptance, execution, verification and
+delivery are separate facts. The dispatcher journal (store schema version 2)
+records durable publication intent and its verified read-back, while the
+task-facing delivery facet uses `delivery.*` metadata.
+
+```sh
+aven-dispatch closeout HAP-XXXX --project <key>                 # read-only
+aven-dispatch closeout HAP-XXXX --project <key> --apply         # record evidence
+aven-dispatch closeout HAP-XXXX --project <key> --pr 42         # record PR identity
+aven-dispatch closeout HAP-XXXX --project <key> --not-applicable
+aven-dispatch closeout HAP-XXXX --project <key> --waive "<reason>"
+aven-dispatch closeout HAP-XXXX --project <key> --superseded-by HAP-YYYY
+```
+
+The configured local target (initially `main`) is the only delivery provider in
+this release. Closeout verifies:
+the exact accepted source commit, a clean source and target tree, a canonical
+repository, and source ancestry in the freshly observed target commit. A dirty
+result has no fabricated SHA. An open PR, an unrelated merge, a branch name,
+session success, or an unchanged baseline cannot satisfy delivery. An
+accepted-but-unmerged result gets exactly one open related delivery follow-up;
+repeated apply is idempotent. A human merge plus `--apply` resolves only the
+matching obligation. A root epic closes only when every child is dispositioned
+and every obligation is verified delivered, waived or superseded.
+
+The supported repair actions are all dry-run by default:
+
+```sh
+aven-dispatch disposition HAP-XXXX --reason "<why>" --successor HAP-YYYY
+aven-dispatch disposition HAP-XXXX --reason "<why>" --no-successor --apply
+aven-dispatch recovery                  # read-only recovery-record inventory
+aven-dispatch recovery --apply --task DR-XXXX --reason "<why>"
+aven-dispatch board --project <key>     # childless/incomplete epic proposals
+aven-dispatch board --project <key> --apply --task HAP-XXXX
+aven-dispatch audit --project <key>     # read-only lifecycle audit
+```
+
+`disposition` requires a durable reason and a real successor or explicit
+no-successor decision, preserves branch/worktree/commit/uncommitted artifacts,
+and transfers or explicitly waives an open delivery obligation. It refuses to
+cancel accepted work. Logs close only from proven stopped execution. Recovery
+records prefer a retained/canceled disposition over deletion; absence from the
+local store alone is never proof of orphanhood.
+
+`board` keeps ideas visible: an ordinary idea stays non-epic until a worked-out
+plan exists. It proposes but never automatically removes epic status, children,
+notes or history; apply only explicit proposal refs. Incomplete plans stay
+visible instead of being treated as implemented.
+
+`audit` is scoped and read-only. It never migrates or writes the store, Aven,
+sessions or Git refs. Exit codes are `0` (complete and clean), `1` (policy
+violations), and `2` (a required source is missing/incomplete; findings are
+still reported). Missing evidence is not clean.
+
+Terminal tasks are inert for dispatch. Rejecting a mixed open/terminal batch
+happens before any side effect. To reopen accepted or canceled work, perform an
+explicit reviewed Aven status transition first, then reset the task so a new
+fenced generation owns the next attempt. `resume`, `relaunch`, and `reset` never
+reopen a task by themselves.
+
+Verification helpers:
+
+```sh
+just preflight       # tool/executable provenance and per-run isolated paths
+just test-lifecycle  # terminal guards, reduction, closeout, disposition, audit
+just tasks-audit --project <key>
+```
+
 ### Reset a task safely
 
 `z r` (or `aven-dispatch reset <task>`) starts the task over at the dispatcher

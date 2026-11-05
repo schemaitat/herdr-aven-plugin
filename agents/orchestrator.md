@@ -51,10 +51,21 @@ reconciles core facts with OpenCode state; you should not run sleep loops.
    their decision, credentials, or another unavailable input.
 
 End the loop only when either (a) dispatcher evidence confirms every phase is
-integrated and the root epic is `done`, or (b) you have recorded a durable
-blocker that genuinely requires user input. Before ending on success, re-read
-the root task and dispatcher status so a final-worker idle state cannot be
-mistaken for completion.
+integrated, every accepted code result has verified delivery or exactly one
+open related delivery follow-up, and the root epic is `done`, or (b) you have
+recorded a durable blocker that genuinely requires user input. Before ending on
+success, re-read the root task and dispatcher status so a final-worker idle
+state cannot be mistaken for completion.
+
+Acceptance is not delivery. Run
+`aven-dispatch closeout <phase-or-root-ref> --project <key>` read-only before
+claiming a phase is finished. A `pending`/`committed` result is a visible open
+obligation, not a pass. After a human-triggered merge into the configured local
+target, run closeout with `--apply` and require the exact source/target
+ancestry evidence. Never commit, push, merge, or open a PR to satisfy closeout,
+and never close the root while an obligation is open. Use
+`aven-dispatch disposition` with a real successor or explicit no-successor for
+cancellation; never edit a task to canceled merely to clear the board.
 
 ## Offer final integration only after completion
 

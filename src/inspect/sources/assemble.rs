@@ -631,6 +631,7 @@ mod tests {
             blocks: Vec::new(),
             related: Vec::new(),
             plan: PlanMetadata::default(),
+            delivery: None,
             hydrated: true,
             context_observed_at_ms: Some(1),
         }];
@@ -682,6 +683,7 @@ mod tests {
             blocks: Vec::new(),
             related: Vec::new(),
             plan: PlanMetadata::default(),
+            delivery: None,
             hydrated: true,
             context_observed_at_ms: Some(1),
         };

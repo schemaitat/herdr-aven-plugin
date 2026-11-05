@@ -69,32 +69,6 @@ pub(crate) fn active_sessions(sessions: &[String], active: &Value) -> Vec<String
         .cloned()
         .collect()
 }
-pub(crate) fn authoritative_execution_state(current: &str, snapshot: &Value) -> String {
-    // A local admission checkpoint is not superseded by an API snapshot that
-    // has not observed the prompt yet. Downgrading it would strand a durable
-    // pending prompt and could make recovery submit it twice.
-    if matches!(
-        current,
-        "workspace-pending"
-            | "session-pending"
-            | "terminal-pending"
-            | "prompt-pending"
-            | "babysitter-session-pending"
-            | "babysitter-prompt-pending"
-    ) {
-        return current.into();
-    }
-    match snapshot.pointer("/data/outcome").and_then(Value::as_str) {
-        Some("succeeded") => "needs-review".into(),
-        Some("failed") => "failed".into(),
-        Some("interrupted") | Some("canceled") => "interrupted".into(),
-        // An explicit local interrupt remains terminal even if an older
-        // snapshot has not yet exposed its outcome.
-        None if current == "interrupted" => "interrupted".into(),
-        None => "running".into(),
-        Some(_) => "waiting".into(),
-    }
-}
 pub(crate) fn reset_phase_children(root: &Value) -> Result<Vec<String>> {
     let empty = Vec::new();
     root.pointer("/epic_children")
@@ -142,12 +116,46 @@ pub(crate) fn merged_reset_inventory(
 }
 
 // Reset session state refresh and interrupt/drain operations.
-pub(crate) fn refresh_attempt_execution_state(attempt: &mut Attempt) -> Result<()> {
-    if attempt.session_id.is_empty() {
+/// Observe every owned execution role independently and reduce it against the
+/// authoritative acceptance status. Missing API evidence is unknown; it is
+/// never rewritten into a stopped or completed fact.
+pub(crate) fn refresh_attempt_execution_state(
+    attempt: &mut Attempt,
+    task: Option<&Value>,
+) -> Result<()> {
+    use crate::dispatch::lifecycle::{
+        SessionOutcome, aggregate_execution, apply_reduction, task_status,
+        terminal_observation_flags,
+    };
+    let status = task.and_then(task_status);
+    if attempt.session_id.is_empty()
+        && attempt.coordinator_session_id.is_empty()
+        && attempt.babysitter_session_id.is_empty()
+        && attempt.phases.is_empty()
+    {
+        apply_reduction(
+            attempt,
+            status,
+            crate::dispatch::lifecycle::ExecutionObservation::Unknown,
+        );
         return Ok(());
     }
-    let snapshot = opencode("GET", &format!("/api/session/{}", attempt.session_id), None)?;
-    attempt.state = authoritative_execution_state(&attempt.state, &snapshot);
+    let sessions = attempt_session_ids(attempt)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut outcomes = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        match opencode("GET", &format!("/api/session/{session}"), None) {
+            Ok(snapshot) => outcomes.push(SessionOutcome::from_outcome(
+                snapshot.pointer("/data/outcome").and_then(Value::as_str),
+            )),
+            Err(_) => outcomes.push(SessionOutcome::Missing),
+        }
+    }
+    let (live, unknown) = terminal_observation_flags(attempt);
+    let observation = aggregate_execution(live, unknown, &outcomes);
+    apply_reduction(attempt, status, observation);
     Ok(())
 }
 pub(crate) fn interrupt_and_drain_sessions(sessions: &[String]) -> Result<()> {
@@ -427,25 +435,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn authoritative_session_outcome_controls_running_state() {
-        assert_eq!(
-            authoritative_execution_state("running", &json!({"data":{"outcome":"succeeded"}})),
-            "needs-review"
-        );
-        assert_eq!(
-            authoritative_execution_state("running", &json!({"data":{"outcome":"failed"}})),
-            "failed"
-        );
-        assert_eq!(
-            authoritative_execution_state("running", &json!({"data":{}})),
-            "running"
-        );
-        assert_eq!(
-            authoritative_execution_state("interrupted", &json!({"data":{}})),
-            "interrupted"
-        );
-    }
-    #[test]
     fn reset_phase_inventory_uses_current_membership_without_plan_ownership_checks() {
         let root = json!({
             "epic_children": [
@@ -528,6 +517,7 @@ mod tests {
             prompt_id: String::new(),
             pending_prompt: String::new(),
             state: "running".into(),
+            lifecycle: crate::model::LifecycleState::default(),
             aven_update_pending: false,
             log_cursor: String::new(),
             log_task_ref: String::new(),

@@ -92,9 +92,45 @@ append a note with the concrete blocker. If new work is necessary, create a new
 task, attach it to the epic where applicable, and express its ordering with
 `aven dep add`; do not silently expand the completed plan.
 
+`done` means accepted, not delivered. For an accepted code result, run the
+delivery checkpoint before treating the work as finished:
+
+```sh
+aven-dispatch closeout <task-ref> --project <project-key>            # read-only
+aven-dispatch closeout <task-ref> --project <project-key> --apply    # record evidence
+```
+
+The read-only form verifies the exact accepted commit against the configured
+local target (initially `main`). An unmerged result stays `pending`/`committed`
+and receives exactly one open related delivery follow-up. Only after a human
+merges the result does `--apply` verify ancestry and resolve the matching
+obligation. Never claim delivery from an open PR, an unrelated merge, a branch
+name, or a green session. For a planning-only or no-code result, use the
+explicit `--not-applicable` disposition; for a human waiver or supersession,
+use `--waive <reason>` or `--superseded-by <ref>`.
+
 When every child of a root epic is done and the root acceptance criteria hold,
-append a final verification note and mark the root done. Never mark an epic or
-task done merely because code was written.
+run `aven-dispatch closeout <root-ref> --project <project-key>` and require a
+complete result. Append a final verification note and mark the root done only
+when every phase has an accepted/canceled disposition and every delivery
+obligation is verified delivered, explicitly waived, or superseded. Never mark
+an epic or task done merely because code was written, and never close a root
+with an open delivery follow-up.
+
+If work must stop, use a reviewed cancellation instead of silently abandoning
+it:
+
+```sh
+aven-dispatch disposition <task-ref> --reason "<why>" --successor <ref>
+# or: --reason "<why>" --no-successor
+aven-dispatch disposition <task-ref> --reason "<why>" --successor <ref> --apply
+```
+
+Cancellation preserves artifacts and refuses to cancel accepted work; pending
+delivery obligations transfer to the successor or require an explicit waiver.
+Logs close only after execution is proven stopped, not merely because the source
+task is accepted. Recovery records are retired only with explicit ownership and
+approval, and prefer a retained/canceled disposition over deletion.
 
 ## 3. Report
 

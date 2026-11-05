@@ -40,6 +40,15 @@ this workflow has already produced a plan. Inspect the metadata returned by
 - If the marker is absent or not `true`, continue. Existing description, notes,
   relations, and children are evidence to incorporate, not content to discard.
 
+Do not mark an ordinary idea as an epic before its plan content is durable.
+`aven list --ready` intentionally excludes epics, so an unplanned epic hides
+work. Publish the epic root, its ordered phase children, and the final
+`sdd.plan-worked-out=true` marker only in step 3, with the marker last. An
+interrupted run may leave a visible incomplete epic or staging children; resume
+it instead of creating duplicates. A childless open epic that is really just an
+idea should be returned to a non-epic task after review
+(`aven-dispatch board --project <key>` proposes this; never remove history).
+
 ## 1. Gather and label the decision
 
 Confirm the goal in one sentence when it is not clear from the task. Explore
@@ -172,17 +181,17 @@ aven dep add <phase-02-ref> <phase-01-ref>
 
 Continue this pattern through the final phase; do not add a child with multiple
 blockers. Then append the one root `## Plan` note with the real phase refs and
-the phase table, and finalise the completed plan marker:
+the phase table, and record the plan kind without claiming completion:
 
 ```sh
 aven edit {ref} --status todo \
-  --metadata sdd.plan-worked-out=true \
   --metadata sdd.plan-kind=multi-phase \
   --metadata sdd.plan-schema=v1
 ```
 
 The root epic stays `todo`; each child is the independently trackable
-implementation unit.
+implementation unit. Do not write `sdd.plan-worked-out=true` yet; section 6
+publishes it last after validation.
 
 ## 6. Validate before finalising
 
@@ -202,7 +211,14 @@ Before writing the final metadata, inspect the content you assembled:
 
 Fix and re-check any failure before reporting completion. Do not set
 `sdd.plan-worked-out=true` until the plan is durable and all required tasks are
-attached.
+attached. Publish the marker last:
+
+```sh
+aven edit {ref} --metadata sdd.plan-worked-out=true
+```
+
+If this final write fails, leave the epic visibly incomplete and resumable.
+Never create duplicate children on a retry.
 
 ## 7. Report and hand off
 

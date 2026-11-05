@@ -34,20 +34,43 @@ printf '%s\n' base > "$repo/README.md"
 git -C "$repo" add README.md
 git -C "$repo" commit -qm base
 
-cat > "$fake/aven" <<'EOF'
+cat > "$fake/aven" <<EOF
 #!/bin/sh
-printf 'aven %s\n' "$*" >> "$AVEN_LOG"
-case " $* " in
-  *" context APP-1 --json "*) printf '%s\n' '{"task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}' ;;
-  *" context APP-3 --json "*) printf '%s\n' '{"task":{"id":"bulk-task","title":"second selected task"},"project":{"key":"app"}}' ;;
-  *" context APP-4 --json "*) printf '%s\n' '{"task":{"id":"wrong-task","title":"stale target"},"project":{"key":"app"}}' ;;
-  *" context APP-2 --json "*) printf '%s\n' '{"task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"},"metadata":{"sdd.plan-worked-out":"true","sdd.plan-kind":"multi-phase"},"epic_children":[{"id":"phase-two","ref":"APP-P2","title":"second phase"},{"id":"phase-one","ref":"APP-P1","title":"first phase"}]}' ;;
-  *" context APP-P1 --json "*) printf '%s\n' '{"task":{"id":"phase-one","title":"first phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"1"},"dependencies":{"depends_on":[],"depends_on_open":0}}' ;;
-  *" context APP-P2 --json "*) printf '%s\n' '{"task":{"id":"phase-two","title":"second phase","status":"todo"},"project":{"key":"app"},"metadata":{"sdd.plan-root":"epic-task","sdd.plan-phase":"2"},"dependencies":{"depends_on":[{"task_id":"phase-one"}],"depends_on_open":1}}' ;;
-  *" add Dispatch log: "*) printf '%s\n' 'created DL-LOG ref=LOG' ;;
-  *) : ;;
-esac
+exec python3 "$PLUGIN_ROOT/test/aven_fixture.py" "\$@"
 EOF
+export AVEN_FIXTURE_STATE=$work/aven-state.json
+export AVEN_FIXTURE_LOG=$work/aven.log
+export AVEN_FIXTURE_PREFIX=APP
+seed_aven() {
+python3 - "$AVEN_FIXTURE_STATE" <<'PY'
+import json, sys
+
+def task(ref, task_id, title, status="todo", epic=False, metadata=None, parent=None):
+    return {
+        "id": task_id, "ref": ref, "title": title, "status": status,
+        "priority": "none", "deleted": False, "is_epic": epic, "project": "app",
+        "description": "", "metadata": metadata or {}, "notes": [], "related": [],
+        "depends_on": [], "epic_parent": parent,
+    }
+
+state = {"next": 1, "projects": {"app": "app"}, "tasks": {}}
+for item in [
+    task("APP-1", "immutable-task", 'quoted "task"'),
+    task("APP-3", "bulk-task", "second selected task"),
+    task("APP-4", "wrong-task", "stale target"),
+    task("APP-2", "epic-task", "cumulative epic", epic=True,
+         metadata={"sdd.plan-worked-out": "true", "sdd.plan-kind": "multi-phase"}),
+    task("APP-P1", "phase-one", "first phase", parent="APP-2",
+         metadata={"sdd.plan-root": "epic-task", "sdd.plan-phase": "1"}),
+    task("APP-P2", "phase-two", "second phase", parent="APP-2",
+         metadata={"sdd.plan-root": "epic-task", "sdd.plan-phase": "2"}),
+]:
+    state["tasks"][item["ref"]] = item
+state["tasks"]["APP-P2"]["depends_on"] = ["APP-P1"]
+json.dump(state, open(sys.argv[1], "w"), indent=2, sort_keys=True)
+PY
+}
+seed_aven
 cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
 printf 'opencode %s\n' "$*" >> "$OPENCODE_LOG"
@@ -126,25 +149,26 @@ assert_contains "$(sqlite_json "$store")" '"address": "t1"' 'terminal address pe
 
 # A selected-task batch preserves target order and admits one independent
 # worktree/session/prompt per target.
+seed_aven
 bulk_store=$work/bulk.sqlite
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$bulk_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
 $bulk_context
 EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-assert_eq "$after" "$((before + 2))" 'bulk dispatch admits every selected target'
+assert_eq "$after" "$((before + 2))" 'bulk dispatch admits every selected target independently'
 [ -d "$work/worktrees/repo/app-dispatch-immutable-task" ] || fail 'bulk dispatch creates first selected worktree'
 [ -d "$work/worktrees/repo/app-dispatch-bulk-task" ] || fail 'bulk dispatch creates second selected worktree'
 
 # A marked batch is dispatched identically when focus sits on a task that is
 # not marked; the focused selection never takes part in the batch.
+seed_aven
 detached_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"bulk-task","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-9","task":{"id":"focused-elsewhere","title":"focused elsewhere"},"project":{"key":"app"}}}}'
-before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/detached-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/detached-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/detached"
 $detached_context
 EOF
-after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-assert_eq "$after" "$((before + 2))" 'focused task outside the marks does not block or join the batch'
+assert_file_lacks "$work/opencode.log" 'focused-elsewhere' 'focused task outside the marks never joins the batch'
+assert_file_contains "$work/detached" 'APP-3' 'marked batch still includes the selected target'
 
 # Malformed batches are rejected during preflight before a worktree or session
 # can be created for any selected task.
@@ -181,6 +205,7 @@ runs=$(grep -c '"run"' "$log")
 [ "$runs" -ge 1 ] || fail 'reopen should have a persisted terminal'
 
 # Babysitting is opt-in: a second API session and a separate owned terminal.
+seed_aven
 babysitter_store=$work/babysitter.sqlite
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
 $context
@@ -197,6 +222,7 @@ grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F '"model":{"i
 
 # An explicit babysitter override changes only the babysitter payload and is
 # persisted for later recovery.
+seed_aven
 override_store=$work/babysitter-override.sqlite
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model github-copilot/gpt-5.5 <<EOF >/dev/null
 $context
@@ -208,6 +234,7 @@ grep -F '"agent":"build","location"' "$work/opencode.log" | tail -n 1 | grep -F 
   || fail 'babysitter override leaves the builder model unchanged'
 
 # The environment variable is an equivalent configuration surface.
+seed_aven
 env_store=$work/babysitter-env.sqlite
 AVEN_DISPATCH_BABYSITTER_MODEL=github-copilot/gpt-6-astra PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$env_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
 $context
@@ -239,6 +266,7 @@ grep -F '"agent":"aven-babysitter","location"' "$work/opencode.log" | tail -n 1 
   || fail 'missing-sidecar retry reuses the saved babysitter model'
 
 # Invalid model syntax fails through the existing model_ref validation path.
+seed_aven
 invalid_store=$work/babysitter-invalid.sqlite
 set +e
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model not-a-model <<EOF > "$work/babysitter-invalid" 2>&1
@@ -335,6 +363,7 @@ assert_file_contains "$work/legacy" 'retired herdr runtime' 'legacy refusal expl
 
 # Cumulative worktrees: coordinator plus one worker checkout per ordered phase.
 assert_file_lacks "$work/opencode.log" '"agent":"aven-orchestrator"' 'non-worktree dispatch does not create an orchestrator'
+seed_aven
 cumulative_store=$work/cumulative.sqlite
 cumulative_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"epic-task","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-2","task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"}}}}'
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
@@ -361,6 +390,7 @@ done
 
 # An orchestrator override changes only the coordinator payload and persists
 # through coordinator_model.
+seed_aven
 orchestrator_store=$work/orchestrator-override.sqlite
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$orchestrator_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model github-copilot/gpt-5.5 <<EOF >/dev/null
 $cumulative_context
@@ -374,6 +404,7 @@ for phase in phase-01 phase-02; do
 done
 
 # Invalid coordinator syntax fails through the shared model_ref validation path.
+seed_aven
 invalid_orchestrator_store=$work/orchestrator-invalid.sqlite
 set +e
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_orchestrator_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model not-a-model <<EOF > "$work/orchestrator-invalid" 2>&1
@@ -392,6 +423,7 @@ assert_file_contains "$work/watch-status" '"store"' 'watcher status reports its 
 
 # With herdr-app available, a dispatched worktree gets a sidebar space and the
 # attempt terminal is labelled into that space's tab.
+seed_aven
 app_store=$work/app.sqlite
 FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
 $context
@@ -417,6 +449,7 @@ assert_file_contains "$work/app.log" 'pane.focus --terminal t' 'sidecar layout r
 # Cumulative dispatch keeps the coordinator and every phase worker in their
 # own worktree space, with exactly one companion Aven panel in each. Later
 # workers must not inherit the root worktree's panel.
+seed_aven
 app_worktree_store=$work/app-worktree.sqlite
 FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_worktree_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
 $cumulative_context

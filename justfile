@@ -21,6 +21,19 @@ test:
     cargo test --workspace
     sh test/run.sh
 
+# Lifecycle isolation, delivery/closeout, cancellation and audit contracts.
+test-lifecycle:
+    cargo build --workspace
+    sh test/lifecycle.test.sh
+
+# Read-only lifecycle audit. Exit: 0 clean, 1 violations, 2 incomplete source.
+tasks-audit *args:
+    cargo run -- audit {{args}}
+
+# Report tool/executable provenance and isolated per-run paths.
+preflight:
+    sh scripts/preflight.sh
+
 # Read-only, sanitized correlation snapshot (JSON).
 inspect *args:
     cargo run -- inspect --json {{args}}

@@ -32,13 +32,23 @@ printf '%s\n' base > "$repo/README.md"
 git -C "$repo" add README.md
 git -C "$repo" commit -qm base
 
-cat > "$fake/aven" <<'EOF'
+cat > "$fake/aven" <<EOF
 #!/bin/sh
-case " $* " in
-  *" context APP-1 --json "*) printf '%s\n' '{"task":{"id":"immutable-task","title":"watched task"},"project":{"key":"app"}}' ;;
-  *) : ;;
-esac
+exec python3 "$PLUGIN_ROOT/test/aven_fixture.py" "\$@"
 EOF
+export AVEN_FIXTURE_STATE=$work/aven-state.json
+export AVEN_FIXTURE_LOG=$work/aven.log
+export AVEN_FIXTURE_PREFIX=APP
+python3 - "$AVEN_FIXTURE_STATE" <<'PY'
+import json, sys
+state = {"next": 1, "projects": {"app": "app"}, "tasks": {
+    "APP-1": {"id": "immutable-task", "ref": "APP-1", "title": "watched task",
+              "status": "todo", "priority": "none", "deleted": False, "is_epic": False,
+              "project": "app", "description": "", "metadata": {}, "notes": [],
+              "related": [], "depends_on": []},
+}}
+json.dump(state, open(sys.argv[1], "w"), indent=2, sort_keys=True)
+PY
 cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
 case " $* " in

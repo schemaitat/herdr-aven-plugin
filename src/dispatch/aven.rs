@@ -1,7 +1,8 @@
 //! Scoped Aven task reads and generation fencing.
 
 use crate::{
-    model::{Attempt, Invocation},
+    dispatch::lifecycle::ensure_pending_admission_open,
+    model::{Attempt, EffectRecord, Invocation},
     process::{aven, aven_args, now, run},
     store::{LockedStore, store_attempt},
 };
@@ -9,6 +10,69 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 const AVEN_METADATA_VALUE_LIMIT: usize = 4096;
+pub(crate) const HANDOFF_MARKER_PREFIX: &str = "aven-dispatch:handoff:";
+
+fn handoff_marker(attempt: &Attempt) -> String {
+    format!("<!-- {HANDOFF_MARKER_PREFIX}{} -->", attempt.attempt_id)
+}
+
+fn effect(attempt: &Attempt, operation_id: String, kind: &str, payload: &str) -> EffectRecord {
+    EffectRecord {
+        scope: attempt
+            .aven
+            .workspace
+            .clone()
+            .unwrap_or_else(|| "default".into()),
+        task_id: attempt.task_id.clone(),
+        task_ref: attempt.task_ref.clone(),
+        workflow: attempt.workflow.clone(),
+        attempt_id: attempt.attempt_id.clone(),
+        operation_id,
+        kind: kind.into(),
+        state: "pending".into(),
+        payload: payload.into(),
+        generation: attempt.generation,
+        revision: attempt.lifecycle.revision,
+        created_at: now(),
+        updated_at: now(),
+    }
+}
+
+fn task_notes(task: &Value) -> Vec<&str> {
+    task.get("notes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|note| note.get("body").and_then(Value::as_str))
+        .collect()
+}
+
+fn task_has_marker(task: &Value, marker: &str) -> bool {
+    task_notes(task).iter().any(|note| note.contains(marker))
+}
+
+/// Read a bounded, scoped Aven list. Used only for idempotent read-back of
+/// logical operations created by this dispatcher.
+pub(crate) fn list_tasks(
+    invocation: &Invocation,
+    project: &str,
+    metadata: Option<&str>,
+) -> Result<Vec<Value>> {
+    let mut args = vec![
+        "list".to_owned(),
+        "--project".into(),
+        project.into(),
+        "--json".into(),
+        "--limit".into(),
+        "500".into(),
+    ];
+    if let Some(metadata) = metadata {
+        args.extend(["--metadata".into(), metadata.into()]);
+    }
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = aven(invocation, &refs, None)?;
+    serde_json::from_str(&output).context("Aven list --json output")
+}
 
 // Admission/reopen task validation and reset-generation fencing.
 pub(crate) fn refresh_task_by_ref(invocation: &Invocation, reference: &str) -> Result<Value> {
@@ -84,7 +148,11 @@ pub(crate) fn write_debug_event(attempt: &Attempt, event: &str, detail: &str) ->
 // Dispatch prompt and durable log ownership.
 
 // Durable task metadata snapshots and handoff links.
-pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Result<()> {
+pub(crate) fn write_aven_links(
+    invocation: &Invocation,
+    attempt: &Attempt,
+    store: &mut LockedStore,
+) -> Result<()> {
     // Aven owns the task-scoped durable snapshot. The individual metadata
     // fields stay queryable, while one workflow-scoped dispatch.attempt snapshot
     // per role permits recovery from any checkout without consulting the
@@ -92,6 +160,7 @@ pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Re
     // separate sessions while sharing the selected task's worktree branch.
     let current = refresh_task_by_ref(invocation, &attempt.task_ref)?;
     ensure_attempt_current(&current, attempt)?;
+    ensure_pending_admission_open(&current, attempt)?;
     let snapshot = serialize_aven_attempt_snapshot(attempt)?;
     let metadata = vec![
         "dispatch.backend=hc".to_owned(),
@@ -122,21 +191,31 @@ pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Re
     } else {
         "active"
     };
+    // Persist metadata intent before the external write. Repeating an
+    // unchanged edit is naturally idempotent; the journal proves the exact
+    // operation and lets ambiguous outcomes stay visibly pending.
+    let metadata_effect = store.begin_effect(effect(
+        attempt,
+        format!("{}:{}:metadata", attempt.attempt_id, attempt.generation),
+        "aven-metadata",
+        &metadata.join("\n"),
+    ));
+    store.save()?;
     let mut args = vec![
         "edit".to_owned(),
         attempt.task_ref.clone(),
         "--status".into(),
         next_status.into(),
     ];
-    for item in metadata {
-        args.extend(["--metadata".into(), item]);
+    for item in &metadata {
+        args.extend(["--metadata".into(), item.clone()]);
     }
     let executable = if invocation.aven_exe.is_empty() {
         "aven"
     } else {
         &invocation.aven_exe
     };
-    run(
+    if let Err(error) = run(
         executable,
         &{
             let mut global = aven_args(invocation, &[]);
@@ -144,16 +223,128 @@ pub(crate) fn write_aven_links(invocation: &Invocation, attempt: &Attempt) -> Re
             global
         },
         None,
-    )?;
+    ) {
+        store.fail_effect(&metadata_effect, "unknown", &format!("{error:#}"));
+        store.save()?;
+        return Err(error).context("publish dispatcher metadata");
+    }
+    // Read back the exact scoped metadata before considering the effect done.
+    // An Aven build that exposes no metadata surface at all is treated as the
+    // successful edit result; a present surface must match exactly.
+    let after = refresh_task_by_ref(invocation, &attempt.task_ref)?;
+    if after.get("metadata").and_then(Value::as_object).is_some() {
+        let observed_state = after
+            .pointer("/metadata/dispatch.state")
+            .and_then(Value::as_str);
+        let observed_attempt = after
+            .pointer("/metadata/dispatch.attempt-id")
+            .and_then(Value::as_str);
+        if observed_state != Some(attempt.state.as_str())
+            || observed_attempt != Some(attempt.attempt_id.as_str())
+        {
+            store.fail_effect(
+                &metadata_effect,
+                "unknown",
+                "metadata read-back did not match the intended attempt/state",
+            );
+            store.save()?;
+            bail!(
+                "Aven metadata read-back for {} did not match attempt {} state {}; synchronization remains pending",
+                attempt.task_ref,
+                attempt.attempt_id,
+                attempt.state
+            );
+        }
+    }
+    store.complete_effect(&metadata_effect, None);
+
+    // Terminal tasks never receive a new operational handoff. A completed
+    // handoff is a durable logical fact: retries inspect it rather than
+    // appending a second note.
+    if matches!(current_status, "done" | "canceled") {
+        store.save()?;
+        return Ok(());
+    }
+    let handoff_id = format!("{}:{}:handoff", attempt.attempt_id, attempt.generation);
+    let marker = handoff_marker(attempt);
+    if store.effect_completed(&attempt.task_id, &attempt.workflow, &handoff_id)
+        || task_has_marker(&after, &marker)
+    {
+        store.complete_effect(
+            &effect(attempt, handoff_id, "handoff-note", "already present"),
+            None,
+        );
+        store.save()?;
+        return Ok(());
+    }
+    let existing = store
+        .store
+        .effects
+        .values()
+        .find(|item| {
+            item.task_id == attempt.task_id
+                && item.workflow == attempt.workflow
+                && item.operation_id == handoff_id
+        })
+        .cloned();
+    if existing
+        .as_ref()
+        .is_some_and(|item| item.state == "unknown")
+    {
+        // The previous note attempt is ambiguous. Do not repeat it until a
+        // later read proves whether it landed.
+        store.save()?;
+        bail!(
+            "dispatcher handoff for attempt {} is ambiguous; inspect notes before retrying",
+            attempt.attempt_id
+        );
+    }
+    let note_effect = store.begin_effect(
+        existing.unwrap_or_else(|| effect(attempt, handoff_id, "handoff-note", &marker)),
+    );
+    store.save()?;
     let note = format!(
-        "## Dispatcher handoff\n\nOpenCode prompt admitted for attempt `{}` (session `{}`). Worktree branch: `{}`. Execution state: `{}`. Use `aven-dispatch status {}` to inspect permissions, forms, and recovery state.",
+        "## Dispatcher handoff\n\n{marker}\n\nOpenCode prompt admitted for attempt `{}` (session `{}`). Worktree branch: `{}`. Execution state: `{}`. Use `aven-dispatch status {}` to inspect permissions, forms, and recovery state.",
         attempt.attempt_id, attempt.session_id, attempt.branch, attempt.state, attempt.task_ref
     );
-    aven(
+    if let Err(error) = aven(
         invocation,
         &["note", &attempt.task_ref, "--stdin"],
         Some(&note),
-    )?;
+    ) {
+        // The note may or may not have landed. Keep it unknown and require a
+        // fresh read before any retry.
+        store.fail_effect(&note_effect, "unknown", &format!("{error:#}"));
+        store.save()?;
+        return Err(error).context("publish dispatcher handoff note");
+    }
+    match refresh_task_by_ref(invocation, &attempt.task_ref) {
+        Ok(readback) if !task_has_marker(&readback, &marker) => {
+            // A payload with a notes surface that omits the marker is a real
+            // read-back contradiction. A payload with no notes surface is the
+            // successful command result.
+            if readback.get("notes").is_some() {
+                store.fail_effect(
+                    &note_effect,
+                    "unknown",
+                    "handoff note read-back did not contain its stable marker",
+                );
+                store.save()?;
+                bail!(
+                    "Aven handoff note read-back for attempt {} was incomplete; synchronization remains pending",
+                    attempt.attempt_id
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(_) => {
+            // The note command exited successfully; a failed read-back is an
+            // observation gap, not permission to append a second note. A later
+            // reconcile re-reads the evidence without re-publishing.
+        }
+    }
+    store.complete_effect(&note_effect, None);
+    store.save()?;
     Ok(())
 }
 pub(crate) fn aven_attempt_snapshot(attempt: &Attempt) -> Attempt {
@@ -183,23 +374,64 @@ fn serialize_aven_attempt_snapshot(attempt: &Attempt) -> Result<String> {
     Ok(snapshot)
 }
 
-// Best-effort durable task link repair.
+// Durable task link repair. A failure remains visible as pending
+// synchronization instead of being silently swallowed.
 pub(crate) fn repair_aven_links(attempt: &mut Attempt, store: &mut LockedStore) -> Result<()> {
-    if write_aven_links(&attempt.aven, attempt).is_ok() {
-        attempt.aven_update_pending = false;
-        store_attempt(store, attempt.clone());
-        store.save()?;
-    }
+    write_aven_links(&attempt.aven, attempt, store)?;
+    attempt.aven_update_pending = false;
+    store_attempt(store, attempt.clone());
+    store.save()?;
     Ok(())
 }
 
 // Worktree-mode coordinator prompt topology.
 
 // Dispatcher diagnostic task provisioning.
-pub(crate) fn ensure_log_task(attempt: &mut Attempt) -> Result<()> {
+pub(crate) fn ensure_log_task(attempt: &mut Attempt, store: &mut LockedStore) -> Result<()> {
     if !attempt.log_task_ref.is_empty() {
         return Ok(());
     }
+    let operation_id = format!("{}:{}:log-task", attempt.attempt_id, attempt.generation);
+    let metadata = format!("dispatch.attempt-id={}", attempt.attempt_id);
+    let discovered = list_tasks(&attempt.aven, "dispatcher-logs", Some(&metadata))
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|task| {
+            task.pointer("/ref")
+                .or_else(|| task.pointer("/display_ref"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    if let Some(reference) = discovered {
+        attempt.log_task_ref = reference.clone();
+        let record = store.begin_effect(effect(attempt, operation_id, "log-task", &reference));
+        store.complete_effect(&record, Some(&reference));
+        store.save()?;
+        return Ok(());
+    }
+    let previous = store
+        .store
+        .effects
+        .values()
+        .find(|item| {
+            item.task_id == attempt.task_id
+                && item.workflow == attempt.workflow
+                && item.operation_id == operation_id
+        })
+        .cloned();
+    if previous
+        .as_ref()
+        .is_some_and(|item| item.state == "unknown")
+    {
+        bail!(
+            "log task creation for attempt {} is ambiguous; inspect Aven before retrying",
+            attempt.attempt_id
+        );
+    }
+    let record = store.begin_effect(
+        previous.unwrap_or_else(|| effect(attempt, operation_id, "log-task", &metadata)),
+    );
+    store.save()?;
     // Creating an existing project is harmlessly rejected by Aven; the add
     // operation below remains the authority for whether logging is available.
     let _ = aven(
@@ -227,10 +459,35 @@ pub(crate) fn ensure_log_task(attempt: &mut Attempt) -> Result<()> {
             "--description",
             &source,
             "--metadata",
-            &format!("dispatch.attempt-id={}", attempt.attempt_id),
+            &metadata,
         ],
         None,
-    )?;
+    );
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            // A failed `add` may still have created the task. Search before
+            // declaring the operation unknown.
+            if let Some(reference) = list_tasks(&attempt.aven, "dispatcher-logs", Some(&metadata))
+                .unwrap_or_default()
+                .into_iter()
+                .find_map(|task| {
+                    task.pointer("/ref")
+                        .or_else(|| task.pointer("/display_ref"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+            {
+                attempt.log_task_ref = reference.clone();
+                store.complete_effect(&record, Some(&reference));
+                store.save()?;
+                return Ok(());
+            }
+            store.fail_effect(&record, "unknown", &format!("{error:#}"));
+            store.save()?;
+            return Err(error).context("create dispatcher log task");
+        }
+    };
     let log_task_ref = output
         .split_whitespace()
         .nth(1)
@@ -242,7 +499,9 @@ pub(crate) fn ensure_log_task(attempt: &mut Attempt) -> Result<()> {
         &["related", "add", &log_task_ref, &attempt.task_ref],
         None,
     );
-    attempt.log_task_ref = log_task_ref;
+    attempt.log_task_ref = log_task_ref.clone();
+    store.complete_effect(&record, Some(&log_task_ref));
+    store.save()?;
     Ok(())
 }
 
@@ -335,6 +594,7 @@ mod tests {
             prompt_id: "msg_1".into(),
             pending_prompt: String::new(),
             state: "running".into(),
+            lifecycle: crate::model::LifecycleState::default(),
             aven_update_pending: false,
             log_cursor: String::new(),
             log_task_ref: "DL-1".into(),

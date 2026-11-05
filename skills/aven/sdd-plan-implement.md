@@ -222,12 +222,31 @@ explaining the blocker and, if it is real new work, add a task for it and link
 it (`aven dep add <new> <ref>`). Do not mark unverified work done, and do not
 mark a task canceled just to make the board look clean.
 
-When every child is done and the root task's acceptance criteria hold, close the
-root:
+`done` means accepted, not delivered. Before treating an accepted code result
+as finished, run the delivery checkpoint:
+
+```sh
+aven-dispatch closeout <ref> --project <key>          # read-only
+aven-dispatch closeout <ref> --project <key> --apply  # after a human merge
+```
+
+An unmerged result stays pending with exactly one open related delivery
+follow-up. Never claim delivery from `main` merely existing, a green session, a
+branch name, or an open PR. Planning-only/no-code work needs an explicit
+`--not-applicable` disposition. Cancellation must preserve artifacts and record
+a real successor or `--no-successor`; use `aven-dispatch disposition` rather
+than a bare status edit.
+
+When every child is done and the root task's acceptance criteria hold, run
+`aven-dispatch closeout {ref} --project <key>` and require a complete result.
+Only then close the root:
 
 ```sh
 aven edit {ref} --status done
 ```
+
+Never close the root with an open delivery follow-up, an unknown/contradictory
+execution state, or an incomplete plan.
 
 ## 5. Report and hand off
 

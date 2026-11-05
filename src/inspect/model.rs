@@ -178,6 +178,29 @@ pub(crate) struct PlanMetadata {
     pub(crate) reset_state: Option<String>,
 }
 
+/// Sanitized delivery facet. Acceptance and delivery remain separate facts.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub(crate) struct DeliveryRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) merged: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) obligation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct TaskRecord {
     pub(crate) id: String,
@@ -194,6 +217,8 @@ pub(crate) struct TaskRecord {
     pub(crate) blocks: Vec<BoundaryRef>,
     pub(crate) related: Vec<BoundaryRef>,
     pub(crate) plan: PlanMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery: Option<DeliveryRecord>,
     pub(crate) hydrated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) context_observed_at_ms: Option<u64>,

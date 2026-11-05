@@ -53,6 +53,59 @@ pub(crate) fn read_only_store_payloads(path: &Path, limit: usize) -> Result<Vec<
     Ok(payloads)
 }
 
+/// Read the durable effect journal without configuring or migrating SQLite.
+pub(crate) fn read_only_effects(
+    path: &Path,
+    limit: usize,
+) -> Result<Vec<crate::model::EffectRecord>> {
+    if !path.exists() {
+        bail!("dispatcher store {} does not exist", path.display());
+    }
+    let connection = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("open dispatcher store {} read-only", path.display()))?;
+    connection.busy_timeout(Duration::from_millis(1000))?;
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > SCHEMA_VERSION {
+        bail!(
+            "dispatcher store schema version {version} is newer than supported version {SCHEMA_VERSION}"
+        );
+    }
+    if version < 2 {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare(
+        "SELECT scope, task_id, task_ref, workflow, attempt_id, operation_id, kind, state, payload, generation, revision, created_at, updated_at FROM effects ORDER BY created_at LIMIT ?1",
+    )?;
+    let rows = statement.query_map([(limit + 1) as i64], |row| {
+        Ok(crate::model::EffectRecord {
+            scope: row.get(0)?,
+            task_id: row.get(1)?,
+            task_ref: row.get(2)?,
+            workflow: row.get(3)?,
+            attempt_id: row.get(4)?,
+            operation_id: row.get(5)?,
+            kind: row.get(6)?,
+            state: row.get(7)?,
+            payload: row.get(8)?,
+            generation: row.get::<_, i64>(9)? as u64,
+            revision: row.get::<_, i64>(10)? as u64,
+            created_at: row.get::<_, i64>(11)? as u64,
+            updated_at: row.get::<_, i64>(12)? as u64,
+        })
+    })?;
+    let mut effects = Vec::new();
+    for row in rows {
+        effects.push(row?);
+        if effects.len() > limit {
+            bail!("dispatcher effect journal exceeds the {limit}-record limit");
+        }
+    }
+    Ok(effects)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

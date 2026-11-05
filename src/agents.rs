@@ -648,9 +648,10 @@ mod tests {
         assert!(ORCHESTRATOR_AGENT.contains("Prefer event- and wait-driven supervision"));
         assert!(ORCHESTRATOR_AGENT.contains("hc wait <address> --timeout 180"));
         assert!(ORCHESTRATOR_AGENT.contains("aven-dispatch reconcile\n<root-ref>"));
-        assert!(
-            ORCHESTRATOR_AGENT.contains("every phase is\nintegrated and the root epic is `done`")
-        );
+        assert!(ORCHESTRATOR_AGENT.contains(
+            "every phase is\nintegrated, every accepted code result has verified delivery"
+        ));
+        assert!(ORCHESTRATOR_AGENT.contains("aven-dispatch closeout"));
         assert!(ORCHESTRATOR_AGENT.contains("creating a pull\nrequest as the preferred option"));
         assert!(ORCHESTRATOR_AGENT.contains("Wait for explicit approval"));
         assert!(ORCHESTRATOR_AGENT.contains("Never create a pull request, push, merge"));

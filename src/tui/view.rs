@@ -404,6 +404,7 @@ mod tests {
                     reset_generation: 2,
                     reset_state: Some("completed".into()),
                 },
+                delivery: None,
                 hydrated: true,
                 context_observed_at_ms: Some(1),
             }],

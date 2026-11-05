@@ -1,6 +1,11 @@
 //! Command-facing dispatch types.
 
+pub(crate) mod audit;
 pub(crate) mod aven;
+pub(crate) mod board;
+pub(crate) mod closeout;
+pub(crate) mod disposition;
+pub(crate) mod lifecycle;
 pub(crate) mod phases;
 pub(crate) mod plan;
 pub(crate) mod reset;
@@ -18,6 +23,7 @@ use self::aven::{
     task_generation,
 };
 
+use self::lifecycle::{ensure_pending_admission_open, validate_dispatch_target};
 use self::plan::validate_epic_phases;
 
 use crate::{
@@ -70,7 +76,12 @@ pub(crate) fn reopen_preflight(
     requested_mode: Option<ExecutionMode>,
     dry_run: bool,
 ) -> Result<bool> {
+    // An existing attempt is not permission to re-admit a task that Aven has
+    // since accepted or canceled. Terminal reopening is a separate reviewed
+    // Aven status transition plus reset generation.
+    validate_dispatch_target(task, &existing.task_id, &existing.aven)?;
     ensure_attempt_current(task, existing)?;
+    ensure_pending_admission_open(task, existing)?;
     if crate::model::attempt_is_legacy(existing) && !relaunch {
         bail!(
             "attempt {} was created by the retired herdr runtime; run `aven-dispatch dispatch --relaunch` to move its durable OpenCode session to herdr-core, or reset and redispatch",
@@ -408,6 +419,7 @@ pub(crate) fn new_attempt(
         prompt_id: identifier("msg"),
         pending_prompt: String::new(),
         state: "workspace-pending".into(),
+        lifecycle: crate::model::LifecycleState::default(),
         aven_update_pending: false,
         log_cursor: String::new(),
         log_task_ref: String::new(),
@@ -802,7 +814,13 @@ pub(crate) fn dispatch(options: DispatchOptions) -> Result<()> {
         .targeting
         .targets
         .iter()
-        .map(|target| selected_target(&context, target))
+        .map(|target| {
+            let (selected, task) = selected_target(&context, target)?;
+            // A mixed batch is rejected as a whole: one terminal/invalid
+            // target must never create a partially dispatched batch.
+            validate_dispatch_target(&task, &target.id, &context.invocation)?;
+            Ok((selected, task))
+        })
         .collect::<Result<Vec<_>>>()?;
     for (selected, task) in targets {
         dispatch_one(options.clone(), &context, &selected, task)?;
@@ -814,7 +832,7 @@ fn dispatch_one(
     options: DispatchOptions,
     context: &CommandContext,
     selected: &Selected,
-    task: Value,
+    _initial_task: Value,
 ) -> Result<()> {
     let DispatchOptions {
         path,
@@ -831,6 +849,12 @@ fn dispatch_one(
         requested_mode,
         relaunch,
     } = options;
+    // Re-read immediately before this target's effects. Concurrent external
+    // Aven writers can stop this and remaining targets, but cannot roll back
+    // work already admitted for earlier targets (Aven and the dispatcher are
+    // not one transaction).
+    let task = refresh_task_by_ref(&context.invocation, selected.reference())?;
+    validate_dispatch_target(&task, &selected.task.id, &context.invocation)?;
     if reset_incomplete(&task) {
         bail!("task reset is incomplete; rerun aven-dispatch reset instead of admitting work");
     }

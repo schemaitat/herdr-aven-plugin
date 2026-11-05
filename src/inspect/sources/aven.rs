@@ -561,6 +561,58 @@ fn build_task_records(
                 reset_generation: generation(&metadata).unwrap_or(0),
                 reset_state: metadata.get("dispatch.reset-state").cloned(),
             };
+            let delivery = DeliveryRecord {
+                state: metadata.get("delivery.state").cloned(),
+                commit: metadata.get("delivery.commit").cloned(),
+                branch: metadata.get("delivery.branch").cloned(),
+                repository: metadata.get("delivery.repository").cloned(),
+                target: metadata.get("delivery.target").cloned(),
+                merged: metadata.get("delivery.merged").cloned(),
+                pr: metadata.get("delivery.pr").cloned(),
+                obligation: metadata.get("delivery.obligation-for").cloned(),
+                provenance: metadata.get("delivery.provenance").cloned(),
+            };
+            let delivery = (delivery.state.is_some()
+                || delivery.commit.is_some()
+                || delivery.obligation.is_some())
+            .then(|| DeliveryRecord {
+                state: delivery
+                    .state
+                    .as_deref()
+                    .map(|value| sanitize(value, 64, secrets)),
+                commit: delivery
+                    .commit
+                    .as_deref()
+                    .map(|value| sanitize(value, 128, secrets)),
+                branch: delivery
+                    .branch
+                    .as_deref()
+                    .map(|value| sanitize(value, 256, secrets)),
+                repository: delivery
+                    .repository
+                    .as_deref()
+                    .map(|value| sanitize(value, 1024, secrets)),
+                target: delivery
+                    .target
+                    .as_deref()
+                    .map(|value| sanitize(value, 256, secrets)),
+                merged: delivery
+                    .merged
+                    .as_deref()
+                    .map(|value| sanitize(value, 128, secrets)),
+                pr: delivery
+                    .pr
+                    .as_deref()
+                    .map(|value| sanitize(value, 128, secrets)),
+                obligation: delivery
+                    .obligation
+                    .as_deref()
+                    .map(|value| sanitize(value, 64, secrets)),
+                provenance: delivery
+                    .provenance
+                    .as_deref()
+                    .map(|value| sanitize(value, 256, secrets)),
+            });
             let children = context
                 .map(|context| context.epic_children.as_slice())
                 .filter(|children| !children.is_empty())
@@ -648,6 +700,7 @@ fn build_task_records(
                     })
                     .unwrap_or_default(),
                 plan,
+                delivery,
                 hydrated: context.is_some(),
                 context_observed_at_ms: contexts.get(&task.id).map(|(_, observed)| *observed),
             })

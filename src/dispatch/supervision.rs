@@ -75,7 +75,7 @@ pub(crate) fn list(path: PathBuf, running: bool) -> Result<()> {
     let mut attempts = store.store.attempts.values().cloned().collect::<Vec<_>>();
     if running {
         for attempt in &mut attempts {
-            refresh_attempt_execution_state(attempt)?;
+            refresh_attempt_execution_state(attempt, None)?;
             store_attempt(&mut store, attempt.clone());
         }
         store.save()?;
@@ -116,11 +116,21 @@ pub(crate) fn interrupt(path: PathBuf, task: &str, workflow: Option<&str>) -> Re
 
 // Reconciliation commands and watcher-owned observation helpers.
 pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -> Result<Attempt> {
-    ensure_attempt_current(
-        &refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?,
-        &attempt,
-    )?;
-    refresh_attempt_execution_state(&mut attempt)?;
+    let task = refresh_task_by_ref(&attempt.aven, &attempt.task_ref)?;
+    // Reconciliation may repair metadata for terminal tasks, but it must
+    // never re-admit a saved prompt for one. Reopening is a separate reviewed
+    // Aven transition plus a fresh fenced generation.
+    crate::dispatch::lifecycle::ensure_pending_admission_open(&task, &attempt)?;
+    ensure_attempt_current(&task, &attempt)?;
+    refresh_attempt_execution_state(&mut attempt, Some(&task))?;
+    // Log closure follows proven execution termination, never source
+    // acceptance alone. Failure leaves the log visibly open.
+    if let Err(error) = crate::dispatch::disposition::reconcile_log(&mut attempt, store) {
+        eprintln!(
+            "log reconciliation for {} remains pending: {error:#}",
+            attempt.task_ref
+        );
+    }
     // Stage authoritative execution state even when no Aven repair is due;
     // task acceptance remains exclusively under the task workflow. Callers
     // flush the staged attempts once for the whole reconciliation pass.
@@ -132,13 +142,17 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
         println!("advanced cumulative worktree phases");
     }
     if attempt.aven_update_pending {
-        match write_aven_links(&attempt.aven, &attempt) {
+        match write_aven_links(&attempt.aven, &attempt, store) {
             Ok(()) => {
                 attempt.aven_update_pending = false;
                 store_attempt(store, attempt.clone());
                 println!("repaired pending Aven status, metadata, and handoff update");
             }
-            Err(error) => eprintln!("pending Aven update could not be repaired: {error:#}"),
+            Err(error) => {
+                attempt.aven_update_pending = true;
+                store_attempt(store, attempt.clone());
+                eprintln!("pending Aven update remains visibly pending: {error:#}");
+            }
         }
     }
     let log = opencode_text(
@@ -493,7 +507,7 @@ pub(crate) fn log_event(
 ) -> Result<()> {
     let mut store = LockedStore::open(path)?;
     let mut attempt = find_attempt(&store, task, workflow)?.clone();
-    ensure_log_task(&mut attempt)?;
+    ensure_log_task(&mut attempt, &mut store)?;
     let record = write_debug_event(&attempt, event, detail);
     store_attempt(&mut store, attempt.clone());
     store.save()?;
