@@ -50,31 +50,25 @@ reconciles core facts with OpenCode state; you should not run sleep loops.
    autonomously when safe; stop to ask the user only when the blocker requires
    their decision, credentials, or another unavailable input.
 
-End the loop only when either (a) dispatcher evidence confirms every phase is
-integrated, every accepted code result has verified delivery or exactly one
-open related delivery follow-up, and the root epic is `done`, or (b) you have
-recorded a durable blocker that genuinely requires user input. Before ending on
-success, re-read the root task and dispatcher status so a final-worker idle
-state cannot be mistaken for completion.
+When every phase is committed, verified and integrated, review the complete
+root result and execute the `/approve` workflow in this final worktree using
+`aven-dispatch approve <root-ref> --workflow implementation --check '<actual test
+command>' ... --review '<truthful acceptance/review evidence>'`. It reruns
+checks and binds approval to the final commit before marking the root done.
+Do not wait for delivery, and do not mark the root done with a bare status edit.
 
-Acceptance is not delivery. Run
-`aven-dispatch closeout <phase-or-root-ref> --project <key>` read-only before
-claiming a phase is finished. A `pending`/`committed` result is a visible open
-obligation, not a pass. After a human-triggered merge into the configured local
-target, run closeout with `--apply` and require the exact source/target
-ancestry evidence. Never commit, push, merge, or open a PR to satisfy closeout,
-and never close the root while an obligation is open. Use
-`aven-dispatch disposition` with a real successor or explicit no-successor for
-cancellation; never edit a task to canceled merely to clear the board.
+End the loop only when (a) every phase is integrated and the complete result has
+a successful durable approval, or (b) a durable blocker genuinely requires user
+input. Re-read the root approval marker and report the exact SHA; an idle worker,
+execution contradiction or `completed` status is not approval evidence.
 
-## Offer final integration only after completion
-
-Once every phase is verified and integrated and the root epic is done, ask the
-user how to integrate the final branch into `main`. Present creating a pull
-request as the preferred option, with merging into local `main` as the
-alternative. Wait for explicit approval and any required branch details before
-performing either action. Never create a pull request, push, merge, or switch
-the user's local `main` automatically.
+Acceptance is not delivery. Approval records pending delivery obligations;
+they do not block accepting the root. Report `/ha-merge <root-ref>` from main as
+the human integration trigger, then stop. That command automatically resolves
+conflicts in isolation, reruns combined checks and closes out delivery child-first.
+Never merge, push or create a PR automatically. Use `aven-dispatch disposition`
+with a real successor or explicit no-successor for cancellation; never edit a
+task to canceled merely to clear the board.
 
 Bundled agents are installed once in OpenCode's global agent directory, not in
 a worktree. Verify tracked and untracked cleanliness in every worktree before

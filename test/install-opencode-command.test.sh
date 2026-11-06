@@ -3,7 +3,7 @@
 set -eu
 . "$(dirname "$0")/helpers.sh"
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/ha-merge-test.XXXXXXXX")
+work=$(mktemp -d /tmp/opencode/ha-merge-test.XXXXXXXX)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 export XDG_CONFIG_HOME=$work/xdg
 export HOME=$work/home
@@ -13,6 +13,8 @@ command_file=$XDG_CONFIG_HOME/opencode/commands/ha-merge.md
 out=$(sh "$installer")
 assert_contains "$out" "installed: $command_file"
 cmp -s "$PLUGIN_ROOT/commands/ha-merge.md" "$command_file" || fail "installed command differs"
+cmp -s "$PLUGIN_ROOT/commands/approve.md" "$XDG_CONFIG_HOME/opencode/commands/approve.md" || fail "approve command was not installed"
+cmp -s "$PLUGIN_ROOT/agents/orchestrator.md" "$XDG_CONFIG_HOME/opencode/agents/aven-orchestrator.md" || fail "orchestrator profile was not installed"
 out=$(sh "$installer")
 assert_contains "$out" "already installed: $command_file"
 
@@ -21,6 +23,16 @@ printf 'personal command\n' > "$command_file"
 if sh "$installer" > "$work/out" 2>&1; then fail "overwrote a foreign command"; fi
 assert_file_contains "$work/out" 'refusing to overwrite'
 assert_eq "$(cat "$command_file")" 'personal command'
+out=$(sh "$installer" --upgrade)
+assert_contains "$out" "backed up: $command_file.bak."
+cmp -s "$PLUGIN_ROOT/commands/ha-merge.md" "$command_file" || fail "explicit upgrade did not install new command"
+assert_eq "$(cat "$command_file".bak.*)" 'personal command'
+profile=$XDG_CONFIG_HOME/opencode/agents/aven-orchestrator.md
+printf 'older profile\n' > "$profile"
+if sh "$installer" > "$work/out" 2>&1; then fail "overwrote a differing agent without explicit upgrade"; fi
+sh "$installer" --upgrade > "$work/out"
+assert_eq "$(cat "$profile".bak.*)" 'older profile'
+cmp -s "$PLUGIN_ROOT/agents/orchestrator.md" "$profile" || fail "explicit upgrade did not refresh the profile"
 rm "$command_file"
 printf 'target\n' > "$work/target"
 ln -s "$work/target" "$command_file"
@@ -43,22 +55,24 @@ assert_file_contains "$work/out" 'neither XDG_CONFIG_HOME nor HOME'
 # prevent accidental removal of its essential gates; they do not simulate an LLM.
 prompt=$PLUGIN_ROOT/commands/ha-merge.md
 assert_file_contains "$prompt" 'subagent: false'
-assert_file_contains "$prompt" '**merge into local main**, **create a pull request**'
-assert_file_contains "$prompt" 'Cancel or no answer means no commit'
-assert_file_contains "$prompt" 'Never blindly stage all files'
-assert_file_contains "$prompt" 'do not bypass the root'
-assert_file_contains "$prompt" 'cannot include unrelated staged'
-assert_file_contains "$prompt" 'Require it to be clean'
-assert_file_contains "$prompt" 'Verify the source commit is an ancestor'
-assert_file_contains "$prompt" 'An open PR is not a successful merge'
-assert_file_contains "$prompt" 'aven context <ref> --full'
-assert_file_contains "$prompt" 'aven-dispatch reconcile <ref> --workflow <workflow>'
-assert_file_contains "$prompt" 'pending Aven update or failed'
-assert_file_contains "$prompt" 'never proceed to integration or teardown'
-assert_file_contains "$prompt" 'never mark unverified work done'
-assert_file_contains "$prompt" 'Only after a verified successful merge and successful reconciliation'
-assert_file_contains "$prompt" 'Never use the currently focused'
-assert_file_contains "$prompt" 'The default is No'
-assert_file_contains "$prompt" 'revalidate the exact association immediately beforehand'
-assert_file_contains "$prompt" 'Never delete a Git worktree or branch'
+assert_file_contains "$prompt" 'human merge trigger'
+assert_file_contains "$prompt" 'does not require a live builder/coordinator terminal'
+assert_file_contains "$prompt" 'aven-dispatch merge <task-id> [<task-id> ...] --yes'
+assert_file_contains "$prompt" 'exact approved'
+assert_file_contains "$prompt" 'Automatically resolve and verify'
+assert_file_contains "$prompt" 'Never blindly choose'
+assert_file_contains "$prompt" 'at most'
+assert_file_contains "$prompt" 'three repair rounds'
+assert_file_contains "$prompt" '--review-commit <exact-combined-sha>'
+assert_file_contains "$prompt" 'main moved during preparation'
+assert_file_contains "$prompt" 'watcher'
+assert_file_contains "$prompt" 'Never push main'
+assert_file_contains "$prompt" 'delete a Git worktree'
+approve=$PLUGIN_ROOT/commands/approve.md
+assert_file_contains "$approve" 'subagent: false'
+assert_file_contains "$approve" 'Never blindly stage'
+assert_file_contains "$approve" 'A nonzero result is not an approval'
+assert_file_contains "$approve" 'aven-dispatch approve <task-ref>'
+assert_file_contains "$approve" 'marks the root done'
+assert_file_contains "$approve" 'does not authorize merging'
 printf 'install-opencode-command ok\n'

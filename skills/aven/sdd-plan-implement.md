@@ -215,38 +215,38 @@ For each child piece:
    EOF
    ```
 
-5. Mark it done **only when verified**: `aven edit <ref> --status done`.
+5. Commit only task-owned changes, preserving unrelated content and using the
+   repository's conventions. Mark the child done **only when verified**:
+   `aven edit <ref> --status done`. A worktree phase must have a clean committed
+   result before its coordinator integrates it.
 
 If a piece turns out to be blocked or larger than expected, leave a note
 explaining the blocker and, if it is real new work, add a task for it and link
 it (`aven dep add <new> <ref>`). Do not mark unverified work done, and do not
 mark a task canceled just to make the board look clean.
 
-`done` means accepted, not delivered. Before treating an accepted code result
-as finished, run the delivery checkpoint:
+`done` means accepted, not delivered, including for the root epic. After every
+child is accepted/canceled and the full result is committed, reviewed and
+verified (and every worktree phase integrated), execute `/approve` in the final
+root worktree using the actual test/check commands from the plan:
 
 ```sh
-aven-dispatch closeout <ref> --project <key>          # read-only
-aven-dispatch closeout <ref> --project <key> --apply  # after a human merge
+aven-dispatch approve {ref} --workflow <workflow> \
+  --check '<test command>' --check '<other required check>' \
+  --review '<truthful acceptance and code-review evidence>'
 ```
 
-An unmerged result stays pending with exactly one open related delivery
-follow-up. Never claim delivery from `main` merely existing, a green session, a
-branch name, or an open PR. Planning-only/no-code work needs an explicit
+This reruns checks, records exact commit-bound approval, marks the root accepted,
+and publishes pending delivery obligations. Do not fabricate approval metadata
+or manually close the root without a successful approval. Stop at that accepted
+result and report `/ha-merge {ref}` from main as the human merge trigger; do not
+wait for delivery or merge automatically. `/ha-merge` resolves conflicts in
+isolation and verifies/records delivery child-first without manual status repair.
+An incomplete plan, unverified code, a green session, a branch name or an open PR
+is not approval/delivery. Planning-only/no-code work needs an explicit
 `--not-applicable` disposition. Cancellation must preserve artifacts and record
-a real successor or `--no-successor`; use `aven-dispatch disposition` rather
-than a bare status edit.
-
-When every child is done and the root task's acceptance criteria hold, run
-`aven-dispatch closeout {ref} --project <key>` and require a complete result.
-Only then close the root:
-
-```sh
-aven edit {ref} --status done
-```
-
-Never close the root with an open delivery follow-up, an unknown/contradictory
-execution state, or an incomplete plan.
+a real successor or `--no-successor`; use `aven-dispatch disposition` rather than
+a bare status edit.
 
 ## 5. Report and hand off
 

@@ -14,11 +14,21 @@ install:
 install-skill:
     sh scripts/install-skill.sh
 
+# Install finish commands/profiles; --upgrade explicitly backs up old definitions.
+install-commands *args:
+    sh scripts/install-opencode-command.sh {{args}}
+
+# Isolated approval, batch merge/conflict, stale-evidence and closeout contracts.
+test-approval:
+    cargo build --workspace
+    sh test/approval.test.sh
+
 install-app-mod:
     sh scripts/install-app-mod.sh
 
 test:
     cargo test --workspace
+    cargo build --workspace
     sh test/run.sh
 
 # Lifecycle isolation, delivery/closeout, cancellation and audit contracts.

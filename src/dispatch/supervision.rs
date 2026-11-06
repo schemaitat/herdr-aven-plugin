@@ -307,6 +307,9 @@ pub(crate) fn reconcile_all_with(store: &mut LockedStore, path: &Path) -> Result
     let reconciled = reconcile_batch(store, attempts, |store, attempt| {
         reconcile_attempt(store, attempt).map(|_| ())
     })?;
+    if let Err(error) = crate::dispatch::integration::retry_pending(path) {
+        eprintln!("merged delivery finalization remains pending: {error:#}");
+    }
     if let Err(error) = watch::refresh_inventory(path) {
         eprintln!("core inventory unavailable: {error:#}");
     }

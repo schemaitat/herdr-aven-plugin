@@ -10,7 +10,7 @@ mod is optional and only changes what you see.
 ## Installation
 
 **Requirements:** Linux or macOS, herdr-core ≥ 0.1.15 (`hc`), Aven with
-custom-command `terminal` execution support, Git, OpenCode V2, and Rust/Cargo.
+custom-command `terminal` execution support, Git, OpenCode V2, and Rust/Cargo ≥ 1.89.
 Keep `aven`, `hc`, `opencode`, and Cargo's bin directory on `PATH`.
 `herdr-app` is optional. Tested with herdr-core 0.1.15.
 
@@ -23,7 +23,7 @@ just install
 ```
 
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
-commands, installs the global OpenCode `/ha-merge` command and the
+commands, installs the global OpenCode `/approve` and `/ha-merge` commands and the
 `herdr-aven-tasks` skill, and installs `mods/aven-tasks`,
 `mods/aven-worktree`, `mods/aven-panel`, `mods/aven-kanban`,
 `mods/aven-panel-tabs`, and the personal `layouts/aven-right.json` into
@@ -564,7 +564,7 @@ identity; repeated activation is deduplicated.
 
 **Merge into main** appears only on a Review card with review execution
 (`needs-review`/`completed`), no contradiction, one unambiguous matching attempt,
-and an owned terminal. It sends `/ha-merge merge into local main` to the builder
+and an owned terminal. It sends `/ha-merge <immutable-task-id>` to the builder
 for single-session execution or the coordinator for worktrees execution. The
 command carries the immutable task ID, attempt ID, reset generation, and expected
 role-terminal address; the dispatcher validates all four under its store lock
@@ -573,8 +573,8 @@ the click before any message, and only the validated terminal is revealed. A
 busy, missing, ambiguous, unknown, or failed terminal is an inline error, never a
 fallback target. This is a handoff to the existing
 [finish workflow](#finish-a-dispatched-worktree), not a one-click Git mutation:
-`/ha-merge` still checks acceptance and clean worktrees and asks for explicit
-confirmation. The board itself never commits, merges, pushes, opens a PR,
+`/ha-merge` requires a durable `/approve` result and clean worktrees. Its invocation
+is the explicit merge trigger; no second confirmation is required. The board itself never commits, merges, pushes, opens a PR,
 changes Aven acceptance, applies closeout, or closes a space.
 
 Refresh is non-overlapping. Full Aven metadata is cached by immutable epic ID
@@ -837,30 +837,75 @@ sh scripts/install-aven-command.sh
 
 ### Finish a dispatched worktree
 
-Run `/ha-merge` in the OpenCode session in the dispatched worktree. The agent
-summarizes the changes and asks whether to merge the branch into the local
-`main` checkout, create a GitHub pull request targeting `main`, or cancel.
-The local merge does not push `main`; the PR route pushes the branch and needs
-GitHub CLI authentication. The agent preserves unrelated changes, checks the
-target checkout, and stops on ambiguity, conflict or failure.
+The finish workflow has two checkpoints:
 
-The workflow identifies the associated dispatch and reviews Aven task acceptance
-against verification evidence. It records a handoff and reconciles dispatcher
-state after a commit or PR and before any teardown. An open PR is not a merge.
-Only after a verified merge and successful reconciliation does it offer to close
-the exact associated Herdr space, with a default of No. Closing a space ends its
-terminals, possibly including the current session; the command never deletes a
-Git worktree or branch. Missing or ambiguous ownership prevents closure.
+1. **In the final feature/coordinator worktree:** run `/approve` (optionally with
+   the root task ID). The agent reviews the specification and children, commits
+   only task-owned changes, runs the actual required tests/checks, and repairs
+   failures within scope. `aven-dispatch approve` reruns the selected commands
+   and binds acceptance to the exact commit, specification, child dispositions,
+   attempt and generation. All worktree phases must already be integrated.
+   Success marks the root **done as accepted, not delivered**, with explicit
+   pending delivery. Bundled implementation workflows perform this approval
+   checkpoint automatically after implementation; the slash command also works
+   as an explicit final-worktree action. Stale session badges do not grant or
+   revoke approval.
+2. **From the main checkout:** run `/ha-merge <task-id>` or
+   `/ha-merge <task-id> <task-id> ...`. Qualified refs and immutable IDs both work;
+   bracketed/comma-separated lists are accepted by the command prompt. This is
+   the human merge trigger, with no second merge/PR confirmation. All supplied
+   approvals are validated before preparation. The dispatcher merges their exact
+   source commits, in order, into an isolated integration worktree. The agent
+   automatically resolves conflicts against the approved requirements, reviews
+   the combined result and repairs legitimate integration failures (up to three
+   rounds). It never blindly chooses ours/theirs or weakens failing tests.
 
-This is an OpenCode prompt, not a transactional enforcement mechanism; review
-the agent's actions and confirmations. OpenCode and Git/GitHub permissions still
-apply. `just install` installs the command at
-`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/commands/ha-merge.md` for all
-projects. Run `sh scripts/install-opencode-command.sh` to install it separately.
-Identical files are left untouched; different files and symlinks are refused.
-To upgrade an older installed copy, compare it with `commands/ha-merge.md` and
-manually replace it only if you want the new version. Project-local commands of
-the same name override the global one. OpenCode reloads command files on save.
+Only after the recorded checks from all approvals pass on the exact reviewed
+combined commit does the CLI fast-forward clean local main. A moved target,
+changed source, missing approval, dirty worktree, incompatible requirements or
+failed verification leaves main untouched. Extra integration changes outside the
+approved changed paths require a new approval. Source worktrees, branches and
+Herdr spaces are retained; this workflow never pushes main, creates a PR or
+performs teardown. OpenCode/tool permissions still apply.
+
+Delivery is finalized automatically, children first and root last. If Aven fails
+after Git succeeds, the SQLite journal retains the exact merged result; resume
+the operation, or run the watcher to retry **metadata only**. The watcher never
+initiates a merge. These low-level commands back the slash workflows:
+
+```sh
+# From the final worktree; checks are trusted, explicit shell commands via hc.
+aven-dispatch approve <task-id> --workflow implementation \
+  --check 'just test' --check 'just check' --review 'Acceptance and diff reviewed'
+# From main (also works from another checkout of the same repository):
+aven-dispatch merge <task-id> <task-id> --yes
+# Recover operation identities after a tool timeout/restart (read-only):
+aven-dispatch merge --list
+# Resolve/commit conflicts only in the returned integration worktree, then:
+aven-dispatch merge --operation <operation-id>
+# After review, rerun recorded checks and publish the exact combined commit:
+aven-dispatch merge --operation <operation-id> --publish \
+  --review-commit <combined-sha> --review 'Combined requirements reviewed'
+```
+
+These are agent workflows with deterministic CLI safety boundaries, not claims
+that an LLM's semantic conflict resolution is infallible. Verification is bounded
+to 600 seconds per command; select actual checks rather than arbitrary task text.
+Do not put credentials or other secrets in check commands or review evidence.
+The central store retains full approval evidence; compact `approval.*` metadata
+on Aven tasks exposes its identity. Losing the approval journal requires rerunning
+approval rather than trusting an unverifiable marker.
+
+`just install` installs both global commands under
+`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/commands/` and the bundled
+`aven-orchestrator`/`aven-babysitter` implementation profiles under `agents/`. Use
+`just install-commands` separately. Identical files are left untouched; different
+definitions and symlinks are refused by default. For an intentional upgrade use
+`just install-commands --upgrade`: differing command/profile regular files are backed up before
+replacement; symlinks are still refused. Project-local commands override global
+ones, and OpenCode reloads commands on save. `just test-approval` exercises the
+approval, batch/conflict, stale-evidence and post-merge recovery contracts using
+real Git and disposable Aven/OpenCode/core fixtures.
 
 ### Analyze task and dispatch state
 
@@ -944,7 +989,9 @@ session success, or an unchanged baseline cannot satisfy delivery. An
 accepted-but-unmerged result gets exactly one open related delivery follow-up;
 repeated apply is idempotent. A human merge plus `--apply` resolves only the
 matching obligation. A root epic closes only when every child is dispositioned
-and every obligation is verified delivered, waived or superseded.
+and every obligation is verified delivered, waived or superseded. This is delivery
+closeout, not the root's acceptance gate: `/approve` may accept the root before
+delivery with explicit pending obligations.
 
 The supported repair actions are all dry-run by default:
 

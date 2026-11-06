@@ -497,6 +497,16 @@ fn unresolved_children(
 }
 
 pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
+    run_with_pending(path, args, false)
+}
+
+/// Publish a pending delivery obligation without mistaking not-yet-merged work
+/// for a failed approval. Transport/publication errors still propagate.
+pub(crate) fn checkpoint(path: PathBuf, args: CloseoutArgs) -> Result<()> {
+    run_with_pending(path, args, true)
+}
+
+fn run_with_pending(path: PathBuf, args: CloseoutArgs, allow_pending: bool) -> Result<()> {
     let invocation = invocation(args.workspace.clone());
     let task = refresh_task_by_ref(&invocation, &args.task)?;
     let reference = task_ref(&task);
@@ -716,7 +726,7 @@ pub(crate) fn run(path: PathBuf, args: CloseoutArgs) -> Result<()> {
         Vec::new()
     };
     emit(&outcome, args.json)?;
-    if !delivered || !outcome.unresolved.is_empty() {
+    if (!delivered && !allow_pending) || !outcome.unresolved.is_empty() {
         bail!(
             "{} delivery is not complete (state {}; unresolved: {})",
             reference,

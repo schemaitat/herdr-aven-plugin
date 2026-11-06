@@ -1,10 +1,12 @@
 //! Command-facing dispatch types.
 
+pub(crate) mod approval;
 pub(crate) mod audit;
 pub(crate) mod aven;
 pub(crate) mod board;
 pub(crate) mod closeout;
 pub(crate) mod disposition;
+pub(crate) mod integration;
 pub(crate) mod lifecycle;
 pub(crate) mod phases;
 pub(crate) mod plan;

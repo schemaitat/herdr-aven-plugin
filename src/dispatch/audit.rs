@@ -518,8 +518,29 @@ pub(crate) fn run(args: AuditArgs) -> Result<()> {
             }
         }
 
-        // F6 — root closed with unresolved obligations.
+        // F6 — legacy/incorrect root closure with unresolved obligations. A
+        // commit-bound approved root is accepted before delivery by design;
+        // its mapped pending child obligations are advisory, not false closure.
         if task.is_epic && task.status == "done" {
+            let approved_pending = task.metadata("approval.state") == Some("approved")
+                && matches!(
+                    task.metadata("delivery.state"),
+                    Some("pending" | "committed")
+                )
+                && effects.as_ref().is_some_and(|effects| {
+                    effects.iter().any(|effect| {
+                        effect.kind == "approval"
+                            && effect.state == "completed"
+                            && effect.task_id == task.id
+                            && Some(effect.operation_id.as_str()) == task.metadata("approval.id")
+                            && serde_json::from_str::<super::approval::Approval>(&effect.payload)
+                                .is_ok_and(|approval| {
+                                    approval.schema == "aven-approval/v1"
+                                        && Some(approval.commit.as_str())
+                                            == task.metadata("approval.commit")
+                                })
+                    })
+                });
             for child_ref in &task.epic_children {
                 let Some(child) = tasks
                     .values()
@@ -552,14 +573,22 @@ pub(crate) fn run(args: AuditArgs) -> Result<()> {
                 {
                     add(
                         &mut findings,
-                        "root_closed_with_obligations",
-                        Severity::Violation,
+                        if approved_pending {
+                            "root_delivery_pending"
+                        } else {
+                            "root_closed_with_obligations"
+                        },
+                        if approved_pending {
+                            Severity::Advisory
+                        } else {
+                            Severity::Violation
+                        },
                         task,
                         format!(
                             "closed root child {child_ref} has delivery state {:?}",
                             child.metadata("delivery.state")
                         ),
-                        "resolve the child delivery obligation before closing the root",
+                        "merge the approved result and finalize child delivery before claiming delivery",
                     );
                 }
                 if child.status == "done"
@@ -571,14 +600,22 @@ pub(crate) fn run(args: AuditArgs) -> Result<()> {
                 {
                     add(
                         &mut findings,
-                        "root_closed_with_obligations",
-                        Severity::Violation,
+                        if approved_pending {
+                            "root_delivery_pending"
+                        } else {
+                            "root_closed_with_obligations"
+                        },
+                        if approved_pending {
+                            Severity::Advisory
+                        } else {
+                            Severity::Violation
+                        },
                         task,
                         format!(
                             "closed root child {child_ref} retains open delivery obligation {} ({})",
                             obligation.reference, obligation.status
                         ),
-                        "resolve the matching delivery obligation before closing the root",
+                        "resolve the matching delivery obligation before claiming delivery",
                     );
                 }
             }

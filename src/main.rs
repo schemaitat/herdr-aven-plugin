@@ -188,6 +188,45 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Test and approve the exact committed result in the current final worktree.
+    Approve {
+        /// Task ref or immutable ID; inferred only from an unambiguous final worktree.
+        task: Option<String>,
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Trusted verification command, executed through hc (repeatable).
+        #[arg(long = "check", required = true)]
+        checks: Vec<String>,
+        /// Acceptance/code-review evidence, not a substitute for executed checks.
+        #[arg(long)]
+        review: String,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Prepare approved results in isolation; publish only after combined review/checks.
+    Merge {
+        /// Approved task refs or immutable IDs, merged in the supplied order.
+        tasks: Vec<String>,
+        /// Read-only journal inventory for recovery after a timeout/restart.
+        #[arg(long, conflicts_with_all = ["tasks", "yes", "operation", "publish", "review_commit", "review"])]
+        list: bool,
+        /// Explicit authorization; required when starting an operation.
+        #[arg(long)]
+        yes: bool,
+        /// Resume the exact journaled operation (including metadata-only recovery).
+        #[arg(long)]
+        operation: Option<String>,
+        /// Verify and fast-forward local main, then automatically close out delivery.
+        #[arg(long)]
+        publish: bool,
+        /// Exact integration commit reviewed by the finish agent.
+        #[arg(long, requires = "publish")]
+        review_commit: Option<String>,
+        #[arg(long, requires = "publish")]
+        review: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Verify accepted delivery and optionally record/resolve obligations.
     Closeout {
         task: String,
@@ -422,6 +461,35 @@ fn main() -> Result<()> {
             reconcile_all,
         } => watch_command(path, once, stop, status, interval, reconcile_all),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
+        Commands::Approve {
+            task,
+            workflow,
+            checks,
+            review,
+            workspace,
+        } => dispatch::approval::run(path, task, workflow, checks, review, workspace),
+        Commands::Merge {
+            tasks,
+            list,
+            yes,
+            operation,
+            publish,
+            review_commit,
+            review,
+            workspace,
+        } => dispatch::integration::run(
+            path,
+            dispatch::integration::MergeArgs {
+                tasks,
+                list,
+                yes,
+                operation,
+                publish,
+                review_commit,
+                review,
+                workspace,
+            },
+        ),
         Commands::Closeout {
             task,
             workflow,

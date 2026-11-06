@@ -81,7 +81,10 @@ For each planned task:
    EOF
    ```
 
-4. Mark the task `done` only after its done criteria pass:
+4. Commit only the exact task-owned changes using the project's conventions;
+   preserve unrelated index/worktree content. In worktrees mode this committed,
+   clean result is required before the coordinator can integrate the phase.
+   Mark the child task `done` only after its done criteria pass:
 
    ```sh
    aven edit <task-ref> --status done
@@ -92,30 +95,31 @@ append a note with the concrete blocker. If new work is necessary, create a new
 task, attach it to the epic where applicable, and express its ordering with
 `aven dep add`; do not silently expand the completed plan.
 
-`done` means accepted, not delivered. For an accepted code result, run the
-delivery checkpoint before treating the work as finished:
+`done` means accepted, not delivered, including for an epic root. Do not require
+delivery to main before root acceptance. A phase worker must stop with its clean,
+committed, verified child result; it must not approve the partial phase for main.
+
+For the complete root/final worktree, once every child is accepted/canceled,
+every phase is integrated where required, and all root criteria pass, execute
+the `/approve` workflow: review the full result, preserve unrelated work, commit
+task-owned fixes, and run the deterministic approval command with the plan's
+actual tests and other required checks:
 
 ```sh
-aven-dispatch closeout <task-ref> --project <project-key>            # read-only
-aven-dispatch closeout <task-ref> --project <project-key> --apply    # record evidence
+aven-dispatch approve <root-ref> --workflow <workflow> \
+  --check '<test command>' --check '<other required check>' \
+  --review '<truthful acceptance and review evidence>'
 ```
 
-The read-only form verifies the exact accepted commit against the configured
-local target (initially `main`). An unmerged result stays `pending`/`committed`
-and receives exactly one open related delivery follow-up. Only after a human
-merges the result does `--apply` verify ancestry and resolve the matching
-obligation. Never claim delivery from an open PR, an unrelated merge, a branch
-name, or a green session. For a planning-only or no-code result, use the
-explicit `--not-applicable` disposition; for a human waiver or supersession,
-use `--waive <reason>` or `--superseded-by <ref>`.
-
-When every child of a root epic is done and the root acceptance criteria hold,
-run `aven-dispatch closeout <root-ref> --project <project-key>` and require a
-complete result. Append a final verification note and mark the root done only
-when every phase has an accepted/canceled disposition and every delivery
-obligation is verified delivered, explicitly waived, or superseded. Never mark
-an epic or task done merely because code was written, and never close a root
-with an open delivery follow-up.
+The CLI reruns checks, binds approval to the exact commit/specification/attempt,
+marks the root done as accepted, and records pending delivery obligations. Never
+fabricate approval metadata or manually mark the root done before this succeeds.
+Report the approved SHA and `/ha-merge <root-ref>` from main, then stop; do not
+wait for delivery or automatically merge. A human invocation of `/ha-merge` is
+the integration trigger; it resolves conflicts in isolation and automatically
+verifies/records delivery child-first. An open PR, green session or branch name
+is never delivery evidence. Explicit no-code, waiver and supersession decisions
+still use closeout's `--not-applicable`, `--waive` or `--superseded-by` options.
 
 If work must stop, use a reviewed cancellation instead of silently abandoning
 it:

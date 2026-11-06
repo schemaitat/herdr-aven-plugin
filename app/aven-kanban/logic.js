@@ -3,7 +3,7 @@
 // with ordinary Node fixtures.
 export const LIMIT = 500;
 export const ATTEMPT_LIMIT = 500;
-export const MERGE_PROMPT = "/ha-merge merge into local main";
+export const MERGE_PROMPT = "/ha-merge";
 export const BOARD_COLUMNS = [
   { id: "backlog", title: "Backlog" },
   { id: "planned", title: "Planned" },
@@ -191,7 +191,7 @@ export function mergeArgs(epic, attempt) {
     "--generation", String(attempt.generation),
     "--role", mergeRole(attempt),
     "--terminal", target.address,
-    "--text", MERGE_PROMPT,
+    "--text", `${MERGE_PROMPT} ${epic.id}`,
   ];
 }
 

@@ -19,12 +19,16 @@ drops the YAML front matter, fills `$ARGUMENTS`/`{ARGS}`, `{ref}`, and
   `sdd.plan-worked-out=true`; otherwise it stops and directs the user to plan
   first. It handles a selected phase child or planned root epic.
 
-All three workflows treat `done` as acceptance and require a separate delivery
-checkpoint. Use the dispatcher commands rather than prose-only promises:
+All three workflows treat `done` as acceptance, including epic roots. Complete
+implementation finishes through `/approve`: actual tests/review and a clean
+committed final result yield a durable approval, while delivery stays pending.
+`/ha-merge <task-id> [<task-id> ...]` from main is the human integration trigger;
+it resolves conflicts in isolation and automatically closes out children before
+roots. Use the dispatcher commands rather than prose-only promises:
 
 - `aven-dispatch closeout <ref> --project <key>` — read-only delivery
   verification against the configured local target; `--apply` records evidence
-  and resolves only matching obligations after a human-triggered merge.
+   and creates pending obligations or resolves matching ones after a human merge.
 - `aven-dispatch disposition <ref>` — read-only cancellation inventory;
   `--apply --reason ... --successor ...|--no-successor` preserves artifacts and
   an auditable decision.

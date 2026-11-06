@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add `/approve` and commit-bound approval journals: the actual required checks
+  run before accepting a final task/epic result, independently of terminal state.
+  Remove the circular root-done/delivery gate from bundled implementation agents.
+- Make `/ha-merge <task-id> [<task-id> ...]` a human-triggered batch workflow from
+  main. Approved source commits are integrated in an isolated worktree, conflicts
+  are resolved by the finish agent, and combined review/checks precede the only
+  update of main. Child-first delivery closeout is automatic and journaled;
+  the watcher retries metadata-only finalization after an already-proven merge.
+- Install both finish commands; `just install-commands --upgrade` explicitly
+  backs up older regular definitions without replacing symlinks. Add
+  `just test-approval` for real-Git/disposable-source regression coverage.
+
 - Remove the obsolete interactive dispatcher TUI (`aven-dispatch tui`) and its
   `ratatui` dependency, PTY fixtures, `just tui`/`just test-tui` recipes, and
   herdr-app inspector launchers. The non-interactive `aven-dispatch inspect

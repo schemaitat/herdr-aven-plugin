@@ -126,12 +126,12 @@ assert.equal(review.mergeable, true);
 assert.equal(review.mergeRole, "builder");
 assert.deepEqual(mergeArgs(review, review.attempt), [
   "message", "ONE", "--workflow", "implementation", "--attempt-id", "att-ONE", "--generation", "0",
-  "--role", "builder", "--terminal", "t-builder", "--text", MERGE_PROMPT,
+  "--role", "builder", "--terminal", "t-builder", "--text", `${MERGE_PROMPT} ONE`,
 ]);
 const coordinated = card("active", {}, [attempt("ONE", { state: "needs-review", execution_mode: "worktrees" })]);
 assert.equal(coordinated.mergeRole, "coordinator");
 assert.equal(mergeTerminal(coordinated.attempt).address, "t-coordinator");
-assert.deepEqual(mergeArgs(coordinated, coordinated.attempt).slice(-6), ["--role", "coordinator", "--terminal", "t-coordinator", "--text", MERGE_PROMPT]);
+assert.deepEqual(mergeArgs(coordinated, coordinated.attempt).slice(-6), ["--role", "coordinator", "--terminal", "t-coordinator", "--text", `${MERGE_PROMPT} ONE`]);
 assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review", execution_mode: "worktrees", coordinator_terminal: { address: "" } })]).mergeable, false, "no builder fallback for coordinator-owned work");
 assert.equal(card("done").mergeable, false);
 assert.equal(card("active", {}, [attempt("ONE", { state: "running" })]).mergeable, false);

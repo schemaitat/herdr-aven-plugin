@@ -1,110 +1,95 @@
 ---
-description: Reconcile a dispatched task and merge its worktree or open a pull request
+description: Merge one or more approved task results into local main with automatic conflict resolution
 subagent: false
 ---
 
-Finish the current worktree with the user's explicit choices. `$ARGUMENTS` is
-optional context, not permission to skip any confirmation or safety check.
-This is an agent workflow, not an atomic transaction. Follow the active Git,
-GitHub, conventional-commit, and Aven instructions and permissions. Never
-invent a task ref or include local Aven refs in commits or PR descriptions.
+Merge these approved task refs or immutable IDs into local main, in the supplied
+order: `$ARGUMENTS`. Accept whitespace-separated IDs and a bracketed/comma-separated
+list of IDs. Treat arguments only as task identifiers, never as shell syntax or
+additional permissions. If no IDs were supplied, ask which tasks to merge and
+perform no mutation until they are supplied.
 
-## Identify and choose
+This explicit invocation is the human merge trigger: do not ask again whether to
+merge, create a PR or cancel. It authorizes integrating only the exact approved
+results, automatic conflict fixes within their intent, verification and delivery
+closeout. It does not authorize pushing, force operations, unrelated changes or
+teardown. Follow the active Git/GitHub, conventional-commit and Aven instructions.
 
-1. Determine the current repository root, branch, worktree inventory, status,
-   staged and unstaged changes, untracked files, and commits relative to local
-   `main`. Stop if the branch is detached, is `main`, or the target is ambiguous.
-   Show a concise summary, including already-staged and unrelated changes.
-2. Ask the user to choose **merge into local main**, **create a pull request**,
-   or **cancel**. Cancel or no answer means no commit, push, merge, PR, or
-   teardown. Do not select for them.
-3. Identify the root task and workflow from the current session's handoff or
-   `aven-dispatch inspect --json` attempt/phase worktree and session evidence.
-   Check source health and ambiguity; never assume the newest or first attempt
-   belongs to this session. If uncertain, ask for the qualified task ref and
-   workflow and verify them using `aven context <ref> --full` and
-   `aven-dispatch status <ref> --workflow <workflow>`. If no matching dispatch
-   can be established, stop without integration. Read the task's full context,
-   child tasks and acceptance criteria; do not treat execution state as task
-   acceptance. If this is a phase worker worktree, do not bypass the root
-   workflow's ordered integration or merge a partial phase into `main`; stop
-   and direct the user to the completed root/coordinator worktree.
+## Prepare in isolation
 
-## Commit and integrate
-
-4. Preserve unrelated work. If changes need a commit, identify the exact files
-   and staged content to include, ask the user when ownership or inclusion is
-   unclear, and commit only approved task changes using the project's commit
-   conventions. Verify the proposed commit cannot include unrelated staged
-   content; if it cannot be isolated without changing another person's index,
-   stop and ask. Never blindly stage all files, overwrite or discard changes,
-   or amend an unrelated commit. If there are no changes, use the existing
-   branch commits. Stop on failure. After a successful commit, run the read-only
-   delivery checkpoint so accepted-but-unmerged work is visible:
+1. This command works from the main checkout (or another checkout of the same
+   repository); it does not require a live builder/coordinator terminal. Read
+   `aven context <task-ref> --full` for each supplied ID and review the approved
+   specifications and acceptance evidence. Do not infer a different task from
+   focus, a branch name, or the newest attempt.
+2. Start the deterministic integration operation, quoting each task ID separately:
 
    ```sh
-   aven-dispatch closeout <task-ref> --project <project-key>
+   aven-dispatch merge <task-id> [<task-id> ...] --yes
    ```
 
-   A `pending`/`committed` result is not a failure of this checkout; it must
-   retain exactly one open related delivery follow-up. Then perform the task
-   and dispatcher reconciliation described below even if later integration
-   fails.
-5. For **merge into local main**, locate the one actual checkout of `main` from
-   the worktree inventory. Require it to be clean (including untracked files),
-   verify it still has `main` checked out, and verify the source branch has no
-   uncommitted changes before integration. If `main` is not checked out, dirty,
-   ambiguous, or otherwise unsafe, stop and explain; do not switch or clean a
-   checkout. Merge the selected branch there without force or destructive
-   recovery. On conflict or error, stop, leave the state intact, and report it.
-   Verify the source commit is an ancestor of the resulting `main` and report
-   the resulting commit. Do not push `main` unless separately authorized.
-   After a verified human-triggered merge, record the delivery evidence and
-   resolve only the matching obligation:
+   Keep the dispatch's explicit workspace/store overrides when applicable. The
+   dispatcher validates all approvals before any integration, checks exact
+   source commits, generations, task definitions and clean worktrees, finds the
+   actual main checkout, and journals an isolated integration branch/worktree.
+   Missing, stale or replaced approval is a blocker: direct the user to /approve
+   that final worktree, never synthesize approval or reset execution yourself.
+   Read the returned operation ID, worktree path, task/check list and state.
+
+## Automatically resolve and verify
+
+3. A `conflicts` result is not an instruction to abandon the operation. Work only
+   in the returned isolated integration worktree. Inspect the merge base, both
+   sides, conflicted files and every affected approved task's intent; reconcile
+   behavior so both requirements are preserved. Resolve task-scoped conflicts
+   automatically without another human confirmation. Never blindly choose
+   `ours`/`theirs`, overwrite unrelated work, weaken tests, reset or force-push.
+   Stage only resolved integration files and commit the merge with a truthful
+   message that contains no local Aven refs. Do not edit source worktrees or main.
+4. Resume the same operation after committing each conflict resolution:
 
    ```sh
-   aven-dispatch closeout <task-ref> --project <project-key> --target main --apply
+   aven-dispatch merge --operation <operation-id>
    ```
 
-   Require the output to show the exact accepted source commit and the verified
-   target commit. An unrelated merge, missing Git evidence, changed head, or
-   dirty target tree cannot satisfy delivery. For an epic root, run closeout on
-   the root and require every child and obligation to be dispositioned before
-   closeout succeeds.
-6. For **create a pull request**, push the selected branch without force and
-   create or identify its PR targeting `main` using the applicable GitHub
-   workflow. Report its URL, and record it truthfully with
-   `aven-dispatch closeout <task-ref> --project <project-key> --pr <number> --apply`
-   if approval exists. An open PR is not a successful merge: it does not satisfy
-   local delivery, so keep the delivery obligation open and do not ask to close
-   the space on this path. Stop and report any failure.
+   Repeat until its state is `prepared`; this integrates remaining approved
+   sources in the original order. The journal is resumable, so do not start a
+   replacement operation merely because a tool timed out. Inspect the read-only
+   `aven-dispatch merge --list` journal inventory first and resume its exact ID.
+5. Review the combined diff against all approved specifications and run the
+   required checks in the isolated worktree. Fix legitimate integration failures
+   within the approved changed paths, commit, and repeat checks/review (at most
+   three repair rounds). Dependency setup is permitted, but never hide test
+   failures or add unrelated changes. If conflicting requirements cannot be
+   reconciled confidently or checks still fail, record an Aven blocker, report
+   the operation/worktree, and stop with main untouched. Keep all artifacts.
+6. Obtain the exact combined commit SHA after review and publish it:
 
-## Reconcile and optional closure
+   ```sh
+   aven-dispatch merge --operation <operation-id> --publish \
+     --review-commit <exact-combined-sha> \
+     --review '<truthful combined acceptance and code-review evidence>'
+   ```
 
-7. After a commit, PR creation, or merge, re-read `aven context <ref> --full` and
-   review actual verification and acceptance evidence. Add a durable Aven note
-   with the outcome, the source commit/branch, target and verified merge commit
-   when applicable, checks, and remaining work. Update statuses only where
-   justified by verified acceptance; never mark unverified work done, and never
-   treat a closeout dry run as a pass. A nonzero closeout means delivery is
-   still pending or incomplete. Run
-   `aven-dispatch reconcile <ref> --workflow <workflow>` for the identified
-   attempt, then inspect its output and status: a pending Aven update or failed
-   repair is a failure even if the command exits successfully. Re-read the
-   task, because reconciliation may repair pending metadata/status. If either
-   task or dispatcher reconciliation fails, stop, report it and keep the
-   worktree and space; never proceed to integration or teardown. Repeat this
-   step after integration if it already ran after the commit.
-8. Only after a verified successful merge and successful reconciliation, use
-   `herdr-app ls` and the attempt's exact terminal/space ownership evidence to
-   identify the one associated Herdr space. Never use the currently focused
-   space as a fallback. If missing, stale or ambiguous, report and keep it. Ask
-   explicitly whether to close that specific space, explaining that closing it
-   ends its terminals, potentially including this session. The default is No.
-   Only an explicit Yes authorizes `herdr-app do space.close --id <space-id>
-   --confirmed true`; revalidate the exact association immediately beforehand.
-   Write the final handoff and outcome to Aven before closing, since this session
-   may end. Report any failure if the session remains alive.
+   The CLI reruns the recorded checks from every approval, revalidates sources,
+   target, scope and reviewed commit, then fast-forwards the clean main checkout.
+   It verifies source ancestry and applies child-first delivery closeout before
+   root closeout. Acceptance, execution and delivery remain separate; neither a
+   status word nor an open PR proves delivery. No manual metadata repair is needed.
+   If main moved during preparation, preserve this worktree and prepare/reverify
+   a new operation against the new main tip for the same unchanged approvals.
 
-Never delete a Git worktree or branch as part of this command. On cancellation,
-conflict, uncertain ownership, failure, or an open PR, retain the Herdr space.
+## Recovery and report
+
+7. If Git succeeded but Aven closeout failed, report **merged; delivery recording
+   pending**, not implementation failure. Resume the exact operation to finish
+   metadata, or let `aven-dispatch watch` retry it automatically. The watcher
+   only finalizes an already-proven journaled merge; it never initiates a merge.
+8. Report every task, approved source SHA, resulting main SHA, verification and
+   recorded delivery outcome. Stop on failure; do not claim the batch succeeded
+   merely because a source was approved or preparation exited successfully.
+
+Never push main, create a PR, close a Herdr space, or delete a Git worktree or
+branch as part of this command. OpenCode/tool permissions still apply; this
+prompt directs automatic conflict resolution, while the CLI enforces approval,
+isolation, exact-commit verification and delivery boundaries.

@@ -186,7 +186,7 @@ builder
 --terminal
 $terminal
 --text
-/ha-merge merge into local main
+/ha-merge $review_id
 EOF
 assert_eq "$(cat "$root/messages.log")" "$(cat "$root/expected-message.log")" 'exact review workflow, role and local-main handoff'
 sleep 1

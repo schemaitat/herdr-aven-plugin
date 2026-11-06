@@ -190,6 +190,16 @@ impl LockedStore {
         }
     }
 
+    /// Checkpoint a structured, resumable lifecycle operation without replacing
+    /// its identity or the publication intent of unrelated effects.
+    pub(crate) fn checkpoint_effect(&mut self, effect: &EffectRecord, state: &str, payload: &str) {
+        let mut updated = effect.clone();
+        updated.state = state.to_owned();
+        updated.payload = payload.to_owned();
+        updated.updated_at = now();
+        self.put_effect(updated);
+    }
+
     /// Record a non-success outcome without discarding the intent. `unknown`
     /// forces inspection before this operation is retried.
     pub(crate) fn fail_effect(&mut self, effect: &EffectRecord, state: &str, detail: &str) {
