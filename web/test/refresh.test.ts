@@ -7,7 +7,7 @@ import { createGraphReader } from '../server/graph.js';
 import { streamRoute } from '../server/stream.js';
 import { routes } from '../server/routes.js';
 import { secure } from '../server/security.js';
-import { config, fixture } from './fixtures.js';
+import { config, inspectSnapshot } from './fixtures.js';
 import { controlledApi, liveFixture, apiEvent } from './fixtures/opencode-api.js';
 
 const collectors: Collector[] = [];
@@ -253,23 +253,21 @@ describe('shared bounded live collector', () => {
       expect(response.statusCode).toBe(mode === 'initialize' ? 503 : 200); await app.close();
     }
   });
-  it('uses the existing read-only CLI lanes, caching contexts and retaining Aven graph during outages', async () => {
-    const data = fixture('aven'); const calls: string[] = []; let unavailable = false;
-    const readGraph = createGraphReader({ ...config, scope: { ...config.scope, core: false } }, async command => {
-      calls.push(command.kind);
+  it('uses one inspector source, retaining the Aven graph during outages', async () => {
+    let calls = 0; let unavailable = false;
+    const readGraph = createGraphReader({ ...config, scope: { ...config.scope, core: false } }, async () => {
+      calls++;
       if (unavailable) throw new Error('fixture outage');
-      if (command.kind === 'list') return command.upcoming ? [] : data.tasks;
-      if (command.kind === 'context') return data.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);
-      throw new Error('Unexpected CLI read');
+      return inspectSnapshot();
     });
     const initial = await readGraph('slow');
-    const hydration = calls.filter(call => call === 'context').length;
-    const latest = await readGraph('slow'); expect(calls.filter(call => call === 'context')).toHaveLength(hydration);
+    const latest = await readGraph('slow');
+    expect(calls).toBe(1);
     unavailable = true;
-    const outage = await readGraph('slow');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5000);
+    const outage = await readGraph('slow').finally(() => clock.mockRestore());
     expect(outage.nodes.filter(node => node.kind === 'task' || node.kind === 'epic')).toEqual(latest.nodes.filter(node => node.kind === 'task' || node.kind === 'epic'));
     expect(initial.nodes.length).toBeGreaterThan(0);
     expect(outage.health.find(item => item.source === 'aven')?.status).toBe('stale');
-    expect(calls.every(call => ['list', 'context', 'app'].includes(call))).toBe(true);
   });
 });

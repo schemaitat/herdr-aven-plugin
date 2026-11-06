@@ -6,9 +6,6 @@ import { commandVector, createRunner, type ReadCommand } from '../server/command
 import { scope, scratchRoot } from './fixtures.js';
 import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readDispatcher } from '../server/sources/dispatcher.js';
-import { avenFixture } from './fixtures.js';
-import { seedDispatcherStore } from './fixtures/dispatcher.js';
 
 const origin = 'http://127.0.0.1:4318';
 const token = 'a'.repeat(64);
@@ -79,14 +76,10 @@ describe('loopback same-origin authenticated read API', () => {
 describe('fixed source command vectors', () => {
   it('only admits fixed read shapes with explicit server-owned scope', () => {
     expect(commandVector(scope, { kind: 'projects' })).toMatchObject({ program: 'aven', args: ['project', 'list', '--workspace', 'default', '--limit', '100', '--json'], format: 'json' });
-    expect(commandVector(scope, { kind: 'list', upcoming: true })).toMatchObject({ program: 'aven', args: ['list', '--project', 'demo', '--workspace', 'default', '--limit', '500', '--json', '--upcoming'] });
     expect(commandVector(scope, { kind: 'context', ref: 'DEMO-ONE' })).toMatchObject({ program: 'aven', args: ['context', 'DEMO-ONE', '--workspace', 'default', '--json'] });
-    expect(commandVector(scope, { kind: 'core-list' })).toMatchObject({ program: 'hc', args: ['ls', '--all', '--json'], format: 'json' });
-    expect(commandVector(scope, { kind: 'worktrees' })).toMatchObject({ program: 'hc', args: ['exec', '--cwd', '/repo', 'git', 'worktree', 'list', '--porcelain'], format: 'text' });
-    expect(commandVector(scope, { kind: 'app' })).toMatchObject({ program: 'herdr-app', args: ['ls'], format: 'json' });
     expect(() => commandVector(scope, { kind: 'reconcile' } as unknown as ReadCommand)).toThrow('Unsupported');
-    expect(() => commandVector({ ...scope, project: '--all' }, { kind: 'list' })).toThrow('startup scope');
-    expect(() => commandVector({ ...scope, workspace: 'x; curl evil' }, { kind: 'list' })).toThrow('startup scope');
+    expect(() => commandVector({ ...scope, project: '--all' }, { kind: 'projects' })).toThrow('startup scope');
+    expect(() => commandVector({ ...scope, workspace: 'x; curl evil' }, { kind: 'projects' })).toThrow('startup scope');
   });
   it.each(['--help', 'ONE;touch /tmp/pwned', '../secret', 'https://evil.test', 'DEMO-ONE\n--all'])('rejects task injection %s', ref => {
     expect(() => commandVector(scope, { kind: 'context', ref })).toThrow('reference');
@@ -113,14 +106,14 @@ else setTimeout(()=>console.log('{}'), 30);
       process.env.EXPLORER_STUB_AUDIT = audit;
       process.env.EXPLORER_STUB_MODE = 'ok';
       const run = createRunner({ ...scope, cwd: temp }, { bytes: 1024, timeout: 1000, concurrency: 1 });
-      await Promise.all([run({ kind: 'list' }), run({ kind: 'context', ref: 'DEMO-ONE' }), run({ kind: 'core-list' }), run({ kind: 'worktrees' })]);
+      await Promise.all([run({ kind: 'projects' }), run({ kind: 'context', ref: 'DEMO-ONE' }), run({ kind: 'projects' }), run({ kind: 'context', ref: 'DEMO-TWO' })]);
       const calls = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-      expect(calls.map(call => call.args.slice(0, 2))).toEqual([['list', '--project'], ['context', 'DEMO-ONE'], ['ls', '--all'], ['exec', '--cwd']]);
+      expect(calls.map(call => call.args.slice(0, 2))).toEqual([['project', 'list'], ['context', 'DEMO-ONE'], ['project', 'list'], ['context', 'DEMO-TWO']]);
       for (let i = 1; i < calls.length; i++) expect(calls[i].time - calls[i - 1].time).toBeGreaterThanOrEqual(25);
       expect(JSON.stringify(calls)).not.toMatch(/reconcile|--running|edit|prompt|create|focus|remove|add/);
       // Separate project runners must not multiply the process-wide four-command budget.
       const runners = Array.from({ length: 4 }, (_, i) => createRunner({ ...scope, cwd: temp, project: `p${i}` }));
-      await Promise.all(Array.from({ length: 12 }, (_, i) => runners[i % 4]({ kind: 'list' })));
+      await Promise.all(Array.from({ length: 12 }, (_, i) => runners[i % 4]({ kind: 'projects' })));
       const sharedCalls = (await readFile(audit, 'utf8')).trim().split('\n').slice(4).map(line => JSON.parse(line));
       expect(sharedCalls).toHaveLength(12);
       for (let i = 4; i < sharedCalls.length; i++) expect(sharedCalls[i].time - sharedCalls[i - 4].time).toBeGreaterThanOrEqual(25);
@@ -128,27 +121,20 @@ else setTimeout(()=>console.log('{}'), 30);
       const discovery = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).at(-1);
       expect(discovery.args).toEqual(['project', 'list', '--workspace', 'default', '--limit', '100', '--json']);
       process.env.EXPLORER_STUB_MODE = 'large';
-      await expect(run({ kind: 'list' })).rejects.toThrow('output limit');
+      await expect(run({ kind: 'projects' })).rejects.toThrow('output limit');
       process.env.EXPLORER_STUB_MODE = 'stderr';
-      await expect(run({ kind: 'list' })).rejects.toThrow('output limit');
+      await expect(run({ kind: 'projects' })).rejects.toThrow('output limit');
       process.env.EXPLORER_STUB_MODE = 'malformed';
-      await expect(run({ kind: 'list' })).rejects.toThrow('Malformed');
+      await expect(run({ kind: 'projects' })).rejects.toThrow('Malformed');
       process.env.EXPLORER_STUB_MODE = 'timeout';
-      await expect(createRunner({ ...scope, cwd: temp }, { bytes: 1024, timeout: 80, concurrency: 1 })({ kind: 'list' })).rejects.toThrow('timeout');
+      await expect(createRunner({ ...scope, cwd: temp }, { bytes: 1024, timeout: 80, concurrency: 1 })({ kind: 'projects' })).rejects.toThrow('timeout');
       const controller = new AbortController();
       const cancellable = createRunner({ ...scope, cwd: temp }, { bytes: 1024, timeout: 4000, concurrency: 1 }, controller.signal);
-      const running = cancellable({ kind: 'list' });
-      const queued = cancellable({ kind: 'list' });
+      const running = cancellable({ kind: 'projects' });
+      const queued = cancellable({ kind: 'projects' });
       const settled = Promise.allSettled([running, queued]);
       setTimeout(() => controller.abort(), 30);
       expect((await settled).every(result => result.status === 'rejected')).toBe(true);
-      const store = join(temp, 'dispatch.sqlite');
-      seedDispatcherStore(store);
-      const original = await readFile(store);
-      const read = await readDispatcher(store, avenFixture());
-      expect(read.attempts).toHaveLength(2);
-      expect(await readFile(store)).toEqual(original);
-      await expect(access(join(temp, 'state.lock'))).rejects.toThrow();
     } finally {
       process.env.PATH = previousPath;
       if (previousMode === undefined) delete process.env.EXPLORER_STUB_MODE; else process.env.EXPLORER_STUB_MODE = previousMode;

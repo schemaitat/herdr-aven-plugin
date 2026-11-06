@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { identifier, type Scope } from './commands.js';
 import { z } from 'zod';
 
-export interface ProjectConfig { scope: Scope; primary: string; storePath: string; terminalsPath: string; projectCheckouts: ReadonlyMap<string, string> }
+export interface ProjectConfig { scope: Scope; primary: string; storePath: string; projectCheckouts: ReadonlyMap<string, string> }
 
 export async function projectConfig(config: ProjectConfig, project: string): Promise<ProjectConfig> {
   if (project === config.scope.project) return config;
@@ -69,5 +69,5 @@ export async function startupConfig(env = process.env, cwd = resolve(process.cwd
     core: true, session: env.HERDR_APP_HOME ?? 'herdr-app',
   };
   const storePath = dispatcherStorePath(env, cwd);
-  return { scope, primary, storePath, terminalsPath: join(dirname(storePath), 'terminals.json'), projectCheckouts: await configuredProjectCheckouts(env.UI_PROJECT_CHECKOUTS) };
+  return { scope, primary, storePath, projectCheckouts: await configuredProjectCheckouts(env.UI_PROJECT_CHECKOUTS) };
 }

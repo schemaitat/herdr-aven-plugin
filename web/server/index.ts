@@ -27,7 +27,7 @@ const manager = projectManager(projectRegistry(config.scope, run), async project
   const reader = createRunner(scoped.scope, undefined, controller.signal);
   // Each collector owns its own event connection. Closing one cannot cancel another's stream.
   const api = createOpenCodeSource();
-  const collector = createCollector(createGraphReader(scoped, reader), api, { project, workspace: config.scope.workspace });
+  const collector = createCollector(createGraphReader(scoped), api, { project, workspace: config.scope.workspace });
   const logs = createLogs(api, reader, config.scope.workspace);
   return { collector, logs, async close() { controller.abort(); logs.close(); await collector.close(); } };
 });

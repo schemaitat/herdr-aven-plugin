@@ -5,7 +5,7 @@ import type { Activity, SourceHealth } from '../../shared/graph.js';
 import { ACTIVITY_TTL } from '../activity.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { boundedJsonFile } from './dispatcher.js';
+import { boundedJsonFile } from './bounded.js';
 
 const sessionID = /^ses_[A-Za-z0-9_-]{1,128}$/;
 const activeSchema = z.record(z.string(), z.object({ type: z.literal('running') }));

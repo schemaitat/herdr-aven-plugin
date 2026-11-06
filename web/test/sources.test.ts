@@ -1,164 +1,69 @@
 import { describe, expect, it } from 'vitest';
-import { avenSource, taskSchema } from '../server/sources/aven.js';
-import { readDispatcher, boundedJsonFile } from '../server/sources/dispatcher.js';
-import { readCore } from '../server/sources/core.js';
-import { parsePorcelain, readWorktrees } from '../server/sources/worktrees.js';
-import { readApp } from '../server/sources/app.js';
-import { configuredProjectCheckouts, primaryCheckout, startupConfig } from '../server/config.js';
-import { fixture, scope, avenFixture, scratchRoot } from './fixtures.js';
-import { dispatcherAttempts, dispatcherFixture } from './fixtures/dispatcher.js';
-import { LIST_LIMIT, type ReadCommand, type Runner } from '../server/commands.js';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { executeInspect, inspectSources, snapshotSchema, createInspectSource, unavailableSources } from '../server/sources/inspect.js';
+import { configuredProjectCheckouts, primaryCheckout, startupConfig } from '../server/config.js';
+import { boundedJsonFile } from '../server/sources/bounded.js';
+import { config, inspectSnapshot as snapshot, scratchRoot, scope } from './fixtures.js';
 
-describe('Aven scoped bounded source', () => {
-  it('retains optional created/updated source dates without requiring them in older records', () => {
-    const task = fixture('aven').tasks[0];
-    expect(taskSchema.parse({ ...task, created_at: '2026-01-01T00:00:00Z' }).created_at).toBe('2026-01-01T00:00:00Z');
-    const { created_at, updated_at, ...old } = task;
-    expect(taskSchema.parse(old)).toMatchObject({ created_at: '', updated_at: '' });
+describe('inspector contract client', () => {
+  it('maps the single inspector snapshot into dashboard graph inputs', () => {
+    const sources = inspectSources(snapshot(), config);
+    expect(sources.aven.tasks.map(task => task.ref)).toEqual(['DEMO-ROOT', 'DEMO-ONE', 'DEMO-TWO']);
+    expect(sources.aven.contexts.get('TASK01')?.related).toEqual([{ id: 'TASK02', display_ref: 'DEMO-TWO' }]);
+    expect(sources.aven.tasks[0].created_at).toBe('');
+    expect(sources.dispatcher.attempts.map(item => item.attempt.workflow).sort()).toEqual(['implementation', 'planning']);
+    expect(sources.dispatcher.attempts[0].attempt.terminals.coordinator.state).toBe('live');
+    expect(sources.core.core.id).toBe('core-1');
+    expect(sources.core.terminals.map(terminal => terminal.address)).toEqual(['t1', 't2', 't3', 't9']);
+    expect(sources.worktrees.primary).toBe('/repo');
+    expect(sources.worktrees.worktrees.map(tree => tree.branch)).toEqual(['refs/heads/main', 'refs/heads/phase1']);
+    expect(sources.app.placements[0]).toMatchObject({ terminal: 't1', spaceName: 'demo' });
   });
-  const data = fixture('aven');
-  const runner = (commands: ReadCommand[]): Runner => async command => {
-    commands.push(command);
-    if (command.kind === 'list') return command.upcoming ? [data.tasks[2]] : data.tasks.slice(0, 2);
-    if (command.kind === 'context') return data.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);
-    throw new Error('Unexpected command');
-  };
-  it('includes deferred tasks, hydrates relations, caches and never requests outside boundary details', async () => {
-    const calls: ReadCommand[] = [];
-    const source = avenSource(scope, runner(calls));
-    const result = await source();
-    expect(result.tasks).toHaveLength(3);
-    expect(result.contexts.size).toBe(3);
-    expect(result.health.status).toBe('ok');
-    await source();
-    expect(calls.filter(command => command.kind === 'context')).toHaveLength(3);
-    expect(calls).not.toContainEqual({ kind: 'context', ref: 'OTHER-ONE' });
-    expect(calls.filter(command => command.kind === 'list')).toHaveLength(4);
-  });
-  it('rotates bounded hydration and reports partial coverage', async () => {
-    const source = avenSource(scope, runner([]), 1);
-    expect((await source()).health.status).toBe('incomplete');
-    await source();
-    expect((await source()).contexts.size).toBe(3);
-  });
-  it('reports capped lists rather than claiming full coverage', async () => {
-    const result = await avenSource(scope, async command => command.kind === 'list' ? Array.from({ length: LIST_LIMIT }, (_, i) => ({ ...data.tasks[0], id: `ID${i}`, ref: `DEMO-N${i}` })) : {}, 0)();
-    expect(result.health.status).toBe('incomplete');
-    expect(result.health.message).toContain(String(LIST_LIMIT));
-  });
-  it.each([null, { tasks: [] }, [{ id: 42 }]])('degrades malformed lists %j', async malformed => {
-    expect((await avenSource(scope, async () => malformed)()).health.status).toBe('unavailable');
-  });
-  it('degrades timeouts without disclosing command stderr', async () => {
-    const result = await avenSource(scope, async () => { throw new Error('SECRET error'); })();
-    expect(result.health.status).toBe('unavailable');
-    expect(JSON.stringify(result)).not.toContain('SECRET');
-  });
-  it('rejects wrong project and wrong immutable task context identity', async () => {
-    const source = avenSource(scope, async command => command.kind === 'list' ? [data.tasks[0], { ...data.tasks[1], project: 'private' }] : data.contexts[1]);
-    const result = await source();
-    expect(result.tasks).toHaveLength(1);
-    expect(result.contexts.size).toBe(0);
-    expect(result.health.status).toBe('incomplete');
-  });
-});
 
-describe('dispatcher immutable snapshots', () => {
-  it('strips invocations, prompts and credentials while retaining separate workflows', async () => {
-    const result = await readDispatcher('/unused', avenFixture(), async () => dispatcherAttempts());
-    expect(result.attempts).toHaveLength(2);
-    expect(JSON.stringify(result)).not.toContain('NEVER_EXPOSE');
-    expect(result.attempts.map(value => value.attempt.workflow).sort()).toEqual(['implementation', 'planning']);
+  it('isolates topology for a project without a configured checkout', () => {
+    const raw = snapshot();
+    raw.scope.project = 'other';
+    const sources = inspectSources(raw, { ...config, scope: { ...scope, project: 'other', core: false } });
+    expect(sources.core.terminals).toHaveLength(0);
+    expect(sources.worktrees.worktrees).toHaveLength(0);
+    expect(sources.app.placements).toHaveLength(0);
+    expect(sources.core.health.status).toBe('unavailable');
   });
-  it('recovers absent store from Aven metadata and prefers same-attempt local phase updates', async () => {
-    const aven = avenFixture();
-    const store = dispatcherFixture();
-    const attempt = store.attempts['ROOT01:implementation'];
-    aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify({ ...attempt, state: 'older' });
-    const recovered = await readDispatcher('/missing', aven, async () => { throw new Error('ENOENT'); });
-    expect(recovered.attempts[0].origin).toBe('aven-recovery');
-    expect(recovered.health.status).toBe('unavailable');
-    const merged = await readDispatcher('/store', aven, async () => dispatcherAttempts(store));
-    expect(merged.attempts.find(value => value.attempt.workflow === 'implementation')?.attempt.state).toBe('running');
-  });
-  it('rejects obsolete reset generations and incomplete resets', async () => {
-    const aven = avenFixture();
-    aven.contexts.get('ROOT01')!.metadata['dispatch.reset-generation'] = '1';
-    expect((await readDispatcher('/store', aven, async () => dispatcherAttempts())).attempts).toHaveLength(0);
-    aven.contexts.get('ROOT01')!.metadata['dispatch.reset-generation'] = '0';
-    aven.contexts.get('ROOT01')!.metadata['dispatch.reset-state'] = 'incomplete';
-    expect((await readDispatcher('/store', aven, async () => dispatcherAttempts())).attempts).toHaveLength(0);
-  });
-  it('rejects owner/workflow mismatches and unsupported execution modes', async () => {
-    const aven = avenFixture();
-    const attempt = dispatcherFixture().attempts['ROOT01:implementation'];
-    aven.contexts.get('TASK01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify(attempt);
-    aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.planning'] = JSON.stringify(attempt);
-    const result = await readDispatcher('/store', aven, async () => [{ ...attempt, execution_mode: 'shell' }]);
-    expect(result.attempts).toHaveLength(0);
-    expect(result.health.status).toBe('incomplete');
-  });
-  it('does not import unrelated store tasks', async () => {
-    const result = await readDispatcher('/store', avenFixture(), async () => [{ ...dispatcherFixture().attempts['ROOT01:planning'], task_id: 'PRIVATE' }]);
-    expect(result.attempts).toHaveLength(0);
-  });
-});
 
-describe('herdr-core and optional app topology', () => {
-  const data = fixture('core');
-  it('reads the bounded dispatcher inventory without raw screens or control authority', async () => {
-    const temp = await mkdtemp(join(scratchRoot, 'core-inventory-'));
+  it('rejects a scope mismatch instead of mixing projects', () => {
+    expect(() => inspectSources(snapshot(), { ...config, scope: { ...scope, project: 'other' } })).toThrow('scope mismatch');
+  });
+
+  it('degrades missing or incompatible output to unavailable sources', async () => {
+    const read = createInspectSource(config, async () => ({ schema: 'wrong' }));
+    const sources = await read();
+    expect(sources.aven.health.status).toBe('unavailable');
+    expect(sources.dispatcher.attempts).toHaveLength(0);
+    expect(sources.core.terminals).toHaveLength(0);
+    expect(unavailableSources(config).aven.health.status).toBe('unavailable');
+  });
+
+  it('runs the configured binary with the authorized scope and --no-api', async () => {
+    const temp = await mkdtemp(join(scratchRoot, 'inspect-bin-'));
     try {
-      const path = join(temp, 'terminals.json');
-      await writeFile(path, JSON.stringify(data));
-      const result = await readCore(scope, path, async () => { throw new Error('no command expected'); });
-      expect(result.terminals).toHaveLength(4);
-      expect(result.health.status).toBe('ok');
-      expect(result.health.message).toContain('observation');
-      expect(JSON.stringify(result)).not.toContain('PRIVATE');
-    } finally { await rm(temp, { recursive: true, force: true }); }
+      const log = join(temp, 'args');
+      const binary = join(temp, 'inspect');
+      await writeFile(binary, `#!/bin/sh\nprintf '%s\\n' "$*" > '${log}'\ncat <<'JSON'\n${JSON.stringify(snapshot())}\nJSON\n`);
+      await chmod(binary, 0o755);
+      const result = await executeInspect({ ...config, scope: { ...scope, cwd: temp } }, { UI_INSPECT_BIN: binary });
+      expect(snapshotSchema.parse(result).schema).toBe('aven-dispatch-inspect/v1');
+      const text = await readFile(log, 'utf8');
+      expect(text).toContain('inspect');
+      expect(text).toContain('--no-api');
+      expect(text).toContain('--project');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
   });
-  it('falls back to a minimal live hc listing without ownership labels', async () => {
-    const result = await readCore(scope, undefined, async command => {
-      if (command.kind === 'core-list') return { terminals: [{ address: 't1', agent: 'opencode', state: 'live', status: 'working', turn: 2 }] };
-      if (command.kind === 'core-status') return { core: { id: 'core-1', name: 'local' }, version: '0.1.15' };
-      throw new Error('Unexpected command');
-    });
-    expect(result.terminals[0].address).toBe('t1');
-    expect(result.core.id).toBe('core-1');
-    expect(result.health.status).toBe('incomplete');
-  });
-  it('does not invoke herdr-core when the project disables it', async () => {
-    let called = false;
-    const result = await readCore({ ...scope, core: false }, undefined, async () => { called = true; });
-    expect(called).toBe(false);
-    expect(result.health.status).toBe('unavailable');
-  });
-  it.each([null, {}, { schema: 'wrong', terminals: [] }])('degrades malformed inventories %j', async malformed => {
-    const temp = await mkdtemp(join(scratchRoot, 'core-malformed-'));
-    try {
-      const path = join(temp, 'terminals.json');
-      await writeFile(path, JSON.stringify(malformed));
-      expect((await readCore(scope, path, async () => { throw new Error('unavailable'); })).health.status).toBe('unavailable');
-    } finally { await rm(temp, { recursive: true, force: true }); }
-  });
-  it('reads worktree inventory through hc and rejects another repository', async () => {
-    const porcelain = 'worktree /repo\nHEAD deadbeef\nbranch refs/heads/main\n\nworktree /repo-phase1\nHEAD feedface\nbranch refs/heads/phase1\n';
-    expect(parsePorcelain(porcelain)).toHaveLength(2);
-    const result = await readWorktrees(scope, '/repo', async () => porcelain);
-    expect(result.worktrees[1].branch).toBe('refs/heads/phase1');
-    expect(result.health.status).toBe('ok');
-    expect((await readWorktrees(scope, '/other', async () => porcelain)).health.status).toBe('unavailable');
-  });
-  it('treats app placement as optional and separate from core facts', async () => {
-    const result = await readApp(scope, async () => fixture('app'));
-    expect(result.placements).toHaveLength(4);
-    expect(result.health.status).toBe('ok');
-    const unavailable = await readApp(scope, async () => { throw new Error('closed'); });
-    expect(unavailable.health.status).toBe('unavailable');
-    expect(unavailable.placements).toHaveLength(0);
+
+  it('reports a missing inspector executable without falling back to another parser', async () => {
+    await expect(executeInspect(config, { UI_INSPECT_BIN: '/no/such/inspector' })).rejects.toThrow('unavailable');
   });
 });
 
@@ -167,20 +72,20 @@ it('resolves linked primary checkout and explicit relative store without opening
   try {
     const primary = join(temp, 'primary');
     const linked = join(temp, 'phase');
-    await mkdir(join(primary, '.git/worktrees/phase'), { recursive: true });
+    await mkdir(primary);
     await mkdir(linked);
-    await writeFile(join(linked, '.git'), `gitdir: ${primary}/.git/worktrees/phase\n`);
-    await writeFile(join(primary, '.git/worktrees/phase/commondir'), '../..\n');
-    expect(await primaryCheckout(linked)).toBe(primary);
+    await writeFile(join(temp, 'data.json'), JSON.stringify({ valid: true }));
+    expect(await primaryCheckout(linked)).toBe(linked);
     const config = await startupConfig({ AVEN_DISPATCH_STORE: 'custom/dispatch.sqlite', UI_PROJECT_CHECKOUTS: JSON.stringify({ other: primary }) }, linked);
     expect(config.storePath).toBe(join(linked, 'custom/dispatch.sqlite'));
     expect(config.projectCheckouts.get('other')).toBe(primary);
     expect((await startupConfig({ XDG_STATE_HOME: join(temp, 'state') }, linked)).storePath).toBe(join(temp, 'state/aven/dispatch.sqlite'));
-    await writeFile(join(temp, 'data.json'), JSON.stringify({ valid: true }));
     expect(await boundedJsonFile(join(temp, 'data.json'))).toEqual({ valid: true });
     await expect(boundedJsonFile(join(temp, 'data.json'), 2)).rejects.toThrow('bounds');
+    await configuredProjectCheckouts(JSON.stringify({ demo: temp }));
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
+
 it('accepts only bounded absolute server-configured project checkout mappings', async () => {
   const temp = await mkdtemp(join(scratchRoot, 'explorer-config-'));
   try {

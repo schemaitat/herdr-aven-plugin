@@ -7,14 +7,12 @@ import { streamRoute } from '../server/stream.js';
 import { secure } from '../server/security.js';
 import { createGraphReader } from '../server/graph.js';
 import { projectConfig } from '../server/config.js';
-import { readDispatcher } from '../server/sources/dispatcher.js';
 import { createLogs, scopeKey, pageCursor } from '../server/logs.js';
 import { createOpenCodeSource } from '../server/sources/opencode.js';
-import { config, scope, fixture, avenFixture, scratchRoot } from './fixtures.js';
+import { config, scope, scratchRoot, inspectSnapshot } from './fixtures.js';
 import { apiEvent, liveFixture } from './fixtures/opencode-api.js';
 import type { GraphSnapshot } from '../shared/graph.js';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { dispatcherFixture, seedDispatcherStore } from './fixtures/dispatcher.js';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const managers: ProjectManager[] = [];
@@ -100,67 +98,48 @@ describe('leased project collection', () => {
     const lease = await reading; lease.release(); await closing;
     expect(source.close).toHaveBeenCalledTimes(1);
   });
-  it('unconfigured store keeps scoped recovery; non-startup projects never borrow startup topology', async () => {
-    const readStore = vi.fn(async () => { throw new Error('must not read'); });
-    const aven = avenFixture();
-    aven.contexts.get('ROOT01')!.metadata['dispatch.attempt.implementation'] = JSON.stringify(dispatcherFixture().attempts['ROOT01:implementation']);
-    const recovered = await readDispatcher(undefined, aven, readStore);
-    expect(readStore).not.toHaveBeenCalled(); expect(recovered.attempts.length).toBeGreaterThan(0);
-    expect(recovered.health.message).toContain('not configured');
-    const data = fixture('aven'); const calls: string[] = [];
-    const read = createGraphReader(await projectConfig(config, 'other'), async command => {
-      calls.push(command.kind);
-      if (command.kind === 'list') return command.upcoming ? [] : data.tasks.map((task: object) => ({ ...task, project: 'other' }));
-      if (command.kind === 'context') return data.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref); // deliberately wrong project
-      throw new Error('Unexpected topology read');
-    });
+  it('scopes the inspector per project and isolates topology for unmapped projects', async () => {
+    const read = createGraphReader(await projectConfig(config, 'other'), async scoped => ({
+      ...inspectSnapshot(), scope: { ...inspectSnapshot().scope, project: scoped.scope.project },
+    }));
     await read('fast'); const snapshot = await read('slow');
-    expect(calls.every(kind => ['list', 'context', 'app'].includes(kind))).toBe(true);
-    expect(snapshot.scope.project).toBe('other'); expect(snapshot.nodes.some(node => node.kind === 'attempt')).toBe(false);
-    expect(snapshot.health.find(item => item.source === 'worktrees')?.status).toBe('unavailable');
+    expect(snapshot.scope.project).toBe('other');
+    expect(snapshot.nodes.some(node => node.kind === 'attempt')).toBe(true);
+    expect(snapshot.nodes.some(node => node.kind === 'agent')).toBe(true);
+    expect(snapshot.nodes.some(node => node.kind === 'session')).toBe(true);
+    expect(snapshot.edges.some(edge => edge.kind === 'session')).toBe(true);
+    expect(snapshot.edges.some(edge => edge.kind === 'assigned' && edge.source.startsWith('task:default:ROOT01'))).toBe(true);
+
+    // An unmapped project has no checkout, so inspector topology is stripped
+    // even if the underlying Aven project exists.
+    const unmapped = await projectConfig(config, 'three');
+    const isolated = createGraphReader(unmapped, async scoped => ({
+      ...inspectSnapshot(), scope: { ...inspectSnapshot().scope, project: scoped.scope.project },
+    }));
+    await isolated('fast'); const isolatedGraph = await isolated('slow');
+    expect(isolatedGraph.health.find(item => item.source === 'core')?.status).toBe('unavailable');
+    expect(isolatedGraph.health.find(item => item.source === 'worktrees')?.status).toBe('unavailable');
   });
-  it('reads the shared central store for every configured project and links its accepted attempt, agent and session', async () => {
+  it('passes the shared store and authorized checkout to the inspector for every configured project', async () => {
     const root = await mkdtemp(join(scratchRoot, 'explorer-project-store-'));
     try {
       const startup = join(root, 'startup'); const selected = join(root, 'selected');
       const central = join(root, 'state', 'aven', 'dispatch.sqlite');
       await mkdir(startup); await mkdir(selected);
-      seedDispatcherStore(central);
-      const selectedData = fixture('aven');
-      selectedData.tasks = selectedData.tasks.map((task: object) => ({ ...task, project: 'other' }));
-      selectedData.contexts = selectedData.contexts.map((context: { project: object }) => ({ ...context, project: { key: 'other' } }));
-      const runner = async (command: { kind: string; upcoming?: boolean; ref?: string }) => {
-        if (command.kind === 'list') return command.upcoming ? [] : selectedData.tasks;
-        if (command.kind === 'context') return selectedData.contexts.find((context: { task: { display_ref: string } }) => context.task.display_ref === command.ref);
-        throw new Error('Unexpected command');
-      };
-      const base = { scope: { ...scope, cwd: startup }, primary: startup, storePath: central, terminalsPath: join(central, '..', 'terminals.json'), projectCheckouts: new Map([['other', selected]]) };
-      const read = createGraphReader(await projectConfig(base, 'other'), runner);
-      await read('fast'); const selectedGraph = await read('slow');
-      const attempt = selectedGraph.nodes.find(node => node.kind === 'attempt');
-      expect(attempt?.details.taskId).toBe('ROOT01');
-      expect(selectedGraph.nodes.some(node => node.kind === 'agent')).toBe(true);
-      expect(selectedGraph.nodes.some(node => node.kind === 'session')).toBe(true);
-      expect(selectedGraph.edges.some(edge => edge.kind === 'session')).toBe(true);
-      expect(selectedGraph.edges.some(edge => edge.kind === 'assigned' && edge.source.startsWith('task:default:ROOT01'))).toBe(true);
-
-      // An unmapped project still resolves the shared central store; its Aven
-      // identity and Herdr topology remain scoped, so unrelated attempts do not
-      // attach to it.
-      const unmapped = await projectConfig(base, 'three');
-      expect(unmapped.storePath).toBe(central);
-      const isolated = createGraphReader(unmapped, runner);
-      await isolated('fast'); expect((await isolated('slow')).nodes.some(node => node.kind === 'attempt')).toBe(false);
-
-      selectedData.contexts[0].metadata['dispatch.reset-generation'] = '1';
-      const stale = createGraphReader(await projectConfig(base, 'other'), runner);
-      await stale('fast'); expect((await stale('slow')).nodes.some(node => node.kind === 'attempt')).toBe(false);
-
-      await writeFile(central, '{ malformed');
-      delete selectedData.contexts[0].metadata['dispatch.reset-generation'];
-      const failed = createGraphReader(await projectConfig(base, 'other'), runner);
-      await failed('fast'); const failedGraph = await failed('slow');
+      const base = { scope: { ...scope, cwd: startup }, primary: startup, storePath: central, projectCheckouts: new Map([['other', selected]]) };
+      const calls: string[] = [];
+      const scoped = await projectConfig(base, 'other');
+      const read = createGraphReader(scoped, async cfg => {
+        calls.push(`${cfg.scope.project}:${cfg.storePath}:${cfg.scope.cwd}`);
+        return { ...inspectSnapshot(), scope: { ...inspectSnapshot().scope, project: cfg.scope.project, repository: cfg.primary } };
+      });
+      await read('slow');
+      expect(calls).toEqual([`other:${central}:${selected}`]);
+      expect((await projectConfig(base, 'three')).storePath).toBe(central);
+      const failed = createGraphReader(scoped, async () => { throw new Error('malformed'); });
+      const failedGraph = await failed('slow');
       expect(failedGraph.health.find(item => item.source === 'dispatcher')).toMatchObject({ status: 'unavailable' });
+      expect(failedGraph.nodes.some(node => node.kind === 'attempt')).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
