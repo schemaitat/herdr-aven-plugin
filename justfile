@@ -55,6 +55,7 @@ test-e2e:
 
 check:
     cargo check --workspace
+    cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
     cargo fmt --check

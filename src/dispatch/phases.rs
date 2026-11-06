@@ -227,13 +227,11 @@ pub(crate) fn advance_worktree_phases(
             changed = true;
         }
     }
-    if changed {
-        if let Err(error) = write_aven_links(&attempt.aven, attempt, store) {
-            attempt.aven_update_pending = true;
-            store_attempt(store, attempt.clone());
-            store.save()?;
-            eprintln!("phase synchronization remains pending: {error:#}");
-        }
+    if changed && let Err(error) = write_aven_links(&attempt.aven, attempt, store) {
+        attempt.aven_update_pending = true;
+        store_attempt(store, attempt.clone());
+        store.save()?;
+        eprintln!("phase synchronization remains pending: {error:#}");
     }
     Ok(changed)
 }

@@ -19,6 +19,10 @@ use super::scope::source_error;
 use crate::inspect::model::*;
 use crate::process::{now, run_bounded};
 
+/// Hydrated contexts keyed by immutable task id, with the `updated_at` they
+/// were observed at.
+pub(super) type ContextMap = BTreeMap<String, (AvenContext, u64)>;
+
 #[derive(Debug, Deserialize)]
 pub(super) struct AvenProject {
     pub(super) key: String,
@@ -206,7 +210,7 @@ pub(super) fn test_context(metadata: BTreeMap<String, Value>) -> AvenContext {
 
 struct AvenRead {
     tasks: Vec<TaskRecord>,
-    contexts: BTreeMap<String, (AvenContext, u64)>,
+    contexts: ContextMap,
     health: SourceHealth,
 }
 
@@ -243,11 +247,7 @@ pub(super) fn read_aven(
     cache: &ContextCache,
     priority_task: Option<&str>,
     secrets: &[String],
-) -> Result<(
-    Vec<TaskRecord>,
-    BTreeMap<String, (AvenContext, u64)>,
-    SourceHealth,
-)> {
+) -> Result<(Vec<TaskRecord>, ContextMap, SourceHealth)> {
     let (available, upcoming) = thread::scope(|threads| {
         let available = threads.spawn(|| read_list(scope, false, secrets));
         let upcoming = threads.spawn(|| read_list(scope, true, secrets));
@@ -405,10 +405,7 @@ fn pending_tasks<'a>(
 
 /// Contexts that still match the currently listed `updated_at`, so a failed or
 /// skipped refresh is never served as fresh evidence.
-fn cached_contexts(
-    tasks: &[AvenTask],
-    entries: &BTreeMap<String, CachedContext>,
-) -> BTreeMap<String, (AvenContext, u64)> {
+fn cached_contexts(tasks: &[AvenTask], entries: &BTreeMap<String, CachedContext>) -> ContextMap {
     tasks
         .iter()
         .filter_map(|task| {
@@ -425,7 +422,7 @@ fn hydrate_contexts(
     cache: &ContextCache,
     priority_task: Option<&str>,
     secrets: &[String],
-) -> (BTreeMap<String, (AvenContext, u64)>, bool, bool) {
+) -> (ContextMap, bool, bool) {
     let (selected, capped) = {
         let entries = cache.lock();
         let pending = pending_tasks(tasks, &entries, now(), priority_task);
@@ -533,7 +530,7 @@ fn read_context(reference: &str, scope: &Scope, secrets: &[String]) -> Result<(A
 
 fn build_task_records(
     tasks: &[AvenTask],
-    contexts: &BTreeMap<String, (AvenContext, u64)>,
+    contexts: &ContextMap,
     secrets: &[String],
 ) -> Vec<TaskRecord> {
     let hydrated_ids = contexts.keys().cloned().collect::<BTreeSet<_>>();

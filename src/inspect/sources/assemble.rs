@@ -567,7 +567,7 @@ mod tests {
     fn one_to_many_roles_and_pane_less_sessions_are_preserved() {
         let attempt = attempt_record();
         let panes = vec![pane("w1:p1"), pane("w1:p2")];
-        let (sessions, warnings) = link_sessions(&[attempt.clone()], &panes);
+        let (sessions, warnings) = link_sessions(std::slice::from_ref(&attempt), &panes);
         assert!(warnings.is_empty());
         let roles = sessions
             .iter()
