@@ -19,7 +19,6 @@ chmod +x "$fake/herdr-app"
 
 out=$(PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh")
 assert_contains "$out" "installed: mods/aven-tasks" "overlay mod installed"
-assert_contains "$out" "installed: mods/aven-worktree" "worktree panel mod installed"
 assert_contains "$out" "installed: mods/aven-panel" "browser mod installed"
 assert_contains "$out" "installed: mods/aven-kanban" "Kanban mod installed"
 assert_contains "$out" "installed: mods/aven-panel-tabs" "selector mod installed"
@@ -28,10 +27,7 @@ assert_contains "$out" "kept: ctrl-shift-a -> mod.open:other" "existing binding 
 assert_contains "$out" "kept: ctrl-shift-h -> mod.open:picker" "existing Kanban chord is preserved"
 [ -f "$app_home/mods/aven-tasks/main.js" ] || fail 'mod main.js not installed'
 [ -f "$app_home/mods/aven-tasks/mod.json" ] || fail 'mod.json not installed'
-[ -f "$app_home/mods/aven-worktree/main.js" ] || fail 'worktree panel main.js not installed'
-[ -f "$app_home/mods/aven-worktree/mod.json" ] || fail 'worktree panel mod.json not installed'
-assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "plan", "Plan")' 'plan tab installed'
-assert_file_contains "$app_home/mods/aven-worktree/main.js" 'this.tab(t, "implementation", "Implementation")' 'implementation tab installed'
+[ ! -e "$app_home/mods/aven-worktree" ] || fail 'retired worktree panel must not be installed'
 [ -f "$app_home/mods/aven-panel/main.js" ] || fail 'browser main.js not installed'
 [ -f "$app_home/mods/aven-kanban/main.js" ] || fail 'Kanban main.js not installed'
 [ -f "$app_home/mods/aven-kanban/logic.js" ] || fail 'Kanban logic.js not installed'
@@ -47,8 +43,14 @@ assert_file_contains "$app_home/keys.json" '"mod:aven-kanban"' 'Kanban key secti
 assert_file_contains "$app_home/keys.json" '"m": "aven-kanban.merge"' 'Kanban merge key installed'
 [ -f "$app_home/keys.json.aven-backup" ] || fail 'changed keys need a backup'
 
+# An upgrade removes the retired plugin-owned panel but leaves a foreign one.
+mkdir -p "$app_home/mods/aven-worktree"
+printf '%s\n' 'const view = div().id("aven-worktree");' > "$app_home/mods/aven-worktree/main.js"
+printf '%s\n' '{ "place": "none", "title": "Aven" }' > "$app_home/mods/aven-worktree/mod.json"
 before=$(cat "$app_home/keys.json")
-PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" >/dev/null
+retired_out=$(PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh")
+assert_contains "$retired_out" "removed: mods/aven-worktree" "retired worktree panel is removed on upgrade"
+[ ! -e "$app_home/mods/aven-worktree" ] || fail 'retired worktree panel directory must be gone'
 assert_eq "$(cat "$app_home/keys.json")" "$before" 'reinstall leaves keys unchanged'
 
 fresh=$work/fresh
@@ -83,6 +85,14 @@ if PATH="$fake:$PATH" HERDR_APP_HOME=$foreign_kanban sh "$PLUGIN_ROOT/scripts/in
 fi
 assert_file_contains /tmp/install-kanban-foreign.log 'refusing to overwrite foreign asset' 'foreign Kanban collision is reported'
 assert_file_contains "$foreign_kanban/mods/aven-kanban/main.js" 'not ours' 'foreign Kanban stays unchanged'
+
+foreign_worktree=$work/foreign-worktree
+mkdir -p "$foreign_worktree/mods/aven-worktree"
+printf 'not ours\n' > "$foreign_worktree/mods/aven-worktree/main.js"
+printf '{ "title": "Aven" }\n' > "$foreign_worktree/mods/aven-worktree/mod.json"
+PATH="$fake:$PATH" HERDR_APP_HOME=$foreign_worktree sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" >/tmp/install-worktree-foreign.out 2>/tmp/install-worktree-foreign.log
+assert_file_contains /tmp/install-worktree-foreign.log 'leaving unrecognised mods/aven-worktree' 'foreign worktree directory is reported'
+assert_file_contains "$foreign_worktree/mods/aven-worktree/main.js" 'not ours' 'foreign worktree directory stays unchanged'
 
 foreign_layout=$work/foreign-layout
 mkdir -p "$foreign_layout/layouts"

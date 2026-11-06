@@ -24,19 +24,19 @@ just install
 
 `just install` builds and installs `aven-dispatch` with Cargo, writes the Aven
 commands, installs the global OpenCode `/approve` and `/ha-merge` commands and the
-`herdr-aven-tasks` skill, and installs `mods/aven-tasks`,
-`mods/aven-worktree`, `mods/aven-panel`, `mods/aven-kanban`,
-`mods/aven-panel-tabs`, and the personal `layouts/aven-right.json` into
-`$HERDR_APP_HOME` (or `~/.config/herdr-app`), and
+`herdr-aven-tasks` skill, and installs `mods/aven-tasks`, `mods/aven-panel`,
+`mods/aven-kanban`, `mods/aven-panel-tabs`, and the personal
+`layouts/aven-right.json` into `$HERDR_APP_HOME` (or `~/.config/herdr-app`), and
 reports readiness with `just doctor`. The app mods are optional; when
 `herdr-app` is absent the same dispatch, supervision, and recovery work
 headlessly. The installer preserves unrelated app settings, never overwrites an
 existing key binding, and refuses a differing skill file. Re-run
-`just install-app-mod` after an upgrade to refresh owned assets. Both commands
-install the Aven-right assets by default, including with `--no-keys`, but never
-select a layout, open a panel, or change panel preferences. A foreign asset
-named `aven-right`, `aven-panel`, `aven-kanban`, or `aven-panel-tabs` is refused
-rather than overwritten.
+`just install-app-mod` after an upgrade to refresh owned assets; an upgrade also
+removes the retired `mods/aven-worktree` panel when it is still the
+plugin-installed copy. Both commands install the Aven-right assets by default,
+including with `--no-keys`, but never select a layout, open a panel, or change
+panel preferences. A foreign asset named `aven-right`, `aven-panel`,
+`aven-kanban`, or `aven-panel-tabs` is refused rather than overwritten.
 
 There is no legacy `herdr` plugin manifest, popup entrypoint, or keybinding
 installer to install. The retired runtime is not started or migrated in place.
@@ -609,15 +609,9 @@ retains `kanban-board.png` and `kanban-handoff.png` under
 herdr-app, herdr-core, Aven, and a display; it is intentionally separate from
 headless `just test` and cleans up only the app/core/resources it created.
 
-The companion `aven-worktree` panel is installed with the same command. Every
-dispatched worktree space opens an **Aven** pane beside the agent showing the
-root epic, its phases and progress, the current task, and the persisted
-dispatcher state, with buttons to open the current task directly, the generic
-Aven TUI, and a row that peeks the attempt terminal. The panel is created once per worktree and remembers that in the
-persisted attempt. If you close it, reopen it
-for the focused space with `herdr-app do mod.open --name aven-worktree` (or the
-command palette's mod picker). It is read-only: it never changes tasks, prompts,
-or dispatch state.
+The separate `aven-worktree` pane is retired. Dispatch no longer splits a
+second Aven surface into a worktree space; the **Aven** child of the Aven-right
+layout describes the focused dispatched worktree instead (see below).
 
 ### Aven right-side panel
 

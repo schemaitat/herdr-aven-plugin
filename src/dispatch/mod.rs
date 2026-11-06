@@ -285,7 +285,6 @@ pub(crate) fn reopen_existing(
         &worktree,
         &format!("{} {}", reopened.task_ref, task_title),
         &reopened.task_ref,
-        &mut reopened.aven_panel,
     );
     if reopened.babysitter {
         if reopened.babysitter_session_id.is_empty() {
@@ -310,7 +309,6 @@ pub(crate) fn reopen_existing(
                 &worktree,
                 &format!("Babysit {}", reopened.task_ref),
                 &reopened.task_ref,
-                &mut reopened.aven_panel,
             );
             if matches!(
                 prior_state.as_str(),
@@ -411,7 +409,6 @@ pub(crate) fn new_attempt(
         core_name: String::new(),
         terminal: TerminalRef::default(),
         pane: String::new(),
-        aven_panel: false,
         agent: agent.unwrap_or_default(),
         model: model.unwrap_or_default(),
         execution_mode,
@@ -592,7 +589,6 @@ pub(crate) fn launch_primary_terminal(
         &worktree,
         &format!("{} {}", attempt.task_ref, task_title),
         &attempt.task_ref,
-        &mut attempt.aven_panel,
     );
     Ok(terminal)
 }

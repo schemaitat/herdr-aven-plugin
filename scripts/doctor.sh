@@ -65,11 +65,11 @@ fi
 
 app_home=${HERDR_APP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-app}
 base_ok=false
-[ -f "$app_home/mods/aven-tasks/main.js" ] && [ -f "$app_home/mods/aven-worktree/main.js" ] && base_ok=true
+[ -f "$app_home/mods/aven-tasks/main.js" ] && base_ok=true
 right_ok=false
 [ -f "$app_home/mods/aven-panel/main.js" ] && [ -f "$app_home/mods/aven-panel-tabs/main.js" ] && [ -f "$app_home/layouts/aven-right.json" ] && right_ok=true
 if [ "$base_ok" = true ] && [ "$right_ok" = true ]; then
-  row app-mod "installed (overlay + worktree + aven-right panel)"
+  row app-mod "installed (overlay + aven-right panel)"
 elif [ "$base_ok" = true ] || [ -f "$app_home/mods/aven-panel/main.js" ] || [ -f "$app_home/mods/aven-panel-tabs/main.js" ] || [ -f "$app_home/layouts/aven-right.json" ]; then
   row app-mod "partially installed (re-run just install-app-mod)"
 else

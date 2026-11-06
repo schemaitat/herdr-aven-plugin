@@ -1,8 +1,8 @@
 #!/bin/sh
 # Install the repository-owned herdr-app mods for Aven.
 #
-# Owned files only: mods/aven-tasks, mods/aven-worktree, mods/aven-panel,
-# mods/aven-kanban, mods/aven-panel-tabs, and layouts/aven-right.json. Keys are merged into
+# Owned files only: mods/aven-tasks, mods/aven-panel, mods/aven-kanban,
+# mods/aven-panel-tabs, and layouts/aven-right.json. Keys are merged into
 # the person's keys.json only when the chord is free; an existing binding is
 # never replaced. Shipped mods and the app's generated guide/types are never
 # edited. The mods are optional: headless dispatch does not require herdr-app.
@@ -11,11 +11,11 @@
 # Report lines:
 #   app: PATH
 #   installed: mods/aven-tasks
-#   installed: mods/aven-worktree
 #   installed: mods/aven-panel
 #   installed: mods/aven-kanban
 #   installed: mods/aven-panel-tabs
 #   installed: layouts/aven-right.json
+#   removed: mods/aven-worktree
 #   bound KEY -> ACTION
 #   kept: KEY -> ACTION
 #   warning: TEXT
@@ -60,11 +60,19 @@ cp "$PLUGIN_ROOT/app/main.js" "$mod_dir/main.js"
 cp "$PLUGIN_ROOT/app/mod.json" "$mod_dir/mod.json"
 printf 'installed: mods/aven-tasks\n'
 
-mod_dir=$app_home/mods/aven-worktree
-mkdir -p "$mod_dir"
-cp "$PLUGIN_ROOT/app/aven-worktree/main.js" "$mod_dir/main.js"
-cp "$PLUGIN_ROOT/app/aven-worktree/mod.json" "$mod_dir/mod.json"
-printf 'installed: mods/aven-worktree\n'
+# `aven-worktree` is retired: the Aven-right layout panel now carries the
+# worktree context. Delete an installed copy only when it still looks like the
+# plugin-owned mod; leave an edited or foreign directory for the person.
+retired=$app_home/mods/aven-worktree
+if [ -d "$retired" ]; then
+  if grep -q 'id("aven-worktree")' "$retired/main.js" 2>/dev/null &&
+     grep -q '"title": "Aven"' "$retired/mod.json" 2>/dev/null; then
+    rm -rf "$retired"
+    printf 'removed: mods/aven-worktree\n'
+  else
+    printf 'warning: leaving unrecognised mods/aven-worktree; remove it manually\n' >&2
+  fi
+fi
 
 for name in aven-panel aven-kanban aven-panel-tabs; do
   mkdir -p "$app_home/mods/$name"
@@ -118,7 +126,7 @@ PY
 fi
 
 if command -v herdr-app >/dev/null 2>&1; then
-  for name in aven-tasks aven-worktree aven-panel aven-kanban aven-panel-tabs; do
+  for name in aven-tasks aven-panel aven-kanban aven-panel-tabs; do
     if ! herdr-app check "$app_home/mods/$name" >/dev/null 2>&1; then
       printf 'warning: herdr-app rejected %s; inspect it before relying on the mod\n' "$app_home/mods/$name" >&2
       exit 1

@@ -79,7 +79,6 @@ watch-stop:
 
 app-check:
     herdr-app check app
-    herdr-app check app/aven-worktree
     herdr-app check app/aven-panel
     herdr-app check app/aven-kanban
     herdr-app check app/aven-panel-tabs
