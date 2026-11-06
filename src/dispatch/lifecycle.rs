@@ -432,6 +432,15 @@ mod tests {
             .state,
             "prompt-pending"
         );
+        assert_eq!(
+            reduce_state(
+                "terminal-pending",
+                Some("done"),
+                ExecutionObservation::StoppedSuccess
+            )
+            .state,
+            "completed"
+        );
     }
 
     #[test]
@@ -476,6 +485,19 @@ mod tests {
         attempt.state = "prompt-pending".into();
         assert!(
             ensure_pending_admission_open(&json!({"task":{"status":"done"}}), &attempt).is_err()
+        );
+        // Reconciliation first reduces confirmed completion, then applies the
+        // guard; it can publish the completed state without re-admitting the
+        // saved prompt.
+        attempt.state = reduce_state(
+            "terminal-pending",
+            Some("done"),
+            ExecutionObservation::StoppedSuccess,
+        )
+        .state;
+        assert_eq!(attempt.state, "completed");
+        assert!(
+            ensure_pending_admission_open(&json!({"task":{"status":"done"}}), &attempt).is_ok()
         );
     }
 }

@@ -187,9 +187,12 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
     // Reconciliation may repair metadata for terminal tasks, but it must
     // never re-admit a saved prompt for one. Reopening is a separate reviewed
     // Aven transition plus a fresh fenced generation.
-    crate::dispatch::lifecycle::ensure_pending_admission_open(&task, &attempt)?;
     ensure_attempt_current(&task, &attempt)?;
     refresh_attempt_execution_state(&mut attempt, Some(&task))?;
+    // First reduce the attempt against authoritative session/terminal facts.
+    // A stale pending-admission state may actually have completed before the
+    // task became terminal; only a still-pending state must be refused.
+    crate::dispatch::lifecycle::ensure_pending_admission_open(&task, &attempt)?;
     // Log closure follows proven execution termination, never source
     // acceptance alone. Failure leaves the log visibly open.
     if let Err(error) = crate::dispatch::disposition::reconcile_log(&mut attempt, store) {
