@@ -141,14 +141,14 @@ fn read_live(scope: &Scope, secrets: &[String]) -> Result<(CoreRecord, Vec<RawTe
         if raw.address.is_empty() {
             continue;
         }
-        if raw.status_kind.is_empty() {
-            if let Value::Object(map) = &raw.status {
-                raw.status_kind = map
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-            }
+        if raw.status_kind.is_empty()
+            && let Value::Object(map) = &raw.status
+        {
+            raw.status_kind = map
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
         }
         parsed.push(raw);
     }
