@@ -22,7 +22,7 @@ export HC_BIN=$fake/hc
 
 cat > "$work/tasks.json" <<'JSON'
 [
-  {"ref":"APP-1","id":"task-one","title":"Task \u001b[31mOne\u001b[0m","project":"app","status":"todo","is_epic":false},
+  {"ref":"APP-1","id":"task-one","title":"Task \u001b[31mOne\u001b[0m","project":"app","status":"todo","is_epic":false,"deleted":false,"priority":"high","available_at":"2030-01-01T00:00:00Z","due_on":"2030-02-01T00:00:00Z","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"},
   {"ref":"APP-2","id":"task-two","title":"Task two","project":"app","status":"todo","is_epic":false},
   {"ref":"ZZZ-1","id":"foreign","title":"foreign project task","project":"other","status":"todo","is_epic":false}
 ]
@@ -38,7 +38,7 @@ cat > "$work/context-one.json" <<'JSON'
     "dispatch.reset-state":"completed",
     "sdd.plan-root":"APP-9",
     "sdd.plan-worked-out":"true",
-    "dispatch.attempt.implementation":"{\"task_id\":\"task-one\",\"task_ref\":\"APP-1\",\"workflow\":\"implementation\",\"attempt_id\":\"stale-recovery\",\"generation\":2,\"session_id\":\"ses_one\",\"pane\":\"w1:p1\",\"terminal\":{\"core_id\":\"core\",\"address\":\"t1\",\"role\":\"builder\",\"created_by_attempt\":true},\"state\":\"running\",\"created_at\":5,\"pending_prompt\":\"SECRET_PROMPT\"}",
+    "dispatch.attempt.implementation":"{\"task_id\":\"task-one\",\"task_ref\":\"APP-1\",\"workflow\":\"implementation\",\"attempt_id\":\"stale-recovery\",\"generation\":2,\"session_id\":\"ses_one\",\"pane\":\"w1:p1\",\"terminal\":{\"core_id\":\"core\",\"address\":\"t1\",\"role\":\"builder\",\"created_by_attempt\":true},\"state\":\"running\",\"created_at\":5,\"log_task_ref\":\"APP-LOG\",\"terminals\":{\"builder\":{\"core_id\":\"core\",\"address\":\"t1\",\"state\":\"live\",\"status\":\"idle\",\"status_kind\":\"\",\"program\":\"opencode\",\"reason\":\"\",\"turn\":4,\"seq\":8,\"updated_at\":9,\"recovery\":\"\"}},\"pending_prompt\":\"SECRET_PROMPT\"}",
     "dispatch.attempt.planning":"{\"task_id\":\"task-one\",\"task_ref\":\"APP-1\",\"workflow\":\"planning\",\"attempt_id\":\"plan-recovery\",\"generation\":2,\"session_id\":\"ses_three\",\"pane\":\"w1:p3\",\"terminal\":{\"core_id\":\"core\",\"address\":\"t3\",\"role\":\"builder\",\"created_by_attempt\":false},\"state\":\"running\",\"created_at\":10,\"prompt_id\":\"SECRET_PROMPT\"}"
   },
   "dependencies":{"depends_on":[{"id":"dep-one","display_ref":"APP-DEP","title":"dependency","status":"todo"}],"blocks":[]},
@@ -61,11 +61,14 @@ cat > "$work/context-two.json" <<'JSON'
 }
 JSON
 cat > "$work/terminals.json" <<JSON
-{"hidden_finished":0,"terminals":[
-  {"address":"t1","cwd":"$repo/wt","name":"aven-dispatch-task-one","state":"live","status":"idle","agent":"opencode","turn":4,"where":"app / 1"},
-  {"address":"t3","cwd":"$repo/wt","name":"aven-dispatch-plan","state":"live","status":"working","agent":"opencode","turn":1,"where":"app / 1"},
-  {"address":"t9","cwd":"/other","name":"unrelated","state":"live","status":"idle","agent":"zsh","turn":0,"where":"other / 1"}
+{"schema":"aven-dispatch-terminals/v1","observed_at":1793436800000,"core":{"id":"core","name":"local-core","version":"0.1.15","machine":"test"},"terminals":[
+  {"address":"t1","cwd":"$repo/wt","name":"aven-dispatch-task-one","state":"live","status":"idle","status_kind":"","program":"opencode","reason":"","turn":4,"reported":true,"recovered_shell":false,"labels":{"aven.task":"APP-1","aven.task_id":"task-one","aven.role":"builder"},"where":"app / 1"},
+  {"address":"t3","cwd":"$repo/wt","name":"aven-dispatch-plan","state":"live","status":"working","status_kind":"","program":"opencode","reason":"","turn":1,"reported":true,"recovered_shell":false,"labels":{"aven.task":"APP-1","aven.task_id":"task-one","aven.role":"planner"},"where":"app / 1"},
+  {"address":"t9","cwd":"/other","name":"unrelated","state":"live","status":"idle","status_kind":"","program":"zsh","reason":"","turn":0,"reported":false,"recovered_shell":true,"labels":{},"where":"other / 1"}
 ]}
+JSON
+cat > "$work/app.json" <<JSON
+{"spaces":[{"id":"w1","name":"app","folder":"$repo","tabs":[{"id":"w1:t1","name":"root","terminals":[{"terminal":"t1","pane":"w1:p1","status":"idle","app":"opencode","name":null}]}]}]}
 JSON
 
 cat > "$fake/aven" <<'EOF'
@@ -100,7 +103,16 @@ cat > "$fake/hc" <<'EOF'
 #!/bin/sh
 printf 'hc %s\n' "$*" >> "$RUST_INSPECT_LOG"
 if [ "$1 $2" = "ls --json" ]; then cat "$RUST_INSPECT_WORK/terminals.json"; exit 0; fi
+if [ "$1" = exec ]; then
+  printf 'worktree %s\nHEAD deadbeef\nbranch refs/heads/main\n\nworktree %s/wt\nHEAD feedface\nbranch refs/heads/phase\n' "$RUST_INSPECT_REPO" "$RUST_INSPECT_REPO"
+  exit 0
+fi
 exit 1
+EOF
+cat > "$fake/herdr-app" <<'EOF'
+#!/bin/sh
+printf 'herdr-app %s\n' "$*" >> "$RUST_INSPECT_LOG"
+cat "$RUST_INSPECT_WORK/app.json"
 EOF
 cat > "$fake/opencode" <<'EOF'
 #!/bin/sh
@@ -123,6 +135,8 @@ rows = [
    {"task_id":"task-one","task_ref":"APP-1","workflow":"implementation","attempt_id":"central-a",
     "generation":2,"session_id":"ses_one","pane":"w1:p1","state":"needs-review","created_at":20,
     "backend":"hc","core_id":"core","terminal":{"core_id":"core","address":"t1","role":"builder","created_by_attempt":True},
+    "log_task_ref":"APP-LOG",
+    "terminals":{"builder":{"core_id":"core","address":"t1","state":"live","status":"idle","status_kind":"","program":"opencode","reason":"","turn":4,"seq":8,"updated_at":9,"recovery":""}},
     "pending_prompt":"SECRET_PROMPT","prompt_id":"SECRET_PROMPT"}),
   ("task-two", "implementation", "reset-central", "APP-2", "running", 1, "ses_two", 30,
    {"task_id":"task-two","task_ref":"APP-2","workflow":"implementation","attempt_id":"reset-central",
@@ -159,9 +173,10 @@ binary=$PLUGIN_ROOT/target/debug/aven-dispatch
 
 PATH="$fake:$PATH" "$binary" inspect --project app --cwd "$repo" --json > "$work/out.json"
 
-python3 - "$work/out.json" <<'PY'
+python3 - "$work/out.json" "$work" <<'PY'
 import json, sys
 snapshot = json.load(open(sys.argv[1]))
+work = sys.argv[2]
 refs = {task["ref"] for task in snapshot["tasks"]}
 assert refs == {"APP-1", "APP-2"}, refs
 assert snapshot["scope"]["project"] == "app"
@@ -175,6 +190,12 @@ assert task["hydrated"] is True
 assert task["plan"]["plan_root"] == "APP-9"
 assert task["plan"]["plan_worked_out"] is True
 assert task["plan"]["reset_generation"] == 2
+assert task["deleted"] is False
+assert task["priority"] == "high"
+assert task["available_at"] == "2030-01-01T00:00:00Z"
+assert task["due_on"] == "2030-02-01T00:00:00Z"
+assert task["created_at"] == "2026-01-01T00:00:00Z"
+assert task["updated_at"] == "2026-01-02T00:00:00Z"
 assert [dep["ref"] for dep in task["dependencies"]] == ["APP-DEP"]
 assert task["dependencies"][0]["hydrated"] is False
 attempts = {(attempt["ref"], attempt["workflow"]): attempt for attempt in snapshot["attempts"]}
@@ -184,6 +205,9 @@ implementation = attempts[("APP-1", "implementation")]
 assert implementation["attempt_id"] == "central-a"
 assert implementation["origin"] == "central_store"
 assert implementation["state"] == "needs-review"
+assert implementation["log_task_ref"] == "APP-LOG"
+assert implementation["terminals"]["builder"]["address"] == "t1"
+assert implementation["terminals"]["builder"]["state"] == "live"
 planning = attempts[("APP-1", "planning")]
 assert planning["attempt_id"] == "plan-recovery"
 assert planning["origin"] == "aven_recovery"
@@ -197,6 +221,23 @@ assert candidates[("t1", "primary")]["topology_present"] is True
 assert candidates[("t1", "primary")]["workspace_id"] == "app / 1"
 assert candidates[("t3", "primary")]["topology_present"] is True
 assert all(pane["pane_id"] != "t9" for pane in snapshot["panes"]), "unscoped terminal leaked"
+pane = next(pane for pane in snapshot["panes"] if pane["pane_id"] == "t1")
+assert pane["core_id"] == "core"
+assert pane["name"] == "aven-dispatch-task-one"
+assert pane["state"] == "live"
+assert pane["status"] == "idle"
+assert pane["program"] == "opencode"
+assert pane["reported"] is True
+assert pane["recovered_shell"] is False
+assert pane["labels"]["aven.task"] == "APP-1"
+assert snapshot["core"]["id"] == "core"
+assert snapshot["core"]["name"] == "local-core"
+assert snapshot["core"]["version"] == "0.1.15"
+worktrees = {(tree["path"], tree["primary"]) for tree in snapshot["worktrees"]}
+assert (f"{work}/app", True) in worktrees, worktrees
+assert any(tree["branch"] == "refs/heads/phase" and tree["head"] == "feedface" and tree["detached"] is False for tree in snapshot["worktrees"])
+assert snapshot["app"]["placements"][0]["terminal"] == "t1"
+assert snapshot["app"]["placements"][0]["space_name"] == "app"
 health = {source["source"]: source for source in snapshot["sources"]}
 assert health["aven"]["status"] == "ok", health["aven"]
 assert health["dispatcher"]["status"] == "incomplete", health["dispatcher"]  # malformed row + reset rejection
@@ -255,7 +296,8 @@ assert_eq "$store_hash_after" "$store_hash_before" 'inspection must not mutate t
 # Read allowlist and no lifecycle/network shortcuts or focus requests.
 assert_not_contains "$(cat "$log")" 'pane.focus' 'inspection must not focus panes'
 assert_not_contains "$(cat "$log")" 'opencode api' 'inspection must not invoke the CLI API'
-assert_contains "$(cat "$log")" 'hc ls --json' 'terminal topology uses the read-only hc list'
+assert_contains "$(cat "$log")" 'hc exec --cwd' 'worktree topology uses the read-only hc exec boundary'
+assert_contains "$(cat "$log")" 'herdr-app ls' 'optional app placement is read through herdr-app ls'
 assert_not_contains "$(cat "$work/out.json")" 'test-password' 'service credentials must not leak into JSON'
 assert_not_contains "$(cat "$log")" 'aven edit' 'inspection must not edit Aven'
 assert_not_contains "$(cat "$log")" 'aven note' 'inspection must not write notes'
@@ -270,6 +312,19 @@ assert_contains "$api_calls" 'GET /api/session/ses_one/form'
 assert_not_contains "$api_calls" 'POST ' 'API reads must be GET-only'
 assert_not_contains "$api_calls" '/api/session?' 'inspection must not list all sessions'
 assert_not_contains "$api_calls" '/message' 'inspection must not read transcripts'
+
+# Callers that own live activity can suppress the one-shot API read.
+api_before=$(wc -l < "$work/api.log")
+PATH="$fake:$PATH" "$binary" inspect --project app --cwd "$repo" --json --no-api > "$work/no-api.json"
+api_after=$(wc -l < "$work/api.log")
+assert_eq "$api_after" "$api_before" 'inspect --no-api must not query OpenCode'
+python3 - "$work/no-api.json" <<'PY'
+import json, sys
+snapshot = json.load(open(sys.argv[1]))
+health = {source["source"]: source for source in snapshot["sources"]}
+assert health["opencode"]["status"] == "ok", health["opencode"]
+assert "skipped at caller request" in health["opencode"]["message"]
+PY
 
 # An explicit unknown project fails visibly instead of widening scope.
 if PATH="$fake:$PATH" "$binary" inspect --project absent --cwd "$repo" --json > "$work/absent.out" 2> "$work/absent.err"; then

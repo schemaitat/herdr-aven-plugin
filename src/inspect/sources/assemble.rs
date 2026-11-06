@@ -12,7 +12,7 @@ pub(super) fn assemble(
     let attempts = base.attempts.clone();
     let panes = live.panes.clone();
     let worktrees = if live.worktrees.is_empty() {
-        attempt_worktrees(&attempts)
+        attempt_worktrees(&attempts, &base.scope.repository)
     } else {
         live.worktrees.clone()
     };
@@ -36,12 +36,14 @@ pub(super) fn assemble(
         scope: base.scope.clone(),
         limits: Limits::default(),
         sources,
+        core: live.core.clone(),
         tasks,
         attempts,
         sessions: live.sessions.clone(),
         panes,
         workspaces,
         worktrees,
+        app: live.app.clone(),
         candidates,
         relationships,
         conflicts,
@@ -49,7 +51,10 @@ pub(super) fn assemble(
     }
 }
 
-pub(super) fn attempt_worktrees(attempts: &[AttemptRecord]) -> Vec<WorktreeRecord> {
+pub(super) fn attempt_worktrees(
+    attempts: &[AttemptRecord],
+    repository: &str,
+) -> Vec<WorktreeRecord> {
     let mut seen = BTreeSet::new();
     attempts
         .iter()
@@ -57,6 +62,9 @@ pub(super) fn attempt_worktrees(attempts: &[AttemptRecord]) -> Vec<WorktreeRecor
         .map(|attempt| WorktreeRecord {
             path: attempt.worktree.clone(),
             branch: attempt.branch.clone(),
+            head: String::new(),
+            detached: false,
+            primary: attempt.worktree == repository,
             open_workspace_id: None,
             origin: WorktreeOrigin::Attempt,
         })
@@ -536,6 +544,8 @@ mod tests {
             babysitter_pane: "w1:p2".into(),
             session_id: "ses_primary".into(),
             pane: "w1:p1".into(),
+            log_task_ref: "APP-LOG".into(),
+            terminals: BTreeMap::new(),
             phases: vec![PhaseRecord {
                 task_id: "phase-one".into(),
                 reference: "APP-P1".into(),
@@ -561,7 +571,21 @@ mod tests {
             agent_status: "idle".into(),
             agent_session_id: None,
             focused: false,
+            core_id: "core".into(),
+            name: panel_name(pane_id),
+            state: "live".into(),
+            status: "idle".into(),
+            status_kind: String::new(),
+            program: "opencode".into(),
+            reason: String::new(),
+            turn: 0,
+            reported: true,
+            recovered_shell: false,
+            labels: BTreeMap::new(),
         }
+    }
+    fn panel_name(pane_id: &str) -> String {
+        format!("terminal-{pane_id}")
     }
     #[test]
     fn one_to_many_roles_and_pane_less_sessions_are_preserved() {
@@ -607,7 +631,7 @@ mod tests {
         duplicate.branch = "later-branch".into();
         let mut empty = attempt_record();
         empty.worktree.clear();
-        let worktrees = attempt_worktrees(&[first, duplicate, empty]);
+        let worktrees = attempt_worktrees(&[first, duplicate, empty], "/repo");
         assert_eq!(worktrees.len(), 1);
         assert_eq!(worktrees[0].path, "/repo/wt");
         assert_eq!(worktrees[0].branch, "app/dispatch-task-one");
@@ -625,6 +649,12 @@ mod tests {
             project: "app".into(),
             status: "done".into(),
             is_epic: false,
+            deleted: false,
+            priority: "none".into(),
+            available_at: String::new(),
+            due_on: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
             epic_parent: None,
             epic_children: Vec::new(),
             dependencies: Vec::new(),
@@ -677,6 +707,12 @@ mod tests {
             project: "app".into(),
             status: "active".into(),
             is_epic: false,
+            deleted: false,
+            priority: "none".into(),
+            available_at: String::new(),
+            due_on: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
             epic_parent: None,
             epic_children: Vec::new(),
             dependencies: Vec::new(),
@@ -706,6 +742,7 @@ mod tests {
         second.workspace_id = "w2".into();
         second.tab_id = "w2:t2".into();
         let live = LiveRead {
+            core: CoreRecord::default(),
             panes: vec![second, pane("w1:p1")],
             workspaces: vec![
                 WorkspaceRecord {
@@ -726,6 +763,7 @@ mod tests {
                 },
             ],
             worktrees: Vec::new(),
+            app: AppRecord::default(),
             sessions: link_sessions(&[attempt], &[pane("w1:p1")]).0,
             sources: Vec::new(),
             warnings: Vec::new(),
