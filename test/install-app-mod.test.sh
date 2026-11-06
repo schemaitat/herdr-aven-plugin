@@ -43,15 +43,30 @@ assert_file_contains "$app_home/keys.json" '"mod:aven-kanban"' 'Kanban key secti
 assert_file_contains "$app_home/keys.json" '"m": "aven-kanban.merge"' 'Kanban merge key installed'
 [ -f "$app_home/keys.json.aven-backup" ] || fail 'changed keys need a backup'
 
-# An upgrade removes the retired plugin-owned panel but leaves a foreign one.
+# An upgrade removes only the exact retired plugin-owned panel.
 mkdir -p "$app_home/mods/aven-worktree"
-printf '%s\n' 'const view = div().id("aven-worktree");' > "$app_home/mods/aven-worktree/main.js"
-printf '%s\n' '{ "place": "none", "title": "Aven" }' > "$app_home/mods/aven-worktree/mod.json"
+git -C "$PLUGIN_ROOT" show de10127906360da6d1a2357bd874b4d923df2319:app/aven-worktree/main.js > "$app_home/mods/aven-worktree/main.js"
+git -C "$PLUGIN_ROOT" show de10127906360da6d1a2357bd874b4d923df2319:app/aven-worktree/mod.json > "$app_home/mods/aven-worktree/mod.json"
+cp "$app_home/mods/aven-worktree/main.js" "$work/retired-main.js"
+cp "$app_home/mods/aven-worktree/mod.json" "$work/retired-mod.json"
 before=$(cat "$app_home/keys.json")
 retired_out=$(PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh")
 assert_contains "$retired_out" "removed: mods/aven-worktree" "retired worktree panel is removed on upgrade"
 [ ! -e "$app_home/mods/aven-worktree" ] || fail 'retired worktree panel directory must be gone'
 assert_eq "$(cat "$app_home/keys.json")" "$before" 'reinstall leaves keys unchanged'
+
+mkdir -p "$app_home/mods/aven-worktree"
+cp "$work/retired-main.js" "$app_home/mods/aven-worktree/main.js"
+cp "$work/retired-mod.json" "$app_home/mods/aven-worktree/mod.json"
+printf '\n// user modification\n' >> "$app_home/mods/aven-worktree/main.js"
+PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" > "$work/edited.out" 2> "$work/edited.log"
+assert_file_contains "$work/edited.log" 'leaving unrecognised mods/aven-worktree' 'edited panel is reported'
+assert_file_contains "$app_home/mods/aven-worktree/main.js" 'user modification' 'edited panel is preserved'
+cp "$work/retired-main.js" "$app_home/mods/aven-worktree/main.js"
+printf 'personal data\n' > "$app_home/mods/aven-worktree/extra.txt"
+PATH="$fake:$PATH" HERDR_APP_HOME=$app_home sh "$PLUGIN_ROOT/scripts/install-app-mod.sh" > "$work/extra.out" 2> "$work/extra.log"
+assert_file_contains "$work/extra.log" 'leaving unrecognised mods/aven-worktree' 'extra files are reported'
+assert_file_contains "$app_home/mods/aven-worktree/extra.txt" 'personal data' 'extra files are preserved'
 
 fresh=$work/fresh
 mkdir -p "$fresh"

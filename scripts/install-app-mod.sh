@@ -61,13 +61,18 @@ cp "$PLUGIN_ROOT/app/mod.json" "$mod_dir/mod.json"
 printf 'installed: mods/aven-tasks\n'
 
 # `aven-worktree` is retired: the Aven-right layout panel now carries the
-# worktree context. Delete an installed copy only when it still looks like the
-# plugin-owned mod; leave an edited or foreign directory for the person.
+# worktree context. Remove only the exact last shipped files, with no extras;
+# leave edited, foreign, or unrecognised versions for the person.
 retired=$app_home/mods/aven-worktree
 if [ -d "$retired" ]; then
-  if grep -q 'id("aven-worktree")' "$retired/main.js" 2>/dev/null &&
-     grep -q '"title": "Aven"' "$retired/mod.json" 2>/dev/null; then
-    rm -rf "$retired"
+  if [ ! -L "$retired" ] && [ ! -L "$retired/main.js" ] && [ ! -L "$retired/mod.json" ] &&
+     [ -f "$retired/main.js" ] && [ -f "$retired/mod.json" ] &&
+     [ "$(find "$retired" -mindepth 1 -maxdepth 1 | wc -l)" -eq 2 ] &&
+     command -v sha256sum >/dev/null 2>&1 &&
+     [ "$(sha256sum "$retired/main.js" | cut -d ' ' -f 1)" = aa90d8c0ede266ebb03d6d9fd2a2e199a914e2e689a83401e0cbde171c80f8a7 ] &&
+     [ "$(sha256sum "$retired/mod.json" | cut -d ' ' -f 1)" = 5b9f3e03321cfa8befd3d035cad26346dbffbf85f65d254d09c7ede9af54c86d ]; then
+    rm "$retired/main.js" "$retired/mod.json"
+    rmdir "$retired"
     printf 'removed: mods/aven-worktree\n'
   else
     printf 'warning: leaving unrecognised mods/aven-worktree; remove it manually\n' >&2
