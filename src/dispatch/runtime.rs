@@ -273,7 +273,6 @@ pub(crate) fn start_babysitter(
         &worktree,
         &format!("Babysit {}", attempt.task_ref),
         &attempt.task_ref,
-        &mut attempt.aven_panel,
     );
     admit_babysitter(attempt, store)
 }
@@ -376,7 +375,6 @@ pub(crate) fn provision_phase_worktrees(
             worktree_created_by_attempt: resource.created_by_attempt,
             terminal: TerminalRef::default(),
             pane: String::new(),
-            aven_panel: false,
             session_id: session_id.clone(),
             prompt_id: String::new(),
             pending_prompt: String::new(),
@@ -409,7 +407,6 @@ pub(crate) fn provision_phase_worktrees(
             &resource.path,
             &format!("{} {}", task.task_ref, task.title),
             &task.task_ref,
-            &mut attempt.phases[index].aven_panel,
         );
         attempt.terminals.insert(
             format!("phase:{}", task.task_id),

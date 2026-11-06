@@ -548,7 +548,6 @@ mod tests {
             core_name: String::new(),
             terminal: TerminalRef::default(),
             pane: String::new(),
-            aven_panel: false,
             agent: String::new(),
             model: String::new(),
             execution_mode: ExecutionMode::SingleSession,

@@ -15,7 +15,25 @@ export function encodeChoices(choices) {
   return JSON.stringify(Object.fromEntries(Object.entries(choices).filter(([, choice]) => validChoice(choice))));
 }
 
-export function desiredChoice(choices, spaceId) { return validChoice(choices?.[spaceId]); }
+export function normalizeFolder(value) { return String(value ?? "").replace(/\/+$/, ""); }
+
+// A worktree is dispatched when a persisted attempt or one of its phases names
+// this checkout. Ordinary project spaces stay on their explicit choice only.
+export function dispatchFolders(attempts = []) {
+  const folders = new Set();
+  for (const attempt of attempts ?? []) {
+    const values = [attempt?.worktree, ...(attempt?.phases ?? []).map((phase) => phase?.worktree)];
+    for (const value of values) {
+      const folder = normalizeFolder(value);
+      if (folder) folders.add(folder);
+    }
+  }
+  return folders;
+}
+
+export function desiredChoice(choices, spaceId, dispatched = false) {
+  return validChoice(choices?.[spaceId]) ?? (dispatched ? "aven" : null);
+}
 
 export function panelCommands(choice, shown, active) {
   if (!validChoice(choice)) return [];

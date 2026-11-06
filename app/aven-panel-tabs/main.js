@@ -2,22 +2,59 @@
 // differs only by isolated panel state and the third Aven selector.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, layout, settings } from "herdr";
-import { STORAGE_KEY, decodeChoices, desiredChoice, encodeChoices, panelCommands } from "./logic.js";
+import { exec, spaces, panes, run, openOverlay, theme, window, layout, settings } from "herdr";
+import { STORAGE_KEY, decodeChoices, desiredChoice, dispatchFolders, encodeChoices, normalizeFolder, panelCommands } from "./logic.js";
 
 function find(node, id) { if (node?.id === id) return node; for (const child of node?.children ?? []) { const found = find(child, id); if (found) return found; } return null; }
 
 export default class AvenPanelTabs extends View {
-  init() { this.pressed = null; this.choices = decodeChoices(localStorage.getItem(STORAGE_KEY)); this.generation = 0; }
+  init(_props, cx) {
+    this.pressed = null;
+    this.choices = decodeChoices(localStorage.getItem(STORAGE_KEY));
+    this.generation = 0;
+    this.dispatch = new Set();
+    this.focusedSpace = "";
+    this.track(cx);
+    cx.timer.every(5000, (timerCx) => this.track(timerCx));
+  }
   save() { localStorage.setItem(STORAGE_KEY, encodeChoices(this.choices)); }
   commands(commands) { for (const command of commands) run(command.name, command.args); }
+  track(cx) {
+    const space = spaces().find((entry) => entry.active) ?? null;
+    const id = String(space?.id ?? "");
+    if (id === this.focusedSpace) return;
+    this.focusedSpace = id;
+    this.refreshDispatch(space?.folder, cx);
+  }
+  refreshDispatch(folder, cx) {
+    if (!folder) { this.applyDispatch(new Set(), cx); return; }
+    cx.spawn(async (taskCx) => {
+      let folders = new Set();
+      try {
+        const result = await exec("aven-dispatch", ["list", "--summary"], { cwd: folder });
+        if (result.code === 0) folders = dispatchFolders(JSON.parse(result.stdout || "[]"));
+      } catch {}
+      this.applyDispatch(folders, taskCx);
+    });
+  }
+  applyDispatch(folders, cx) {
+    const before = [...this.dispatch].sort().join("\n");
+    const after = [...folders].sort().join("\n");
+    if (before === after) return;
+    this.dispatch = folders;
+    // Re-evaluate the focused space now that dispatch knowledge arrived.
+    this.space = "";
+    try { cx.notify(); } catch {}
+  }
   restore(space, panel, body) {
     if (!space || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
     if (space.id === this.space) return;
     this.space = space.id;
-    const choice = desiredChoice(this.choices, space.id);
-    // A first visit remains hidden; only an explicit valid saved choice restores.
+    const dispatched = this.dispatch.has(normalizeFolder(space.folder));
+    const choice = desiredChoice(this.choices, space.id, dispatched);
+    // A first visit stays hidden unless the space is a dispatched worktree;
+    // an explicit valid saved choice always wins.
     if (!choice || choice === now) return;
     const generation = this.generation;
     this.pending = { choice, generation, until: Date.now() + 1000 };

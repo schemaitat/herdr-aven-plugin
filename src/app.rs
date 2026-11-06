@@ -179,93 +179,16 @@ fn find_space(
         .find_map(|space| space_target(space, address))
 }
 
-/// The window's current context, used only to undo a pane/tab selection a mod
-/// pane creation might have caused. Focus is never required for dispatch.
-fn context() -> Option<(String, String)> {
-    let value = app_json(&["status"])?;
-    Some((
-        value.get("space")?.as_str()?.to_owned(),
-        value.get("tab")?.as_str()?.to_owned(),
-    ))
-}
-
-fn restore_context(before: &(String, String)) {
-    if context().as_ref() == Some(before) {
-        return;
-    }
-    let _ = bounded(&["do", "space.select", "--id", before.0.as_str()]);
-    let _ = bounded(&["do", "tab.select", "--id", before.1.as_str()]);
-}
-
-/// The app-side pane an attempt terminal is shown in. `ls` lists terminals
-/// only after the app has adopted the attempt's label, so this is also the
-/// proof that splitting beside it addresses the right pane.
-fn pane_of(address: &str, space_id: &str, tab_id: &str) -> Option<String> {
-    let entries = spaces()?;
-    let tab = entries
-        .iter()
-        .find(|space| space.get("id").and_then(Value::as_str) == Some(space_id))
-        .and_then(|space| space.get("tabs").and_then(Value::as_array))
-        .and_then(|tabs| {
-            tabs.iter()
-                .find(|tab| tab.get("id").and_then(Value::as_str) == Some(tab_id))
-        })?;
-    tab.get("terminals")?
-        .as_array()?
-        .iter()
-        .find(|terminal| terminal.get("terminal").and_then(Value::as_str) == Some(address))?
-        .get("pane")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-
-fn agent_pane(address: &str, space_id: &str, tab_id: &str) -> Option<String> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(pane) = pane_of(address, space_id, tab_id) {
-            return Some(pane);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Split the worktree's agent pane with the Aven panel. The mod resolves the
-/// epic and task from Aven and the persisted dispatcher attempt, so dispatch
-/// only passes the immutable task ref it already selected. The agent keeps
-/// keyboard focus; a window that was showing another space is left there.
-fn show_aven_pane(space: &str, tab: &str, address: &str, task_ref: &str) -> bool {
-    let Some(pane) = agent_pane(address, space, tab) else {
-        return false;
-    };
-    let payload = serde_json::json!({
-        "direction": "right",
-        "pane": pane,
-        "mod": "aven-worktree",
-        "props": { "ref": task_ref, "space": space },
-    });
-    let before = context();
-    let created = bounded(&["do", "pane.split", &payload.to_string()]);
-    let _ = bounded(&["do", "pane.focus", "--terminal", address]);
-    if let Some(before) = before {
-        restore_context(&before);
-    }
-    created.is_some_and(|output| output.status.success())
-}
-
-/// Make a worktree visible in the desktop app by ensuring it has a space, a
-/// live Aven task panel, and a label for this attempt's core terminal. This is
-/// optional presentation only: failures leave the terminal headless and never
-/// fail dispatch. The terminal must already exist.
+/// Make a worktree visible in the desktop app by ensuring it has a space and
+/// a label for this attempt's core terminal. This is optional presentation
+/// only: failures leave the terminal headless and never fail dispatch. The
+/// terminal must already exist.
 pub(crate) fn show_worktree(
     address: &str,
     anchor_address: &str,
     folder: &str,
     name: &str,
     task_ref: &str,
-    aven_panel: &mut bool,
 ) -> bool {
     if address.is_empty() || folder.is_empty() {
         return false;
@@ -324,19 +247,13 @@ pub(crate) fn show_worktree(
     )
     .is_ok();
     if labelled
-        && !*aven_panel
-        && !task_ref.is_empty()
-        && show_aven_pane(&target.space, &target.tab, address, task_ref)
+        && let Some(placeholder) = target.placeholder.as_deref()
+        && placeholder != address
     {
-        *aven_panel = true;
         // `space.new` starts an empty shell for the space's first tab. The
-        // split beside the agent proves the agent was adopted, so the
-        // placeholder can go and leave only the agent and Aven.
-        if let Some(placeholder) = target.placeholder.as_deref()
-            && placeholder != address
-        {
-            let _ = core::kill(placeholder);
-        }
+        // labelled agent is now adopted, so the placeholder can go and leave
+        // only the agent terminal.
+        let _ = core::kill(placeholder);
     }
     labelled
 }

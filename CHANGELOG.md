@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Remove the `aven-worktree` herdr-app panel and stop splitting an Aven pane
+  beside dispatched agent terminals. The Aven-right layout panel now describes
+  the focused worktree: root epic and progress, focused phase and position,
+  task status, dispatch/agent state, and one lifecycle stage. A first visit to
+  a dispatched worktree reveals Aven while explicit Files/Changes choices win,
+  and focus changes refresh the card immediately. An upgrade removes the
+  retired plugin-installed panel while leaving an edited or foreign copy alone.
 - Tune Cargo profiles: release builds use `opt-level = "s"`, thin LTO, a single
   codegen unit, and stripped symbols for a much smaller `aven-dispatch` binary,
   while dependency crates build at `opt-level = 2` in dev for faster local runs.

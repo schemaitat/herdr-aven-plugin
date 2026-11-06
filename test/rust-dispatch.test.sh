@@ -429,33 +429,28 @@ FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet
 $context
 EOF
 assert_file_contains "$work/app.log" 'space.new' 'dispatch creates a worktree space in herdr-app'
-assert_file_contains "$work/app.log" 'pane.split' 'dispatch splits the agent pane for Aven'
-assert_file_contains "$work/app.log" 'aven-worktree' 'the split uses the worktree panel mod'
-assert_file_contains "$work/app.log" '"pane":"p-agent"' 'the split targets the adopted attempt terminal'
-assert_file_contains "$work/app.log" '"ref":"APP-1"' 'the panel is pinned to the selected task'
-assert_eq "$(grep -c 'pane.split' "$work/app.log")" 1 'the Aven panel is created once'
-assert_file_contains "$log" '"kill"' 'the placeholder shell is removed after the split'
+assert_file_lacks "$work/app.log" 'pane.split' 'dispatch no longer splits an Aven worktree pane'
+assert_file_lacks "$work/app.log" 'aven-worktree' 'dispatch no longer opens the retired panel mod'
+assert_file_contains "$log" '"kill"' 'the placeholder shell is removed after labelling'
 assert_file_contains "$log" '"t-shell"' 'the removed terminal is the space.new placeholder'
 assert_file_contains "$log" 'herdr.space=s1' 'attempt terminal is labelled into the worktree space'
 assert_file_contains "$log" 'herdr.tab=tb1' 'attempt terminal is labelled into the worktree tab'
 
 # The worker establishes the task layout; its babysitter joins that existing
-# worktree tab without creating another Aven companion pane or placeholder
-# space. The sidecar is deliberately started after the worker is admitted.
+# worktree tab without creating another companion pane or placeholder space.
+# The sidecar is deliberately started after the worker is admitted.
 assert_eq "$(grep -c 'space.new' "$work/app.log")" 1 'babysitter reuses the worker worktree space'
-assert_eq "$(grep -c 'pane.split' "$work/app.log")" 1 'babysitter reuses the worker Aven panel'
+assert_file_lacks "$work/app.log" 'pane.split' 'babysitter never creates a panel pane'
 assert_file_contains "$work/app.log" 'pane.focus --terminal t' 'sidecar layout restores focus to the worker or sidecar terminal'
 
 # Cumulative dispatch keeps the coordinator and every phase worker in their
-# own worktree space, with exactly one companion Aven panel in each. Later
-# workers must not inherit the root worktree's panel.
+# own worktree space and never splits a panel into any of them.
 seed_aven
 app_worktree_store=$work/app-worktree.sqlite
 FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_worktree_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
 $cumulative_context
 EOF
-app_splits=$(grep -c 'pane.split' "$work/app.log")
-assert_eq "$app_splits" 4 'coordinator and two phase workers each receive one Aven panel'
+assert_file_lacks "$work/app.log" 'pane.split' 'coordinator and phase workers receive no panel pane'
 assert_file_contains "$work/app.log" 'app-dispatch-epic-task-phase-01' 'first phase gets a separate worktree space'
 assert_file_contains "$work/app.log" 'app-dispatch-epic-task-phase-02' 'second phase gets a separate worktree space'
 assert_file_contains "$work/app.log" 'app-dispatch-epic-task' 'coordinator gets its root worktree space'

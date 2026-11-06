@@ -693,7 +693,6 @@ mod tests {
             core_name: String::new(),
             terminal: TerminalRef::default(),
             pane: "w1:p1".into(),
-            aven_panel: false,
             agent: "build".into(),
             model: "provider/model".into(),
             execution_mode: ExecutionMode::SingleSession,

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import {
-  DISPATCH_ACTIONS, LIMIT, canonicalId, inferredEpicArgs, inferredUpcomingArgs, isLiveEpicTerminal, launchArgs, mergeCoverage,
-  mergeProjectRows, openArgs, projectArgs, resolveSpaceContext, scopeEpics, sortEpics, terminalName, upcomingArgs,
+  DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs,
+  isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseProgress, projectArgs,
+  resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
@@ -34,4 +35,32 @@ assert.deepEqual(scopeEpics([root], "space", { kind: "unavailable" }), [root], "
 assert.equal(scopeEpics([root], "all", { kind: "unavailable" }).length, 1, "all scope keeps the full workspace result");
 assert.equal(resolveSpaceContext({ space: { folder: "/none" }, attempts: [] }).kind, "unavailable");
 assert.equal(resolveSpaceContext({ space: { folder: "/repo" }, attempts: [{ worktree: "/repo" }], task: { ref: "HAP" }, root: { ref: "HAP" } }).kind, "stale");
+
+const phases = [
+  { id: "p1", ref: "HAP-P1", title: "first", status: "done", open: false },
+  { id: "p2", ref: "HAP-P2", title: "second", status: "active", open: true },
+];
+const rootWithPhases = { ...root, epic_children: phases };
+assert.deepEqual(phaseProgress(phases), { complete: 1, total: 2 }, "phase progress counts terminal children");
+const phaseTarget = dispatchTargets([{ task_ref: root.ref, worktree: "/root/", phases: [{ task_ref: "HAP-P1", worktree: "/phase/" }] }], "/phase");
+assert.equal(phaseTarget.length, 1, "a phase worktree resolves through its attempt");
+assert.equal(phaseTarget[0].taskRef, "HAP-P1");
+assert.equal(phaseTarget[0].phase.worktree, "/phase/");
+const rootTarget = dispatchTargets([{ task_ref: root.ref, worktree: "/root/" }], "/root");
+assert.equal(rootTarget[0].taskRef, root.ref, "the root worktree resolves to the attempt task");
+assert.deepEqual(dispatchTargets([{ worktree: "/other" }], "/root"), [], "an unrelated worktree does not resolve");
+assert.equal(focusedPhase(rootWithPhases, { ref: "HAP-P2" }).position, 2, "a phase worktree reports its position");
+assert.equal(focusedPhase(rootWithPhases, { ref: root.ref }).phase.ref, "HAP-P2", "a root worktree focuses the active phase");
+assert.equal(lifecycleStage({ status: "todo", attempt: { state: "needs-review" } }), "Review", "review execution overrides open acceptance");
+assert.equal(lifecycleStage({ status: "active", attempt: { state: "running" } }), "In progress");
+assert.equal(lifecycleStage({ status: "todo" }), "Planned");
+assert.equal(lifecycleStage({ status: "backlog" }), "Backlog");
+assert.equal(lifecycleStage({ status: "done" }), "Done");
+assert.equal(statusLabel("active"), "Active");
+assert.equal(dispatchLabel("prompt-pending"), "Admitting prompt");
+assert.equal(dispatchLabel(""), "Not dispatched");
+const dispatchContext = resolveSpaceContext({ space: { name: "phase", folder: "/phase/" }, attempts: [], task: { ref: "HAP-P1" }, root: rootWithPhases, rows: [rootWithPhases], target: phaseTarget[0] });
+assert.equal(dispatchContext.kind, "dispatch");
+assert.equal(dispatchContext.taskRef, "HAP-P1");
+assert.equal(dispatchContext.attempt.task_ref, root.ref);
 console.log("aven panel logic ok");
