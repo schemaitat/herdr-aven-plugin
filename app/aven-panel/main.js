@@ -1,9 +1,11 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
-import { DISPATCH_ACTIONS, LIMIT, canonicalId, inferredEpicArgs, inferredUpcomingArgs, launchArgs, mergeProjectRows, resolveSpaceContext, scopeEpics, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
+import { DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseProgress, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
+const FOCUS_POLL_MS = 1000;
+const PHASE_GLYPH = { done: "✓", active: "●", canceled: "–", todo: "○", backlog: "○", inbox: "○" };
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
@@ -23,8 +25,17 @@ export default class AvenPanel extends View {
     this.pendingLaunches = new Set();
     this.scope = "all";
     this.dispatchMenuEpicId = null;
+    this.focusedSpace = focused()?.space ?? "";
     this.refresh(cx);
     cx.timer.every(REFRESH_MS, (timerCx) => this.refresh(timerCx));
+    // A focused worktree changes the whole context card, so react to focus
+    // changes instead of waiting for the next data refresh.
+    cx.timer.every(FOCUS_POLL_MS, (timerCx) => {
+      const id = focused()?.space ?? "";
+      if (id === this.focusedSpace) return;
+      this.focusedSpace = id;
+      this.refresh(timerCx);
+    });
   }
 
   async close() { this.closed = true; }
@@ -82,16 +93,29 @@ export default class AvenPanel extends View {
         try {
           const worktree = await this.worktreeFolder(spaceCwd);
           const contextSpace = { ...space, folder: worktree };
-          const attemptsResult = await exec("aven-dispatch", ["list"], worktree ? { cwd: worktree } : undefined);
+          const cwdOption = worktree ? { cwd: worktree } : undefined;
+          const attemptsResult = await exec("aven-dispatch", ["list", "--summary"], cwdOption);
           if (attemptsResult.code !== 0) throw new Error((attemptsResult.stderr || "").trim() || "could not read dispatcher attempts");
           const attempts = JSON.parse(attemptsResult.stdout || "[]");
-          const match = attempts.filter((attempt) => String(attempt?.worktree ?? "").replace(/\/+$/, "") === worktree);
+          const targets = dispatchTargets(attempts, worktree);
+          const target = targets.length === 1 ? targets[0] : null;
+          const readTask = async (ref) => {
+            const result = await exec("aven", ["show", ref, "--json"], cwdOption);
+            if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not read ${ref}`);
+            return JSON.parse(result.stdout);
+          };
           let task, root;
-          if (match.length === 1 && match[0].task_ref) {
-            task = JSON.parse((await exec("aven", ["show", match[0].task_ref, "--json"], worktree ? { cwd: worktree } : undefined)).stdout);
-            root = task.is_epic ? task : task.epic_parent?.ref ? JSON.parse((await exec("aven", ["show", task.epic_parent.ref, "--json"], worktree ? { cwd: worktree } : undefined)).stdout) : null;
+          if (target?.taskRef) {
+            task = await readTask(target.taskRef);
+            root = task.is_epic
+              ? task
+              : task.epic_parent?.ref
+                ? await readTask(task.epic_parent.ref)
+                : target.attempt?.task_ref && target.attempt.task_ref !== target.taskRef
+                  ? await readTask(target.attempt.task_ref)
+                  : null;
           }
-          context = resolveSpaceContext({ space: contextSpace, attempts, task, root, rows });
+          context = resolveSpaceContext({ space: contextSpace, attempts, task, root, rows, target });
         } catch { context = { kind: "unavailable", name: String(space?.name ?? ""), folder: String(spaceCwd), message: "Dispatcher context is unavailable; showing project epics." }; }
         this.state = { loading: false, rows, context, coverageError: "", error: "", stale: false };
       } catch (error) {
@@ -215,6 +239,86 @@ export default class AvenPanel extends View {
         .child(div().flex_1().text_size(11).text_color(t.foreground).child(action.description))));
   }
 
+  stageTone(t, stage) {
+    if (stage === "Review") return t.accent;
+    if (stage === "In progress") return t.working;
+    if (stage === "Done") return t.done;
+    if (stage === "Canceled") return t.dim;
+    return t.muted;
+  }
+
+  dispatchTone(t, state) {
+    const value = String(state ?? "");
+    if (!value) return t.dim;
+    if (/review|completed/.test(value)) return t.accent;
+    if (/running|waiting|pending|starting|queued/.test(value)) return t.working;
+    if (/fail|interrupt|block/.test(value)) return t.blocked;
+    return t.muted;
+  }
+
+  statusChip(t, status) {
+    const tone = this.stageTone(t, lifecycleStage({ status }));
+    return h_flex().gap(4).flex_none().items_center()
+      .child(div().size(5).rounded(3).bg(tone))
+      .child(div().text_size(10).text_color(tone).child(statusLabel(status)));
+  }
+
+  smallButton(t, id, text, onClick) {
+    return div().id(id).px(7).py(4).rounded(5).cursor_pointer().text_size(10).bg(t.selected).text_color(t.foreground)
+      .hover((style) => style.bg(t.hover)).on_click((_event, clickCx) => onClick(clickCx)).child(text);
+  }
+
+  spaceCard(t, cx) {
+    const context = this.state.context;
+    if (!context) return null;
+    if (context.kind !== "dispatch") {
+      return v_flex().mx(8).my(7).p(8).gap(2).rounded(6).bg(t.raised)
+        .child(div().text_size(10).font_semibold().text_color(t.dim).child("CURRENT SPACE"))
+        .child(div().text_size(11.5).truncate().child(context.name || "Unnamed space"))
+        .when(Boolean(context.folder), (row) => row.child(div().text_size(10.5).truncate().text_color(t.dim).child(context.folder)))
+        .child(div().text_size(10.5).text_color(t.muted).child(context.message));
+    }
+    const { root, task, attempt } = context;
+    const { phase, position, total } = focusedPhase(root, task);
+    const progress = phaseProgress(root.epic_children);
+    const stage = lifecycleStage({ status: task?.status, attempt });
+    const agent = [attempt?.agent, String(attempt?.model ?? "").split("/").pop()].filter(Boolean).join(" · ");
+    return v_flex().mx(8).my(7).p(8).gap(5).rounded(6).bg(t.raised)
+      .child(h_flex().gap(6).items_center()
+        .child(div().text_size(10).font_semibold().text_color(t.dim).child("WORKTREE"))
+        .child(div().flex_1())
+        .child(div().id("aven-panel-lifecycle").text_size(10).font_semibold().text_color(this.stageTone(t, stage)).child(stage)))
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_none().text_color(t.accent).child("◆"))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_semibold().text_color(t.foreground).child(root.ref))
+        .child(this.statusChip(t, root.status)))
+      .child(div().text_size(11).text_color(t.muted).truncate().child(root.title))
+      .when(progress.total > 0, (el) => el.child(h_flex().gap(7).items_center()
+        .child(div().flex_1().min_w(0).h(3).rounded(2).bg(t.border).overflow_hidden()
+          .child(div().h_full().w(`${Math.round((progress.complete / progress.total) * 100)}%`).rounded(2).bg(t.accent)))
+        .child(div().flex_none().text_size(10).text_color(t.dim).child(`${progress.complete}/${progress.total} phases`))))
+      .child(div().h(1).flex_none().bg(t.border))
+      .when(Boolean(phase), (el) => el.child(h_flex().gap(6).items_center()
+        .child(div().flex_none().w(38).text_size(10).text_color(t.dim).child(total ? `PHASE ${position}/${total}` : "PHASE"))
+        .child(div().flex_none().text_color(this.stageTone(t, lifecycleStage({ status: phase.status }))).child(PHASE_GLYPH[phase.status] ?? "○"))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(`${phase.ref} · ${phase.title}`))
+        .when(!context.phase, (row) => row.child(div().flex_none().text_size(9.5).text_color(t.dim).child("next")))))
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_none().w(38).text_size(10).text_color(t.dim).child("TASK"))
+        .child(div().id("aven-panel-task").flex_1().min_w(0).truncate().text_size(11).font_semibold().text_color(t.foreground).child(task.ref))
+        .child(this.statusChip(t, task.status)))
+      .child(div().text_size(10.5).text_color(t.muted).truncate().child(task.title))
+      .child(h_flex().gap(6).items_center()
+        .child(div().size(6).rounded(3).flex_none().bg(this.dispatchTone(t, attempt?.state)))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(dispatchLabel(attempt?.state)))
+        .when(Boolean(agent), (row) => row.child(div().flex_none().text_size(10).text_color(t.dim).child(agent))))
+      .when(Boolean(attempt?.execution_mode), (el) => el.child(div().text_size(10).text_color(t.dim).child(attempt.execution_mode)))
+      .when(Boolean(attempt?.lifecycle?.contradiction), (el) => el.child(div().text_size(10).text_color(t.blocked).child(String(attempt.lifecycle.contradiction).replaceAll("_", " "))))
+      .child(h_flex().gap(6).pt(1)
+        .child(this.smallButton(t, "aven-panel-open-task", "Open task", (clickCx) => this.launch(task, clickCx ?? cx)))
+        .when(Boolean(phase && phase.ref !== task.ref), (row) => row.child(this.smallButton(t, "aven-panel-open-phase", "Open phase", (clickCx) => this.launch(phase, clickCx ?? cx)))));
+  }
+
   row(t, epic, cx) {
     const pinned = canonicalId(this.state.context?.pinned) === canonicalId(epic);
     return v_flex().id(`aven-epic-${epic.id}`).mx(8).px(9).py(7).gap(3).rounded(6).cursor_pointer().when(pinned, (el) => el.bg(t.selected))
@@ -229,7 +333,7 @@ export default class AvenPanel extends View {
   }
 
   render(cx) {
-    const t = theme(), state = this.state, rows = scopeEpics(state.rows, this.scope, state.context);
+    const t = theme(), state = this.state, rows = scopeEpics(state.rows, this.scope, state.context), card = this.spaceCard(t, cx);
     const scopeButton = (scope, label) => div().id(`aven-panel-scope-${scope}`).px(8).py(4).rounded(5).cursor_pointer().text_size(10.5)
       .bg(this.scope === scope ? t.selected : t.chrome).text_color(this.scope === scope ? t.foreground : t.muted)
       .hover((style) => style.bg(t.hover)).on_click((_event, clickCx) => { this.scope = scope; this.notify(clickCx); }).child(label);
@@ -242,12 +346,7 @@ export default class AvenPanel extends View {
         .child(div().id("aven-panel-refresh").px(7).py(4).rounded(5).cursor_pointer().text_size(11).text_color(t.muted)
           .hover((style) => style.bg(t.hover).text_color(t.foreground)).on_click((_event, clickCx) => this.refresh(clickCx)).child("Refresh")))
       .child(div().h(1).flex_none().bg(t.border))
-      .when(Boolean(state.context), (el) => el.child(v_flex().mx(8).my(7).p(8).gap(2).rounded(6).bg(t.raised)
-        .child(div().text_size(10).font_semibold().text_color(t.dim).child("CURRENT SPACE"))
-        .child(div().text_size(11.5).truncate().child(state.context.name || "Unnamed space"))
-        .when(Boolean(state.context.folder), (row) => row.child(div().text_size(10.5).truncate().text_color(t.dim).child(state.context.folder)))
-        .child(div().text_size(10.5).text_color(t.muted).child(state.context.message))
-        .when(state.context.kind === "dispatch", (row) => row.child(h_flex().gap(6).items_center().child(div().flex_1().min_w(0).truncate().text_size(10.5).child(`${state.context.root.ref} · ${state.context.root.title}`)).child(div().id("aven-panel-open-root").px(6).py(3).rounded(4).cursor_pointer().text_size(10.5).bg(t.selected).on_click((_event, clickCx) => this.launch(state.context.root, clickCx)).child("Open root"))))))
+      .when(Boolean(card), (el) => el.child(card))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().py(5)
         .when(state.loading, (el) => el.child(div().p(12).text_size(11.5).text_color(t.dim).child("Loading epics…")))
         .when(Boolean(state.error), (el) => el.child(div().mx(8).p(8).rounded(6).text_size(11).text_color(t.blocked).bg(t.raised).child(state.error)))

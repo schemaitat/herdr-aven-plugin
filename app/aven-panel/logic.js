@@ -130,14 +130,122 @@ export function isLiveEpicTerminal(terminal, workspace, epicId) {
   return terminal?.state === "live" && String(terminal?.name ?? "").startsWith(terminalName(workspace, epicId));
 }
 
+export function normalizeFolder(value) {
+  return String(value ?? "").replace(/\/+$/, "");
+}
+
+// A dispatched worktree is either the attempt's own checkout or one of its
+// phase worktrees. Only an exact one-to-one match is authoritative.
+export function dispatchTargets(attempts = [], folder = "") {
+  const target = normalizeFolder(folder);
+  if (!target) return [];
+  const targets = [];
+  for (const attempt of attempts ?? []) {
+    if (normalizeFolder(attempt?.worktree) === target) {
+      targets.push({ attempt, taskRef: String(attempt?.task_ref ?? ""), phase: null });
+      continue;
+    }
+    const phase = (attempt?.phases ?? []).find((entry) => normalizeFolder(entry?.worktree) === target);
+    if (phase) targets.push({ attempt, taskRef: String(phase?.task_ref ?? ""), phase });
+  }
+  return targets;
+}
+
+const TERMINAL_STATUSES = new Set(["done", "canceled"]);
+const REVIEW_EXECUTION_STATES = new Set(["needs-review", "completed"]);
+const ACTIVE_EXECUTION_STATES = new Set([
+  "running", "waiting", "starting", "queued", "failed", "interrupted",
+  "workspace-pending", "session-pending", "terminal-pending", "prompt-pending",
+  "babysitter-session-pending", "babysitter-prompt-pending",
+]);
+const STATUS_LABELS = {
+  inbox: "Inbox",
+  backlog: "Backlog",
+  todo: "Todo",
+  active: "Active",
+  done: "Done",
+  canceled: "Canceled",
+};
+const DISPATCH_LABELS = {
+  running: "Running",
+  waiting: "Waiting",
+  starting: "Starting",
+  queued: "Queued",
+  "needs-review": "Needs review",
+  completed: "Completed",
+  failed: "Failed",
+  interrupted: "Interrupted",
+  "workspace-pending": "Preparing workspace",
+  "session-pending": "Creating session",
+  "terminal-pending": "Starting terminal",
+  "prompt-pending": "Admitting prompt",
+  "babysitter-session-pending": "Starting babysitter",
+  "babysitter-prompt-pending": "Admitting babysitter prompt",
+};
+
+export function statusLabel(status) {
+  const value = String(status ?? "");
+  return STATUS_LABELS[value] ?? (value ? value[0].toUpperCase() + value.slice(1) : "Unknown");
+}
+
+export function dispatchLabel(state) {
+  const value = String(state ?? "").trim();
+  if (!value) return "Not dispatched";
+  return DISPATCH_LABELS[value] ?? value.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+// One lifecycle stage for the focused task. Aven status is acceptance; the
+// persisted attempt is execution, and a review state stays visible even when
+// the task already reads as done.
+export function lifecycleStage({ status, attempt } = {}) {
+  const state = String(attempt?.state ?? "");
+  if (REVIEW_EXECUTION_STATES.has(state)) return "Review";
+  if (ACTIVE_EXECUTION_STATES.has(state)) return "In progress";
+  switch (String(status ?? "")) {
+    case "done": return "Done";
+    case "canceled": return "Canceled";
+    case "active": return "In progress";
+    case "todo": return "Planned";
+    case "backlog": return "Backlog";
+    case "inbox": return "Inbox";
+    default: return "Unknown";
+  }
+}
+
+export function phaseProgress(children = []) {
+  const total = Array.isArray(children) ? children.length : 0;
+  const complete = (children ?? []).filter((child) => child?.open === false || TERMINAL_STATUSES.has(child?.status)).length;
+  return { complete, total };
+}
+
+// The phase the focused worktree represents, or the active/next phase when the
+// worktree belongs to the root epic.
+export function focusedPhase(root, task) {
+  const children = Array.isArray(root?.epic_children) ? root.epic_children : [];
+  const ref = String(task?.ref ?? "");
+  const index = children.findIndex((child) => child?.ref === ref);
+  if (index >= 0) return { phase: children[index], position: index + 1, total: children.length, current: true };
+  if (ref && ref === String(root?.ref ?? "")) {
+    const active = children.findIndex((child) => child?.status === "active");
+    const next = active >= 0 ? active : children.findIndex((child) => ["todo", "inbox", "backlog"].includes(child?.status));
+    return { phase: next >= 0 ? children[next] : null, position: next >= 0 ? next + 1 : 0, total: children.length, current: false };
+  }
+  return { phase: null, position: 0, total: children.length, current: false };
+}
+
 // Dispatcher data is only authoritative when it names this exact worktree.
-export function resolveSpaceContext({ space, attempts = [], task, root, rows = [] }) {
-  const folder = String(space?.folder ?? "");
+export function resolveSpaceContext({ space, attempts = [], task, root, rows = [], target }) {
+  const folder = normalizeFolder(space?.folder);
   const name = String(space?.name ?? "");
-  const matches = folder ? attempts.filter((attempt) => String(attempt?.worktree ?? "") === folder) : [];
   if (!folder) return { kind: "missing", name, folder, message: "This space has no worktree folder." };
+  const matches = target ? [target] : dispatchTargets(attempts, folder);
   if (matches.length !== 1) return { kind: matches.length ? "ambiguous" : "unavailable", name, folder, message: matches.length ? "Multiple dispatches found; showing project epics." : "Project space; showing project epics." };
   if (!task?.ref || !root?.is_epic || !root?.id) return { kind: "stale", name, folder, message: "Dispatcher context no longer resolves to an Aven root epic." };
   const pinned = rows.find((row) => canonicalId(row) === canonicalId(root)) ?? null;
-  return { kind: "dispatch", name, folder, task, root, pinned, message: pinned ? "Dispatcher root epic is listed below." : "Dispatcher root epic is not in the current safe result set." };
+  const match = matches[0];
+  return {
+    kind: "dispatch", name, folder, task, root, pinned,
+    attempt: match.attempt, phase: match.phase, taskRef: match.taskRef,
+    message: pinned ? "Dispatcher root epic is listed below." : "Dispatcher root epic is not in the current safe result set.",
+  };
 }

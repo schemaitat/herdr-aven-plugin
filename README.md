@@ -621,8 +621,22 @@ Herdr 0.1.12 main composition: Spaces and Agents stay on the left, while the
 right stack offers **Files**, **Changes**, and **Aven**. Clicking the active
 selector closes the stack; clicking another selector reveals that child. The
 selector remembers only an explicit valid choice per space in its own mod-local
-storage. A new space starts with the panel hidden, and the shipped main layout's
-panel preference is neither read nor changed.
+storage. An ordinary new space starts with the panel hidden; a first visit to a
+dispatched worktree reveals **Aven** so the focused work shows its context. An
+explicit Files/Changes choice for that space still wins, and the shipped main
+layout's panel preference is neither read nor changed.
+
+When the focused space is a dispatched worktree, the Aven panel shows a compact
+worktree card above the epic list: root epic and status, phase progress, the
+focused phase and its position (or the active/next phase when the checkout is
+the root worktree), the current task and Aven status, the persisted dispatch
+state with agent/model and execution mode, and one lifecycle stage (Backlog,
+Planned, In progress, Review, Done, Canceled). A phase worktree resolves through
+its attempt's phase entry, so the card names the phase task rather than the
+root. The card also exposes Open task/Open phase buttons, which reuse the same
+exact Aven terminal launcher. Dispatcher facts stay read-only; an unknown or
+missing attempt is labelled, never guessed as running. Focus changes refresh the
+card immediately in addition to the gentle ten-second data refresh.
 
 The Aven panel lists nondeleted open epics (inbox, backlog, todo, active),
 including future-available epics, from the repository's inferred project in the
@@ -637,10 +651,11 @@ Clicking an epic starts or reveals its exact `aven --workspace default tui
 as the Kanban board; the panel does not edit task fields directly. The panel
 reuses only a live terminal with the same workspace and canonical epic identity,
 suppresses duplicate launches while one is pending, and does not kill a terminal
-when the panel closes. Polling is gentle (about ten
-seconds, never overlapping) and cannot select or open a panel. Native app review
-requires an isolated `HERDR_APP_HOME` **and** isolated core/window; do not use a
-personal active app/core as a test target.
+when the panel closes. Data polling is gentle (about ten seconds, never
+overlapping); only the panel tabs mod reacts to a focused dispatched worktree by
+revealing Aven, and it never selects a layout. Native app review requires an
+isolated `HERDR_APP_HOME` **and** isolated core/window; do not use a personal
+active app/core as a test target.
 
 If needed, map the checkout to an Aven project:
 
