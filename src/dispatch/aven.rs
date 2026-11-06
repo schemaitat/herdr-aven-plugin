@@ -161,7 +161,10 @@ pub(crate) fn write_aven_links(
     let current = refresh_task_by_ref(invocation, &attempt.task_ref)?;
     ensure_attempt_current(&current, attempt)?;
     ensure_pending_admission_open(&current, attempt)?;
-    let snapshot = serialize_aven_attempt_snapshot(attempt)?;
+    // The snapshot written by this successful publication must represent the
+    // post-write state. Keep the durable attempt pending until the write and
+    // read-back complete, but don't publish that transient flag back to Aven.
+    let snapshot = serialize_aven_publication_snapshot(attempt)?;
     let metadata = vec![
         "dispatch.backend=hc".to_owned(),
         format!("dispatch.session-id={}", attempt.session_id),
@@ -372,6 +375,12 @@ fn serialize_aven_attempt_snapshot(attempt: &Attempt) -> Result<String> {
         );
     }
     Ok(snapshot)
+}
+
+fn serialize_aven_publication_snapshot(attempt: &Attempt) -> Result<String> {
+    let mut published = attempt.clone();
+    published.aven_update_pending = false;
+    serialize_aven_attempt_snapshot(&published)
 }
 
 /// Compare the durable, workflow-scoped Aven snapshot with the current
@@ -623,6 +632,32 @@ mod tests {
 
         attempt.state = "needs-review".into();
         assert!(!aven_snapshot_matches(&task, &attempt).unwrap());
+    }
+
+    #[test]
+    fn published_aven_snapshot_clears_pending_flag_without_clearing_store_copy() {
+        let mut attempt: Attempt = serde_json::from_value(serde_json::json!({
+            "task_id":"task", "task_ref":"APP-TASK", "workflow":"implementation",
+            "attempt_id":"att", "branch":"branch", "worktree":"/tmp", "session_id":"ses",
+            "prompt_id":"msg", "state":"needs-review", "aven":{}, "created_at":1,
+            "aven_update_pending":true
+        }))
+        .unwrap();
+
+        let serialized = serialize_aven_publication_snapshot(&attempt).unwrap();
+        let published: Attempt = serde_json::from_str(&serialized).unwrap();
+        assert!(!published.aven_update_pending);
+        assert!(attempt.aven_update_pending);
+
+        let task = serde_json::json!({
+            "metadata": {
+                "dispatch.attempt-id":"att",
+                "dispatch.state":"needs-review",
+                "dispatch.attempt.implementation":serialized
+            }
+        });
+        attempt.aven_update_pending = false;
+        assert!(aven_snapshot_matches(&task, &attempt).unwrap());
     }
 
     #[test]
