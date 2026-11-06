@@ -60,6 +60,10 @@ bounded (500 tasks per list, 80 context admissions per cycle, 2,000 attempts,
 64 linked sessions, 4,000 terminals, 4 MiB responses, four workers, four-second
 timeouts) and never migrate or mutate the dispatcher store.
 
+This JSON contract, not a web-side parser, is the dashboard's structural source
+of truth. `--no-api` suppresses the one-shot OpenCode activity read for callers
+that own the live OpenCode transport.
+
 There is no interactive dispatcher TUI. Use the Kanban board, the Aven overlay,
 and `aven tui` for interactive work.
 
@@ -88,6 +92,15 @@ just ui-test
 just ui-build
 just ui-start
 ```
+
+The dashboard reads its structural snapshot from `aven-dispatch inspect --json`
+(see [ADR 0001](docs/adr/0001-inspect-snapshot-source-of-truth.md)). Build the
+dispatcher first (`cargo build --workspace`) or install it; the server resolves
+`UI_INSPECT_BIN`, then `target/debug/aven-dispatch`, then `aven-dispatch` from
+`PATH`. A missing or incompatible inspector marks those sources unavailable
+instead of falling back to a second parser. OpenCode events/activity and log
+pagination stay in the web server because they are live-stream concerns; the
+inspector is called with `--no-api` for that reason.
 
 The explorer lists project tasks/epics and their typed relationships, dispatcher
 attempts/roles, API session identities, herdr-core terminals and their observed
@@ -1102,9 +1115,11 @@ The Rust dispatcher keeps its internal boundaries deliberately small:
   central-store persistence. Worktree Git is not here.
 - `src/dispatch/` owns dispatcher command behavior: planning/admission,
   runtime terminals/worktrees, Aven links, reset, supervision, and phases.
-- `src/inspect/sources/` owns bounded read-only source adapters (scope, Aven,
-  dispatcher store, herdr-core, and OpenCode); `sources/assemble.rs` owns pure
-  deterministic snapshot correlation and assembly.
+- `src/inspect/sources/` owns every bounded read-only structural source
+  (scope, Aven, dispatcher store, herdr-core, Git worktrees, optional
+  herdr-app, and one-shot OpenCode activity); `sources/assemble.rs` owns pure
+  deterministic snapshot correlation and assembly. The dashboard consumes this
+  `aven-dispatch-inspect/v1` contract instead of re-reading those sources.
 - `src/core.rs` owns the herdr-core CLI contract: identity, launches, facts,
   snapshots, safe event parsing, and guarded sends.
 - `src/worktrees.rs` owns every Git worktree operation through `hc exec`.
@@ -1112,6 +1127,11 @@ The Rust dispatcher keeps its internal boundaries deliberately small:
   correlation, and the bounded dashboard inventory.
 - `src/app.rs` owns optional herdr-app focus, peek, space, and Aven-panel
   placement; every call is bounded and never gates dispatch.
+
+The `web/` server owns only presentation and live transport: graph projection,
+SSE, and the OpenCode event/activity/log client. Its one structural source is
+`web/server/sources/inspect.ts`. Add new structural sources to the Rust
+inspector, not to `web/server/sources/`.
 
 This separation is intentionally not a framework: add a module only when a
 shared concern has a clear owner.
