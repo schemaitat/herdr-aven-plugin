@@ -110,7 +110,7 @@ pub(crate) fn reopen_preflight(
 
 // Runtime terminal/worktree ownership primitives used by admission.
 // Stable, human-filterable owner labels. They prove which attempt a terminal
-/// belongs to; they are never used as permission to advance Aven state.
+// belongs to; they are never used as permission to advance Aven state.
 
 /// Launch (or safely adopt) the OpenCode CLI for one role in a dedicated
 /// herdr-core terminal, detached from this short-lived dispatcher process.
@@ -207,6 +207,9 @@ pub(crate) fn root_prompt(
 }
 
 // Dispatch prompt and durable log ownership.
+// The reopen flow threads the existing attempt plus CLI-provided overrides;
+// a parameter struct would only mirror those fields.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reopen_existing(
     existing: Attempt,
     task: &Value,
@@ -221,7 +224,7 @@ pub(crate) fn reopen_existing(
     // Reopen confirmation uses interactive pickers; release the store
     // lock before starting them and reacquire only to checkpoint state.
     let resource = create_worktree(
-        &origin_cwd,
+        origin_cwd,
         &existing.branch,
         &format!("{} {}", existing.task_ref, task_title),
         None,
@@ -330,7 +333,7 @@ pub(crate) fn reopen_existing(
             // workflows rather than permanently stranding the attempt.
             reopened.prompt_id = identifier("msg");
             reopened.pending_prompt = root_prompt(
-                &task,
+                task,
                 &reopened.task_ref,
                 skill,
                 skills_dir,
@@ -379,6 +382,9 @@ pub(crate) fn reopen_existing(
 }
 
 /// Construct the durable attempt before any reservation or external effect.
+/// The arguments mirror the attempt record and its invocation overrides; a
+/// parameter struct would duplicate them without adding behavior.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn new_attempt(
     task_id: String,
     task_ref: String,
@@ -393,11 +399,11 @@ pub(crate) fn new_attempt(
     invocation: Invocation,
 ) -> Attempt {
     Attempt {
-        task_id: task_id,
-        task_ref: task_ref,
+        task_id,
+        task_ref,
         workflow: workflow.into(),
         attempt_id: identifier("att"),
-        branch: branch,
+        branch,
         worktree: String::new(),
         worktree_created_by_attempt: false,
         backend: "hc".into(),

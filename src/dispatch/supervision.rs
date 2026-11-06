@@ -373,6 +373,9 @@ fn message_terminal<'a>(
     Ok(terminal)
 }
 
+// Sends one message to a role terminal; the optional expectations guard
+// against a replacement attempt. A struct would only mirror the call sites.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn message(
     path: PathBuf,
     task: &str,

@@ -1,6 +1,6 @@
 //! Read-only dispatcher-store evidence and Aven recovery merge.
 
-use super::{aven::AvenContext, scope::source_error};
+use super::{aven::ContextMap, scope::source_error};
 use crate::{inspect::model::*, process::now, store::read_only::read_only_store_payloads};
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path};
@@ -120,7 +120,7 @@ struct RawPhase {
 
 pub(super) fn read_attempts(
     store: &Path,
-    contexts: &BTreeMap<String, (AvenContext, u64)>,
+    contexts: &ContextMap,
     secrets: &[String],
 ) -> (Vec<AttemptRecord>, SourceHealth) {
     let mut accepted: BTreeMap<(String, String, u64), AttemptRecord> = BTreeMap::new();
@@ -226,7 +226,7 @@ fn accept_attempt(
     payload: &str,
     origin: Origin,
     observed_at: u64,
-    contexts: &BTreeMap<String, (AvenContext, u64)>,
+    contexts: &ContextMap,
     owner: Option<&str>,
     workflow: Option<&str>,
     accepted: &mut BTreeMap<(String, String, u64), AttemptRecord>,
@@ -411,7 +411,7 @@ mod tests {
         })
         .to_string()
     }
-    fn contexts(metadata: &[(&str, &str)]) -> BTreeMap<String, (AvenContext, u64)> {
+    fn contexts(metadata: &[(&str, &str)]) -> ContextMap {
         BTreeMap::from([("task-one".to_owned(), (context(metadata), 10))])
     }
     #[test]

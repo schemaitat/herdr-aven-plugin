@@ -83,7 +83,7 @@ pub(super) fn read_core(
     let mut values = value
         .get("terminals")
         .and_then(Value::as_array)
-        .map(|values| values.clone())
+        .cloned()
         .unwrap_or_default();
     let capped = values.len() > PANE_LIMIT;
     values.truncate(PANE_LIMIT);

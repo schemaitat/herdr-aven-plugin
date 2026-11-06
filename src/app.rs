@@ -323,17 +323,19 @@ pub(crate) fn show_worktree(
         ],
     )
     .is_ok();
-    if labelled && !*aven_panel && !task_ref.is_empty() {
-        if show_aven_pane(&target.space, &target.tab, address, task_ref) {
-            *aven_panel = true;
-            // `space.new` starts an empty shell for the space's first tab. The
-            // split beside the agent proves the agent was adopted, so the
-            // placeholder can go and leave only the agent and Aven.
-            if let Some(placeholder) = target.placeholder.as_deref() {
-                if placeholder != address {
-                    let _ = core::kill(placeholder);
-                }
-            }
+    if labelled
+        && !*aven_panel
+        && !task_ref.is_empty()
+        && show_aven_pane(&target.space, &target.tab, address, task_ref)
+    {
+        *aven_panel = true;
+        // `space.new` starts an empty shell for the space's first tab. The
+        // split beside the agent proves the agent was adopted, so the
+        // placeholder can go and leave only the agent and Aven.
+        if let Some(placeholder) = target.placeholder.as_deref()
+            && placeholder != address
+        {
+            let _ = core::kill(placeholder);
         }
     }
     labelled
