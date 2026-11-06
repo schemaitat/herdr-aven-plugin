@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Tune Cargo profiles: release builds use `opt-level = "s"`, thin LTO, a single
+  codegen unit, and stripped symbols for a much smaller `aven-dispatch` binary,
+  while dependency crates build at `opt-level = 2` in dev for faster local runs.
 - Add `/approve` and commit-bound approval journals: the actual required checks
   run before accepting a final task/epic result, independently of terminal state.
   Remove the circular root-done/delivery gate from bundled implementation agents.
