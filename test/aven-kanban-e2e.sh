@@ -57,8 +57,8 @@ case "${1:-}" in
     cat "$AVEN_KANBAN_E2E/attempt.json"
     ;;
   message)
-    printf '%s\n' "$@" >> "$AVEN_KANBAN_E2E/messages.log"
-    printf '{}\n'
+    printf '%s\n' "$@" >> "$AVEN_KANBAN_E2E/unexpected-message.log"
+    exit 2
     ;;
   *)
     printf 'unsupported aven-dispatch fixture command: %s\n' "${1:-}" >&2
@@ -67,6 +67,10 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$root/bin/aven-dispatch"
+
+# Keep the merge tab's program harmless. The isolated app may not have a real
+# agent installed, so the tab falls back to a shell; the test reads the typed
+# prompt from that terminal rather than running a real merge.
 
 # Keep board Git evidence inside this isolated test root. The sandbox may not
 # expose the personal local-main checkout to a spawned app even when the real
@@ -96,7 +100,7 @@ add_epic() {
 backlog_ref=$(add_epic "Dummy backlog epic" backlog)
 planned_ref=$(add_epic "Dummy planned epic" todo --metadata sdd.plan-worked-out=true --metadata sdd.plan-kind=multi-phase)
 progress_ref=$(add_epic "Dummy in-progress epic" active --metadata sdd.plan-worked-out=true)
-review_ref=$(add_epic "Dummy review epic" active --metadata sdd.plan-worked-out=true)
+review_ref=$(add_epic "Dummy approved review epic" done --metadata sdd.plan-worked-out=true --metadata approval.state=approved --metadata delivery.state=committed)
 done_ref=$(add_epic "Dummy delivered epic" done --metadata delivery.state=merged --metadata delivery.target=main)
 main_done_ref=$(add_epic "Dummy main-delivered epic" done)
 review_id=$(aven show "$review_ref" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).id))')
@@ -115,7 +119,7 @@ fs.writeFileSync(output, JSON.stringify([
   {
     task_id: taskId, task_ref: taskRef, workflow: "implementation", attempt_id: "att_kanban_e2e",
     generation: 0, created_at: 100, state: "needs-review", execution_mode: "single-session",
-    worktree, branch: "review-result", lifecycle: { contradiction: "" },
+    worktree: "", branch: "review-result", lifecycle: { contradiction: "" },
     terminal: { address, core_id: "isolated-e2e", name: "kanban-review" },
     coordinator_terminal: { address: "", core_id: "", name: "" },
     pending_prompt: "fixture prompt must never be rendered",
@@ -162,33 +166,34 @@ herdr-app do aven-kanban.next >/dev/null
 herdr-app do aven-kanban.next >/dev/null
 herdr-app do aven-kanban.next >/dev/null
 herdr-app do aven-kanban.merge >/dev/null
+space_id=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/space.json")
+address=
 count=0
-while [ ! -s "$root/messages.log" ] && [ "$count" -lt 100 ]; do
+while [ -z "$address" ] && [ "$count" -lt 200 ]; do
+  if herdr-app ls > "$root/ls.json" 2>/dev/null; then
+    address=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); const tab = (space?.tabs || []).find((entry) => entry.name === name); const terminal = tab?.terminals?.[0]?.terminal; if (terminal) process.stdout.write(terminal);' "$root/ls.json" "$space_id" "merge $review_ref")
+  fi
+  [ -n "$address" ] && break
   sleep 0.1
   count=$((count + 1))
 done
-if [ ! -s "$root/messages.log" ]; then
+if [ -z "$address" ]; then
   herdr-app status > "$root/failure-status.json" || true
   herdr-app shot "$root/kanban-failure.png" >/dev/null || true
-  fail 'Merge into main did not invoke the dispatcher fixture'
+  fail 'Merge into main did not open the main-space merge tab'
 fi
-cat > "$root/expected-message.log" <<EOF
-message
-$review_id
---workflow
-implementation
---attempt-id
-att_kanban_e2e
---generation
-0
---role
-builder
---terminal
-$terminal
---text
-/ha-merge $review_id
-EOF
-assert_eq "$(cat "$root/messages.log")" "$(cat "$root/expected-message.log")" 'exact review workflow, role and local-main handoff'
+count=0
+prompt_seen=no
+while [ "$prompt_seen" = no ] && [ "$count" -lt 100 ]; do
+  if hc read "$address" 2>/dev/null | grep -Fq -- "/ha-merge $review_id"; then
+    prompt_seen=yes
+    break
+  fi
+  sleep 0.1
+  count=$((count + 1))
+done
+[ "$prompt_seen" = yes ] || fail 'merge tab did not receive the /ha-merge prompt'
+[ ! -e "$root/unexpected-message.log" ] || fail 'merge must not message a builder or coordinator terminal'
 sleep 1
 herdr-app shot "$root/kanban-handoff.png" >/dev/null
 [ -s "$root/kanban-handoff.png" ] || fail 'handoff screenshot was not written'

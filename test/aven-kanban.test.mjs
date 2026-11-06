@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT, assertBoardCoverage, buildBoard, cardForEpic, detailArgs,
-  dispatchTerminalName, epicArgs, flattenBoard, indexAttempts, isLiveEpicTerminal, markMergedOnMain, mergeArgs, mergeEpicRows,
-  mergeRole, mergeTerminal, moveSelection, normalizeAttempt, normalizeEpic, openArgs, selectedCard,
-  selectAttempt, terminalName, upcomingArgs,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
+  assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, dispatchTerminalName,
+  epicArgs, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, markMergedOnMain,
+  mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, normalizeAttempt,
+  normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
 const rawEpic = (id, status = "todo", extra = {}) => ({
@@ -25,7 +26,7 @@ const attempt = (taskId, extra = {}) => ({
 const card = (status = "todo", metadata = {}, attempts = [], extra = {}) => {
   const row = rawEpic("ONE", status, extra);
   const epic = normalizeEpic(row, detail(row, metadata));
-  return cardForEpic(epic, selectAttempt(attempts, epic.id));
+  return cardForEpic(epic, selectAttempt(attempts, epic.id), attempts);
 };
 
 assert.deepEqual(epicArgs("default"), ["list", "--workspace", "default", "--epics", "--limit", String(LIMIT), "--json"]);
@@ -33,11 +34,34 @@ assert.deepEqual(upcomingArgs("default"), ["list", "--workspace", "default", "--
 assert.deepEqual(detailArgs("default", "HAP-ONE"), ["show", "HAP-ONE", "--workspace", "default", "--full", "--json"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"]);
 assert.deepEqual(BOARD_COLUMNS.map(({ id }) => id), ["backlog", "planned", "progress", "review", "done"]);
+assert.equal(BOARD_COLUMNS.find(({ id }) => id === "planned").title, "Planned out");
+assert.deepEqual(CREATED_FILTERS.map(({ id }) => id), ["all", "1w", "2w", "1mo", "1y"]);
+assert.deepEqual(CREATED_FILTERS.map(({ days }) => days), [null, 7, 14, 30, 365]);
 assert.doesNotThrow(() => assertBoardCoverage({ available: LIMIT - 1, upcoming: LIMIT - 1, attempts: ATTEMPT_LIMIT - 1, epics: LIMIT - 1 }));
 assert.throws(() => assertBoardCoverage({ available: LIMIT }), /epic read reached/);
 assert.throws(() => assertBoardCoverage({ upcoming: LIMIT }), /epic read reached/);
 assert.throws(() => assertBoardCoverage({ epics: LIMIT }), /epic read reached/, "merged available/upcoming coverage is capped before metadata hydration");
 assert.throws(() => assertBoardCoverage({ attempts: ATTEMPT_LIMIT }), /dispatcher read reached/);
+
+// Creation filters hide cards outside the selected lookback; unknown dates are
+// kept only in "all" rather than being presented as recent.
+const now = Date.parse("2026-11-06T00:00:00Z");
+const aged = [
+  rawEpic("W1", "todo", { created_at: "2026-11-01T00:00:00Z" }),
+  rawEpic("W2", "todo", { created_at: "2026-10-25T00:00:00Z" }),
+  rawEpic("MO", "todo", { created_at: "2026-10-10T00:00:00Z" }),
+  rawEpic("Y", "todo", { created_at: "2026-02-01T00:00:00Z" }),
+  rawEpic("OLD", "todo", { created_at: "2024-01-01T00:00:00Z" }),
+  rawEpic("BAD", "todo", { created_at: "not-a-date" }),
+];
+assert.deepEqual(filterRowsByCreated(aged, "all", now).map(({ id }) => id), ["W1", "W2", "MO", "Y", "OLD", "BAD"]);
+assert.deepEqual(filterRowsByCreated(aged, "1w", now).map(({ id }) => id), ["W1"]);
+assert.deepEqual(filterRowsByCreated(aged, "2w", now).map(({ id }) => id), ["W1", "W2"]);
+assert.deepEqual(filterRowsByCreated(aged, "1mo", now).map(({ id }) => id), ["W1", "W2", "MO"]);
+assert.deepEqual(filterRowsByCreated(aged, "1y", now).map(({ id }) => id), ["W1", "W2", "MO", "Y"]);
+assert.equal(createdCutoff("all", now), 0);
+assert.equal(createdCutoff("1w", now), now - 7 * 86_400_000);
+assert.deepEqual(filterRowsByCreated(aged, "bogus", now), aged, "an unknown filter is treated as all");
 
 // List normalization retains every nondeleted epic, including terminal and
 // scheduled rows, while dropping ordinary tasks and deduplicating upcoming.
@@ -50,21 +74,25 @@ const merged = mergeEpicRows({
     plannedRow,
   ],
   upcoming: [plannedRow, rawEpic("FUTURE", "backlog", { available_at: "2027-01-01T00:00:00Z" })],
-  details: { PLANNED: detail(plannedRow, { "sdd.plan-worked-out": "true", "delivery.target": "main" }) },
+  details: { PLANNED: detail(plannedRow, { "sdd.plan-worked-out": "true", "approval.state": "approved", "delivery.target": "main" }) },
 });
 assert.deepEqual(merged.map(({ id }) => id), ["FUTURE", "PLANNED", "OLD"]);
 const planned = merged.find(({ id }) => id === "PLANNED");
 assert.equal(planned.planWorkedOut, true);
+assert.equal(planned.approved, true);
 assert.equal(planned.hydrated, true);
 assert.equal(planned.deliveryTarget, "main");
+assert.deepEqual(planned.taskIds, ["PLANNED"]);
 assert.equal(normalizeEpic(plannedRow).hydrated, false, "missing detail is unknown, not evidence of an unplanned/delivered task");
-const mismatched = normalizeEpic(plannedRow, detail(rawEpic("OTHER"), { "sdd.plan-worked-out": "true" }));
+const mismatched = normalizeEpic(plannedRow, detail(rawEpic("OTHER"), { "sdd.plan-worked-out": "true", "approval.state": "approved" }));
 assert.equal(mismatched.hydrated, false, "detail IDs must corroborate list identity");
 assert.equal(mismatched.planWorkedOut, false);
+assert.equal(mismatched.approved, false);
 const withPhases = rawEpic("PHASES", "active", { epic_children: [
   { id: "A", status: "done", open: false }, { id: "B", status: "active", open: true }, { id: "C", status: "canceled", open: false },
 ] });
 assert.deepEqual(normalizeEpic(withPhases).phases, { complete: 2, total: 3 });
+assert.deepEqual(normalizeEpic(withPhases).taskIds, ["PHASES", "A", "B", "C"]);
 
 // Every lifecycle column and the independent acceptance/execution/delivery facts.
 assert.equal(card("inbox").column, "backlog");
@@ -98,6 +126,31 @@ assert.match(card("done", {}, [attempt("ONE", { state: "running", lifecycle: { c
 const unhydratedRow = rawEpic("UNKNOWN");
 assert.match(cardForEpic(normalizeEpic(unhydratedRow), selectAttempt([], unhydratedRow.id)).warnings.join(" "), /Plan metadata/, "unhydrated todo is labeled rather than presented as certainly unplanned");
 
+// Approval is the merge gate, not execution or a live builder terminal.
+const approvedReview = card("done", { "approval.state": "approved", "delivery.state": "committed" });
+assert.equal(approvedReview.column, "review");
+assert.equal(approvedReview.approved, true);
+assert.equal(approvedReview.readyToMerge, true);
+assert.equal(approvedReview.mergeable, true);
+assert.equal(card("done", { "approval.state": "approved", "delivery.state": "committed" }, []).mergeable, true, "approval survives a finished builder terminal");
+assert.equal(card("done", { "delivery.state": "committed" }).approved, false);
+assert.equal(card("done", { "delivery.state": "committed" }).mergeable, false, "pending delivery alone is not approval");
+assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review" })]).mergeable, false, "review execution alone is not approval");
+assert.equal(card("done", { "approval.state": "approved", "delivery.state": "merged" }).mergeable, false, "delivered work is not mergeable");
+assert.equal(card("canceled", { "approval.state": "approved", "delivery.state": "pending" }).mergeable, false, "canceled work is never mergeable");
+
+// Agent activity covers the root and every child task, but failed/interrupted
+// work is not presented as actively running.
+assert.equal(card("active", {}, [attempt("ONE", { state: "running" })]).agentActive, true);
+assert.equal(card("active", {}, [attempt("ONE", { state: "failed" })]).agentActive, false);
+assert.equal(card("active", {}, [attempt("ONE", { state: "interrupted" })]).agentActive, false);
+const childRoot = rawEpic("ROOT", "active", { epic_children: [{ id: "CHILD", status: "active", open: true }] });
+const childEpic = normalizeEpic(childRoot, detail(childRoot, {}));
+assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD", { state: "running" })]).agentActive, true);
+assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD", { state: "failed" })]).agentActive, false);
+assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD", { state: "completed" })]).agentActive, false);
+assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD", { state: "running" })], [{ address: "t-builder", status: "working" }]).agentActive, true, "live working agents corroborate activity");
+
 // Attempt identity and ordering never use branch, focus, ref, or worktree.
 const selected = selectAttempt([
   attempt("OTHER", { state: "needs-review", created_at: 9999 }),
@@ -113,38 +166,40 @@ const ambiguous = selectAttempt([
 ], "ONE");
 assert.equal(ambiguous.attempt, null);
 assert.equal(ambiguous.ambiguous, true);
-assert.equal(card("active", {}, [attempt("ONE", { attempt_id: "one" }), attempt("ONE", { attempt_id: "two" })]).mergeable, false);
 const duplicate = selectAttempt([attempt("ONE"), attempt("ONE")], "ONE");
 assert.equal(duplicate.ambiguous, false, "duplicate observations of one attempt do not fabricate ambiguity");
 const safeAttempt = normalizeAttempt(attempt("ONE"));
 assert.equal("pending_prompt" in safeAttempt, false);
 assert.equal("prompt" in safeAttempt, false);
 
-// Merge handoff is restricted to an exact review terminal and role.
-const review = card("active", {}, [attempt("ONE", { state: "needs-review" })]);
-assert.equal(review.mergeable, true);
-assert.equal(review.mergeRole, "builder");
-assert.deepEqual(mergeArgs(review, review.attempt), [
-  "message", "ONE", "--workflow", "implementation", "--attempt-id", "att-ONE", "--generation", "0",
-  "--role", "builder", "--terminal", "t-builder", "--text", `${MERGE_PROMPT} ONE`,
+// Merge is a task-id prompt launched in the main checkout, never a message to a
+// builder/coordinator pane.
+const approvedEpic = normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), { "approval.state": "approved" }));
+assert.equal(mergePrompt(approvedEpic), `${MERGE_PROMPT} ONE`);
+assert.equal(mergeTabName(approvedEpic), "merge HAP-ONE");
+assert.deepEqual(mergeTabArgs({
+  name: "merge HAP-ONE", space: "sp-main", folder: "/repo", argv: ["opencode"], task: `${MERGE_PROMPT} ONE`,
+}), [
+  "do", "tab.new", "--name", "merge HAP-ONE", "--space", "sp-main", "--folder", "/repo",
+  "--argv", '["opencode"]', "--task", `${MERGE_PROMPT} ONE`,
 ]);
-const coordinated = card("active", {}, [attempt("ONE", { state: "needs-review", execution_mode: "worktrees" })]);
-assert.equal(coordinated.mergeRole, "coordinator");
-assert.equal(mergeTerminal(coordinated.attempt).address, "t-coordinator");
-assert.deepEqual(mergeArgs(coordinated, coordinated.attempt).slice(-6), ["--role", "coordinator", "--terminal", "t-coordinator", "--text", `${MERGE_PROMPT} ONE`]);
-assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review", execution_mode: "worktrees", coordinator_terminal: { address: "" } })]).mergeable, false, "no builder fallback for coordinator-owned work");
-assert.equal(card("done").mergeable, false);
-assert.equal(card("active", {}, [attempt("ONE", { state: "running" })]).mergeable, false);
-assert.equal(card("done", { "delivery.state": "pending" }, [attempt("ONE", { state: "running" })]).mergeable, false, "active execution cannot be bypassed by pending delivery");
-assert.equal(card("done", { "delivery.state": "pending" }, [attempt("ONE", { state: "unrecognized" })]).mergeable, false, "unknown execution fails closed even with pending delivery");
-assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review", lifecycle: { contradiction: "terminal_live_execution" } })]).mergeable, false, "contradictory evidence suppresses merge");
-assert.throws(() => mergeArgs(review, null), /No unambiguous review terminal/);
+assert.throws(() => mergeTabArgs({ name: "", space: "sp-main", folder: "/repo", argv: ["opencode"], task: "x" }), /needs a name/);
+assert.throws(() => mergeTabArgs({ name: "n", space: "", folder: "/repo", argv: ["opencode"], task: "x" }), /needs a name/);
+assert.throws(() => mergePrompt({}), /No approved task identity/);
+assert.throws(() => mergeTabName({ id: "ONE" }), /No approved task reference/);
 
-const replacementAttempt = attempt("ONE", { attempt_id: "att-replacement", generation: 1, created_at: 999, terminal: { address: "t-replacement" } });
-const pinnedArgs = mergeArgs(review, review.attempt);
-assert.ok(pinnedArgs.includes("att-ONE") && pinnedArgs.includes("t-builder"), "the click command remains pinned to the rendered attempt");
-assert.equal(pinnedArgs.includes(replacementAttempt.attempt_id), false);
-assert.equal(pinnedArgs.includes(replacementAttempt.terminal.address), false);
+// The main space is the visible space for the primary checkout; the active
+// space is only a fallback so a merge tab can still run in the right folder.
+const knownSpaces = [
+  { id: "worktree", folder: "/repo/worktree", name: "task space" },
+  { id: "main", folder: "/repo/", name: "repo" },
+  { id: "main2", folder: "/repo", name: "other" },
+];
+assert.equal(selectMainSpace(knownSpaces, "/repo", "worktree").id, "main", "prefers the space named for the repository");
+assert.equal(selectMainSpace(knownSpaces, "/repo", "main2").id, "main2", "prefers the active matching space");
+assert.equal(selectMainSpace(knownSpaces, "/repo", "missing").id, "main");
+assert.equal(selectMainSpace([{ id: "worktree", folder: "/repo/worktree", name: "task space" }], "/repo", "worktree").id, "worktree", "falls back to the active space");
+assert.equal(selectMainSpace([], "/repo", "worktree"), null);
 
 // Board order, per-refresh immutable-ID indexing, keyboard selection, and exact terminal identity.
 const attemptIndex = indexAttempts([attempt("B", { state: "needs-review" }), attempt("OTHER")]);
@@ -164,6 +219,8 @@ assert.equal(moveSelection(board, ordered[0], -1), ordered.at(-1), "previous wra
 assert.equal(moveSelection([], "", 1), "");
 assert.equal(selectedCard(board, "B").column, "review");
 assert.equal(selectedCard(board, "missing"), null);
+const childBoard = buildBoard({ rows: [childEpic], attemptIndex: indexAttempts([attempt("CHILD", { state: "running" })]) });
+assert.equal(flattenBoard(childBoard)[0].agentActive, true, "child attempts pulse the root card");
 
 const epic = { id: "ONE", ref: "HAP-ONE" };
 const name = `${terminalName("default", epic.id)}test`;
@@ -175,6 +232,5 @@ assert.deepEqual(openArgs({ workspace: "default", epic, cwd: "/repo", name }).sl
 assert.equal(openArgs({ workspace: "default", epic, cwd: "", name }).includes("--cwd"), false);
 assert.ok(dispatchTerminalName("default", epic.id, DISPATCH_ACTIONS[1]).startsWith(terminalName("default", epic.id)));
 assert.ok(dispatchTerminalName("default", epic.id, DISPATCH_ACTIONS[1]).endsWith("-s-"));
-assert.equal(mergeRole(null), "builder");
 
 console.log("aven kanban logic ok");

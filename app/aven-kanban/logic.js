@@ -4,9 +4,16 @@
 export const LIMIT = 500;
 export const ATTEMPT_LIMIT = 500;
 export const MERGE_PROMPT = "/ha-merge";
+export const CREATED_FILTERS = [
+  { id: "all", label: "All", days: null },
+  { id: "1w", label: "1w", days: 7 },
+  { id: "2w", label: "2w", days: 14 },
+  { id: "1mo", label: "1mo", days: 30 },
+  { id: "1y", label: "1y", days: 365 },
+];
 export const BOARD_COLUMNS = [
   { id: "backlog", title: "Backlog" },
-  { id: "planned", title: "Planned" },
+  { id: "planned", title: "Planned out" },
   { id: "progress", title: "In progress" },
   { id: "review", title: "Review" },
   { id: "done", title: "Done" },
@@ -27,6 +34,11 @@ const ACTIVE_EXECUTION_STATES = new Set([
   "workspace-pending", "session-pending", "terminal-pending", "prompt-pending",
   "babysitter-session-pending", "babysitter-prompt-pending",
 ]);
+const WORKING_EXECUTION_STATES = new Set([
+  "running", "waiting", "starting", "queued",
+  "workspace-pending", "session-pending", "terminal-pending", "prompt-pending",
+  "babysitter-session-pending", "babysitter-prompt-pending",
+]);
 const REVIEW_EXECUTION_STATES = new Set(["needs-review", "completed"]);
 const PENDING_DELIVERY_STATES = new Set(["pending", "committed"]);
 const RECORDED_DELIVERY_STATES = new Set(["merged", "not-applicable", "superseded", "waived"]);
@@ -34,6 +46,24 @@ const RECORDED_DELIVERY_STATES = new Set(["merged", "not-applicable", "supersede
 export function assertBoardCoverage({ available = 0, upcoming = 0, attempts = 0, epics = 0 }) {
   if (available >= LIMIT || upcoming >= LIMIT || epics >= LIMIT) throw new Error(`epic read reached the ${LIMIT}-item safety limit`);
   if (attempts >= ATTEMPT_LIMIT) throw new Error(`dispatcher read reached the ${ATTEMPT_LIMIT}-attempt safety limit`);
+}
+
+export function createdCutoff(filterId, now = Date.now()) {
+  const filter = CREATED_FILTERS.find((candidate) => candidate.id === filterId);
+  if (!filter || filter.days == null) return 0;
+  return now - filter.days * 86_400_000;
+}
+
+// A finite creation window hides unknown timestamps rather than claiming they
+// are recent. "all" keeps every row, including rows with an unusable date.
+export function filterRowsByCreated(rows, filterId, now = Date.now()) {
+  const list = rows ?? [];
+  const cutoff = createdCutoff(filterId, now);
+  if (!cutoff) return list;
+  return list.filter((row) => {
+    const created = timeValue(row?.created_at);
+    return created > 0 && created >= cutoff;
+  });
 }
 
 export function epicArgs(workspace) {
@@ -78,6 +108,9 @@ export function normalizeEpic(row, detail) {
   const hydrated = detailTask?.id === id && detailTask?.is_epic === true;
   const metadata = hydrated && detail?.metadata && typeof detail.metadata === "object" ? detail.metadata : {};
   const children = hydrated && Array.isArray(detailTask.epic_children) ? detailTask.epic_children : (row.epic_children ?? []);
+  const childIds = (Array.isArray(children) ? children : [])
+    .map((child) => String(child?.id ?? "").trim())
+    .filter(Boolean);
   return {
     id,
     ref,
@@ -90,9 +123,12 @@ export function normalizeEpic(row, detail) {
     hydrated,
     mergedOnMain: row.mergedOnMain === true,
     planWorkedOut: hydrated && metadata["sdd.plan-worked-out"] === "true",
+    approvalState: hydrated ? String(metadata["approval.state"] ?? "") : "",
+    approved: hydrated && metadata["approval.state"] === "approved",
     deliveryState: hydrated ? String(metadata["delivery.state"] ?? "") : "",
     deliveryTarget: hydrated ? String(metadata["delivery.target"] ?? "") : "",
     deliveryObligation: hydrated ? String(metadata["delivery.obligation"] ?? "") : "",
+    taskIds: [id, ...childIds],
     phases: phaseProgress(children),
   };
 }
@@ -173,26 +209,44 @@ export function selectAttempt(attempts, taskId) {
   return { attempt: ambiguous ? null : first, ambiguous, candidates };
 }
 
-export function mergeRole(attempt) {
-  return attempt?.executionMode === "worktrees" ? "coordinator" : "builder";
+export function mergePrompt(epic) {
+  if (!epic?.id) throw new Error("No approved task identity is available.");
+  return `${MERGE_PROMPT} ${epic.id}`;
 }
 
-export function mergeTerminal(attempt) {
-  return mergeRole(attempt) === "coordinator" ? attempt?.coordinatorTerminal : attempt?.terminal;
+export function mergeTabName(epic) {
+  if (!epic?.ref) throw new Error("No approved task reference is available.");
+  return `merge ${epic.ref}`;
 }
 
-export function mergeArgs(epic, attempt) {
-  const target = mergeTerminal(attempt);
-  if (!epic?.id || !attempt?.workflow || !attempt?.attemptId || !target?.address) throw new Error("No unambiguous review terminal is available.");
-  return [
-    "message", epic.id,
-    "--workflow", attempt.workflow,
-    "--attempt-id", attempt.attemptId,
-    "--generation", String(attempt.generation),
-    "--role", mergeRole(attempt),
-    "--terminal", target.address,
-    "--text", `${MERGE_PROMPT} ${epic.id}`,
-  ];
+export function mergeTabArgs({ name, space, folder, argv, task }) {
+  if (!name || !space || !folder || !Array.isArray(argv) || argv.length === 0 || !task) {
+    throw new Error("A main-space merge tab needs a name, space, folder, agent, and prompt.");
+  }
+  return ["do", "tab.new", "--name", name, "--space", space, "--folder", folder,
+    "--argv", JSON.stringify(argv), "--task", task];
+}
+
+function normalizedPath(value) {
+  return String(value ?? "").replace(/\/+$/, "");
+}
+
+// Integration belongs in the primary checkout, not in whichever worktree space
+// the board was opened from. Prefer an already-visible space for that folder;
+// if none exists, fall back to the active space and run the tab there.
+export function selectMainSpace(spaces, root, activeSpaceId = "") {
+  const list = spaces ?? [];
+  const folder = normalizedPath(root);
+  const candidates = folder
+    ? list.filter((space) => normalizedPath(space?.folder) === folder)
+    : [];
+  const active = candidates.find((space) => space?.id === activeSpaceId);
+  if (active) return active;
+  const repository = folder.split("/").filter(Boolean).pop() ?? "";
+  const named = candidates.find((space) => String(space?.name ?? "") === repository);
+  if (named) return named;
+  if (candidates.length) return candidates[0];
+  return list.find((space) => space?.id === activeSpaceId) ?? null;
 }
 
 function executionState(attempt) {
@@ -202,11 +256,12 @@ function executionState(attempt) {
   return "unknown";
 }
 
-export function cardForEpic(epic, attemptSelection) {
+export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAgents = []) {
   const attempt = attemptSelection?.attempt ?? null;
   const execution = executionState(attempt);
+  const attempts = relatedAttempts.length ? relatedAttempts : (attempt ? [attempt] : []);
   const warnings = [];
-  if (attemptSelection?.ambiguous) warnings.push("Multiple current dispatcher attempts; actions paused.");
+  if (attemptSelection?.ambiguous) warnings.push("Multiple current dispatcher attempts; dispatch actions paused.");
   if (attempt?.contradiction) warnings.push(attempt.contradiction.replaceAll("_", " "));
   if (!epic.hydrated && epic.status === "todo") warnings.push("Plan metadata is not loaded yet.");
   if (TERMINAL_STATUSES.has(epic.status) && execution === "active") warnings.push("Terminal Aven status conflicts with active execution.");
@@ -228,27 +283,40 @@ export function cardForEpic(epic, attemptSelection) {
   else if (epic.status === "todo" && epic.planWorkedOut) column = "planned";
   else column = "backlog";
 
-  const terminal = mergeTerminal(attempt);
-  const mergeable = column === "review" && execution === "review" && !attempt?.contradiction && Boolean(attempt?.workflow && terminal?.address) && !attemptSelection?.ambiguous;
+  const agentActive = attempts.some((candidate) =>
+    WORKING_EXECUTION_STATES.has(candidate.state)
+    || (candidate.terminal?.address && liveAgents.some((live) =>
+      live.address === candidate.terminal.address && live.status === "working")));
+  const approved = epic.approved === true;
+  const readyToMerge = column === "review" && approved && epic.status !== "canceled";
   return {
     ...epic,
     column,
     attempt,
+    relatedAttempts: attempts,
     attemptAmbiguous: Boolean(attemptSelection?.ambiguous),
     executionState: attempt?.state ?? "",
-    mergeRole: mergeable ? mergeRole(attempt) : "",
-    mergeTerminal: mergeable ? terminal : null,
-    mergeable,
+    approved,
+    readyToMerge,
+    mergeable: readyToMerge,
+    agentActive,
     warnings,
   };
 }
 
-export function buildBoard({ rows = [], attempts = [], attemptIndex }) {
+export function buildBoard({ rows = [], attempts = [], attemptIndex, liveAgents = [] }) {
   const columns = BOARD_COLUMNS.map((column) => ({ ...column, cards: [] }));
   const byId = new Map(columns.map((column) => [column.id, column]));
   const attemptsByTask = attemptIndex ?? indexAttempts(attempts);
   for (const epic of rows) {
-    const card = cardForEpic(epic, selectAttempt(attemptsByTask.get(epic.id) ?? [], epic.id));
+    const taskIds = Array.isArray(epic.taskIds) && epic.taskIds.length ? epic.taskIds : [epic.id];
+    const relatedAttempts = taskIds.flatMap((taskId) => attemptsByTask.get(taskId) ?? []);
+    const card = cardForEpic(
+      epic,
+      selectAttempt(attemptsByTask.get(epic.id) ?? [], epic.id),
+      relatedAttempts,
+      liveAgents,
+    );
     byId.get(card.column)?.cards.push(card);
   }
   return columns;

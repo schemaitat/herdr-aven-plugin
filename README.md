@@ -533,17 +533,24 @@ herdr-app do mod.open --name aven-kanban
 
 The board lists nondeleted root epics from the repository's inferred Aven
 project in the explicit local `default` workspace. Scheduled open epics and
-terminal done/canceled epics are included. Five horizontally scrollable columns
-combine independent Aven and dispatcher facts instead of creating another task
-store:
+terminal done/canceled epics are included. Five flexible columns always fit the
+overlay width without horizontal scrolling and combine independent Aven and
+dispatcher facts instead of creating another task store:
 
 | Column | Contents |
 | --- | --- |
 | **Backlog** | Unplanned inbox, backlog, and todo epics. |
-| **Planned** | Todo epics with `sdd.plan-worked-out=true` and no current execution/review attempt. |
+| **Planned out** | Todo epics with `sdd.plan-worked-out=true` and no current execution/review attempt. |
 | **In progress** | Active epics and running, pending, failed, or interrupted execution. |
-| **Review** | Needs-review/completed execution awaiting acceptance or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
+| **Review** | Needs-review/completed execution awaiting approval or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
 | **Done** | Delivered or legacy accepted done epics, terminal work whose exact attempt result is verified on local main, and canceled epics. |
+
+A **Created** control row filters visible cards by `created_at` with `All`,
+`1w`, `2w`, `1mo`, and `1y` windows (fixed 7/14/30/365-day lookbacks). The choice
+persists across overlay openings, and a hidden card cannot stay selected. Cards
+whose root epic or any child task has a working dispatcher attempt pulse a
+working indicator. Pressing `Enter` jumps to that agent's space and terminal;
+when no live agent is available it opens the epic's Aven TUI as before.
 
 Cards show the qualified ref, title, Aven status, phase progress, and known
 plan/execution/delivery badges. Contradictory terminal/execution evidence and
@@ -568,23 +575,26 @@ identity; repeated activation is deduplicated.
 | Board key | Action |
 | --- | --- |
 | `j` / `k` or arrows | Select next / previous card |
-| `Enter` or `o` | Open the selected epic |
+| `Enter` or `o` | Jump to a live agent's space, or open the selected epic |
 | `d` | Toggle the selected epic's Dispatch menu |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
-| `m` | Merge an eligible Review epic into local main through `/ha-merge` |
+| `m` | Open `/ha-merge` for an approved Review epic in the main space |
 | `r` | Refresh |
 | `Esc` | Close a Dispatch menu, then the board |
 
-**Merge into main** appears only on a Review card with review execution
-(`needs-review`/`completed`), no contradiction, one unambiguous matching attempt,
-and an owned terminal. It sends `/ha-merge <immutable-task-id>` to the builder
-for single-session execution or the coordinator for worktrees execution. The
-command carries the immutable task ID, attempt ID, reset generation, and expected
-role-terminal address; the dispatcher validates all four under its store lock
-before messaging. A reset/re-dispatch or terminal replacement therefore refuses
-the click before any message, and only the validated terminal is revealed. A
-busy, missing, ambiguous, unknown, or failed terminal is an inline error, never a
-fallback target. This is a handoff to the existing
+An approved Review card shows a green **✓ ready to merge** check. Approval means
+the root task metadata contains `approval.state=approved`; execution state alone
+never unlocks merging. Review cards without approval say **awaiting approval**
+and have no merge button.
+
+**Merge into main** opens a tab named `merge <task-ref>` in the main app space
+and starts the user's installed agent with `/ha-merge <immutable-task-id>`. The
+main space is the visible space whose folder is the repository's primary
+checkout (the parent of the Git common directory); if none exists, the active
+space is used and the tab still starts in that primary checkout. Clicking again
+reuses the task-named tab. The handoff is tied only to the immutable task ID, so
+it survives a recreated worktree space and does not depend on the builder or
+coordinator terminal still existing. This is a handoff to the existing
 [finish workflow](#finish-a-dispatched-worktree), not a one-click Git mutation:
 `/ha-merge` requires a durable `/approve` result and clean worktrees. Its invocation
 is the explicit merge trigger; no second confirmation is required. The board itself never commits, merges, pushes, opens a PR,
@@ -602,8 +612,9 @@ evidence instead of asserting delivery. Failed refreshes retain clearly labeled
 stale results; partial metadata failures are not presented as complete coverage.
 
 For native verification, `just app-test-e2e` creates an isolated app home, core
-session, Aven DB, dispatcher store, and five dummy epics. It checks keyboard
-selection and the exact merge handoff, peeks an owned fixture terminal, and
+session, Aven DB, dispatcher store, and six dummy epics. It checks keyboard
+selection and asserts that merge launches a main-space tab with the exact
+`/ha-merge <immutable-task-id>` prompt, never a builder/coordinator message. It
 retains `kanban-board.png` and `kanban-handoff.png` under
 `/tmp/opencode/aven-kanban-e2e.*` for visual inspection. The test needs
 herdr-app, herdr-core, Aven, and a display; it is intentionally separate from
