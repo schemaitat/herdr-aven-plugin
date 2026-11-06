@@ -1,10 +1,10 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { closeOverlay, exec, focused, hc, nextCommand, props, run, spaces, terminals, theme } from "herdr";
+import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals, theme } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, DISPATCH_ACTIONS, assertBoardCoverage, buildBoard, detailArgs, dispatchTerminalName,
-  epicArgs, indexAttempts, isLiveEpicTerminal, markMergedOnMain, mergeArgs, mergeEpicRows,
-  moveSelection, openArgs, selectAttempt, selectedCard, terminalName, upcomingArgs,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, assertBoardCoverage, buildBoard, detailArgs, dispatchTerminalName,
+  epicArgs, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, markMergedOnMain, mergeEpicRows,
+  mergePrompt, mergeTabArgs, mergeTabName, moveSelection, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -13,7 +13,7 @@ const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
 const DETAIL_METADATA = [
-  "sdd.plan-worked-out", "delivery.state", "delivery.target", "delivery.obligation",
+  "sdd.plan-worked-out", "approval.state", "delivery.state", "delivery.target", "delivery.obligation",
 ];
 
 function message(error) { return String(error?.message ?? error); }
@@ -63,11 +63,13 @@ export default class AvenKanban extends View {
     this.cx = cx;
     this.closed = false;
     this.refreshing = false;
-    this.state = { loading: true, rows: [], attempts: [], error: "", coverageError: "", stale: false };
+    this.state = { loading: true, rows: [], attempts: [], liveAgents: [], error: "", coverageError: "", stale: false };
     this.details = new Map();
     this.pendingLaunches = new Set();
     this.pendingMerges = new Set();
     this.mainEvidence = { head: "", entries: new Map() };
+    const storedFilter = String(shared("aven-kanban.created-filter") ?? "");
+    this.createdFilter = CREATED_FILTERS.some((filter) => filter.id === storedFilter) ? storedFilter : "all";
     this.selectedId = "";
     this.dispatchMenuEpicId = null;
     this.folder = String(props()?.cwd ?? "");
@@ -215,13 +217,19 @@ export default class AvenKanban extends View {
         const attempts = [...attemptIndex.values()].flat();
         const mainEvidence = await this.evidenceFromMain(cwd, baseWithDetails, attemptIndex);
         const rows = markMergedOnMain(baseWithDetails, mainEvidence.merged);
-        const board = buildBoard({ rows, attemptIndex });
+        const liveAgents = (agents() ?? []).map((agent) => ({
+          address: String(agent?.address ?? ""),
+          status: String(agent?.status ?? ""),
+          space: String(agent?.space ?? ""),
+          tab: String(agent?.tab ?? ""),
+        }));
+        const board = buildBoard({ rows: filterRowsByCreated(rows, this.createdFilter), attemptIndex, liveAgents });
         this.selectedId = selectedCard(board, this.selectedId)?.id ?? moveSelection(board, "", 1);
         const coverage = [];
         if (failures.length) coverage.push(`${failures.length} epic metadata read(s) failed: ${failures.slice(0, 3).join("; ")}`);
         if (mainEvidence.error) coverage.push(mainEvidence.error);
         this.state = {
-          loading: false, rows, attempts, attemptIndex, error: "", stale: false,
+          loading: false, rows, attempts, attemptIndex, liveAgents, error: "", stale: false,
           coverageError: coverage.join("; "),
         };
       } catch (error) {
@@ -233,8 +241,22 @@ export default class AvenKanban extends View {
     });
   }
 
-  columns() { return buildBoard(this.state); }
+  columns() {
+    return buildBoard({
+      rows: filterRowsByCreated(this.state.rows, this.createdFilter),
+      attemptIndex: this.state.attemptIndex,
+      liveAgents: this.state.liveAgents ?? [],
+    });
+  }
   selected() { return selectedCard(this.columns(), this.selectedId); }
+
+  setFilter(id, cx) {
+    if (!CREATED_FILTERS.some((filter) => filter.id === id)) return;
+    this.createdFilter = id;
+    setShared("aven-kanban.created-filter", id);
+    this.selectedId = selectedCard(this.columns(), this.selectedId)?.id ?? moveSelection(this.columns(), "", 1);
+    this.notify(cx);
+  }
 
   select(delta, cx) {
     this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
@@ -248,7 +270,45 @@ export default class AvenKanban extends View {
     this.notify(cx);
   }
 
-  openSelected(cx) { const card = this.selected(); if (card) this.open(card, cx); }
+  relatedAgent(card) {
+    const attempts = card.relatedAttempts?.length ? card.relatedAttempts : (card.attempt ? [card.attempt] : []);
+    const addresses = attempts.map((attempt) => attempt.terminal?.address).filter(Boolean);
+    const live = agents();
+    for (const address of addresses) {
+      const agent = live.find((candidate) => candidate.address === address);
+      if (agent) return agent;
+    }
+    for (const address of addresses) {
+      const terminal = terminals().find((candidate) => candidate.address === address && candidate.state === "live");
+      if (terminal) {
+        return {
+          address,
+          status: String(terminal.status ?? ""),
+          space: String(terminal.labels?.["herdr.space"] ?? ""),
+          tab: String(terminal.labels?.["herdr.tab"] ?? ""),
+        };
+      }
+    }
+    return null;
+  }
+
+  jumpToAgent(card) {
+    const agent = this.relatedAgent(card);
+    if (!agent?.address) return false;
+    if (agent.space) run("space.select", { id: agent.space });
+    if (agent.tab) run("tab.select", { id: agent.tab });
+    if (agent.status === "working" || agent.program?.agent) run("agent.focus", { terminal: agent.address });
+    else run("pane.focus", { terminal: agent.address });
+    this.close();
+    return true;
+  }
+
+  openSelected(cx) {
+    const card = this.selected();
+    if (!card) return;
+    if (this.jumpToAgent(card)) return;
+    this.open(card, cx);
+  }
   dispatchSelected(actionId, cx) {
     const card = this.selected();
     const action = DISPATCH_ACTIONS.find((candidate) => candidate.id === actionId);
@@ -349,16 +409,47 @@ export default class AvenKanban extends View {
     });
   }
 
+  async mergeAgent() {
+    const configured = shared("aven-kanban.merge-agent");
+    if (Array.isArray(configured) && configured.length > 0 && configured.every((part) => typeof part === "string")) {
+      return configured;
+    }
+    try {
+      const installed = (await knownAgents())
+        .filter((agent) => agent?.installed && Array.isArray(agent.run) && agent.run.length > 0);
+      const preferred = installed.find((agent) =>
+        /opencode/i.test(`${agent.key ?? ""} ${agent.name ?? ""} ${agent.run.join(" ")}`));
+      const chosen = preferred ?? installed[0];
+      if (chosen) return chosen.run;
+    } catch {}
+    return ["opencode"];
+  }
+
   merge(epic, cx) {
     if (!epic.mergeable || this.pendingMerges.has(epic.id)) return;
     this.pendingMerges.add(epic.id);
     cx.spawn(async (taskCx) => {
       try {
-        const args = mergeArgs(epic, epic.attempt);
-        const cwd = epic.attempt.worktree || await this.rootFolder(this.spaceFolder());
-        const result = await exec("aven-dispatch", args, cwd ? { cwd } : undefined);
-        if (result.code !== 0) throw new Error((result.stderr || "").trim() || "the review session is busy or unavailable");
-        await this.reveal(epic.mergeTerminal.address, taskCx);
+        const root = await this.rootFolder(this.spaceFolder());
+        if (!root) throw new Error("the primary checkout is unavailable");
+        const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
+        const target = selectMainSpace(spaces(), root, activeSpaceId);
+        if (!target?.id) throw new Error("no main app space is available");
+        const name = mergeTabName(epic);
+        const existing = (target.tabs ?? []).find((tab) => tab.name === name);
+        if (existing) {
+          run("tab.select", { id: existing.id });
+          const agent = agents().find((candidate) => candidate.tab === existing.id);
+          if (agent?.address) run("agent.focus", { terminal: agent.address });
+          this.close();
+          return;
+        }
+        const argv = await this.mergeAgent();
+        const result = await exec("herdr-app", mergeTabArgs({
+          name, space: target.id, folder: root, argv, task: mergePrompt(epic),
+        }));
+        if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not open the merge agent");
+        this.close();
       } catch (error) {
         this.state = { ...this.state, error: `Merge handoff failed: ${message(error)}` };
       } finally {
@@ -394,19 +485,27 @@ export default class AvenKanban extends View {
     const selected = card.id === this.selectedId;
     const open = card.status !== "done" && card.status !== "canceled";
     return v_flex().id(`aven-kanban-card-${card.id}`).p(8).gap(5).rounded(7).border(1)
-      .border_color(selected ? t.accent : t.border).bg(selected ? t.selected : t.background).cursor_pointer()
+      .border_color(selected ? t.accent : card.agentActive ? t.working : t.border)
+      .bg(selected ? t.selected : t.background).cursor_pointer()
       .on_click((_event, clickCx) => this.selectCard(card, clickCx ?? cx))
       .child(h_flex().gap(5).items_center()
         .child(div().flex_none().text_size(9.5).font_semibold().text_color(t.accent).child(card.ref))
+        .when(card.agentActive, (el) => el.child(h_flex().gap(3).items_center()
+          .child(div().text_size(9).text_color(t.working).child("●").loop("opacity", { from: 1, to: 0.3, period: 1200 }))
+          .child(div().text_size(8.5).text_color(t.working).child("working"))))
         .child(div().flex_1())
         .child(div().flex_none().text_size(9).text_color(t.dim).child(card.status)))
       .child(div().text_size(11.5).font_semibold().text_color(t.foreground).child(card.title))
       .child(h_flex().gap(5).items_center().text_size(9).text_color(t.muted)
         .when(card.phases.total > 0, (el) => el.child(div().child(`${card.phases.complete}/${card.phases.total} phases`)))
-        .when(card.planWorkedOut, (el) => el.child(div().child("planned")))
+        .when(card.planWorkedOut, (el) => el.child(div().child("planned out")))
         .when(card.mergedOnMain, (el) => el.child(div().child("on main")))
         .when(card.executionState, (el) => el.child(div().child(card.executionState)))
         .when(card.deliveryState, (el) => el.child(div().child(`delivery ${card.deliveryState}`))))
+      .when(card.readyToMerge, (el) => el.child(h_flex().gap(4).items_center()
+        .child(div().text_size(10).font_semibold().text_color(t.done).child("✓ ready to merge"))
+        .child(div().text_size(8.5).text_color(t.dim).child("approved"))))
+      .when(card.column === "review" && !card.approved, (el) => el.child(div().text_size(8.5).text_color(t.dim).child("awaiting approval")))
       .when(card.warnings.length > 0, (el) => el.child(div().text_size(9).text_color(t.blocked).child(card.warnings.join(" "))))
       .child(h_flex().gap(4).items_center()
         .child(this.button(`aven-kanban-open-${card.id}`, "Open", (_event, clickCx) => this.open(card, clickCx)))
@@ -416,13 +515,13 @@ export default class AvenKanban extends View {
           this.notify(clickCx);
         })))
         .when(card.mergeable, (el) => el.child(this.button(`aven-kanban-merge-${card.id}`, "Merge into main", (_event, clickCx) => this.merge(card, clickCx), true))))
-      .when(card.mergeable, (el) => el.child(div().text_size(8.5).text_color(t.dim).child("via /ha-merge · confirmation required")))
+      .when(card.mergeable, (el) => el.child(div().text_size(8.5).text_color(t.dim).child("opens /ha-merge in the main space")))
       .when(this.dispatchMenuEpicId === card.id, (el) => el.child(this.dispatchMenu(card, cx)));
   }
 
   column(column, cx) {
     const t = theme();
-    return v_flex().id(`aven-kanban-column-${column.id}`).w(238).flex_none().h_full().min_h(0).rounded(8)
+    return v_flex().id(`aven-kanban-column-${column.id}`).flex_1().min_w(0).h_full().min_h(0).rounded(8)
       .border(1).border_color(t.border).bg(t.chrome)
       .child(h_flex().h(36).px(10).gap(6).items_center().flex_none()
         .child(div().flex_1().text_size(11).font_semibold().text_color(t.foreground).child(column.title))
@@ -464,15 +563,25 @@ export default class AvenKanban extends View {
           .child(div().text_size(9.5).text_color(t.dim).child(`${this.state.rows[0]?.project ?? "Current project"} · ${count} epics`)))
         .child(this.button("aven-kanban-refresh", this.refreshing ? "Refreshing…" : "Refresh", (_event, clickCx) => this.refresh(clickCx)))
         .child(div().text_size(10).text_color(t.dim).child("Esc")))
+      .child(h_flex().min_h(28).px(14).pb(4).gap(4).items_center().flex_none()
+        .child(div().text_size(9.5).text_color(t.dim).child("Created"))
+        .children(CREATED_FILTERS.map((filter) => this.button(
+          `aven-kanban-filter-${filter.id}`, filter.label,
+          (_event, clickCx) => this.setFilter(filter.id, clickCx),
+          this.createdFilter === filter.id,
+        )))
+        .child(div().flex_1())
+        .child(div().text_size(9.5).text_color(t.dim).child(`${count} of ${this.state.rows.length} epics`)))
       .child(h_flex().min_h(28).px(14).pb(5).gap(8).items_center().flex_none().text_size(9.5).text_color(t.muted)
-        .child(div().flex_1().child("j/k select · Enter open · d dispatch · s plan+implement · m merge · r refresh"))
+        .child(div().flex_1().child("j/k select · Enter open/jump · d dispatch · s plan+implement · m merge · r refresh"))
         .child(div().child(BOARD_COLUMNS.map((column) => column.title).join(" → "))))
       .when(Boolean(this.state.error), (el) => el.child(div().mx(12).mb(6).p(8).rounded(6).text_size(10).text_color(t.blocked).bg(t.raised).child(this.state.error)))
       .when(Boolean(this.state.coverageError), (el) => el.child(div().mx(12).mb(6).p(8).rounded(6).text_size(10).text_color(t.blocked).bg(t.raised).child(`Incomplete metadata: ${this.state.coverageError}`)))
       .when(this.state.stale, (el) => el.child(div().mx(12).mb(6).text_size(9.5).text_color(t.dim).child("Showing last successful results (stale).")))
-      .child(h_flex().flex_1().min_h(0).overflow_x_scrollbar().p(10).gap(10)
+      .child(h_flex().flex_1().min_h(0).min_w(0).overflow_hidden().p(10).gap(10)
         .when(this.state.loading, (el) => el.child(div().p(16).text_size(11).text_color(t.dim).child("Loading epics…")))
-        .when(!this.state.loading && count === 0, (el) => el.child(div().p(16).text_size(11).text_color(t.dim).child("No epics in this project.")))
+        .when(!this.state.loading && count === 0, (el) => el.child(div().p(16).text_size(11).text_color(t.dim)
+          .child(this.state.rows.length ? "No epics match this filter." : "No epics in this project.")))
         .when(!this.state.loading && count > 0, (el) => el.children(columns.map((column) => this.column(column, cx)))));
   }
 }
