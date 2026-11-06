@@ -130,6 +130,13 @@ describe('copied, seeded bounded forces', () => {
     expect(topologyKey(nodes, edges)).toBe(topologyKey([...nodes].reverse().map(node => ({ ...node, label: 'new', state: 'done' })), [...edges].reverse()));
     expect(topologyKey(nodes, edges)).not.toBe(topologyKey(nodes.slice(1), edges));
   });
+  test('topology key tracks node kinds and edge identity, endpoints and kinds', () => {
+    const key = topologyKey(nodes, edges);
+    expect(topologyKey(nodes.map((node, index) => index === 0 ? { ...node, kind: node.kind === 'epic' ? 'task' : 'epic' } : node), edges)).not.toBe(key);
+    expect(topologyKey(nodes, [...edges, { ...edges[0], id: 'extra' }])).not.toBe(key);
+    expect(topologyKey(nodes, edges.map((edge, index) => index === 0 ? { ...edge, kind: edge.kind === 'related' ? 'blocks' : 'related' } : edge))).not.toBe(key);
+    expect(topologyKey(nodes, edges.map((edge, index) => index === 0 ? { ...edge, source: edge.target, target: edge.source } : edge))).not.toBe(key);
+  });
 });
 
 describe('single manually clocked scheduler', () => {
