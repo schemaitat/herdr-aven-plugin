@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
   assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, dispatchTerminalName,
@@ -6,6 +7,9 @@ import {
   mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, normalizeAttempt,
   normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
+
+const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
+assert.deepEqual(manifest.overlay, { width: 1800, height: 680 });
 
 const rawEpic = (id, status = "todo", extra = {}) => ({
   id, ref: `HAP-${id}`, title: `Epic ${id}`, project: "herdr-aven-plugin", status,
