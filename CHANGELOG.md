@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove the obsolete interactive dispatcher TUI (`aven-dispatch tui`) and its
+  `ratatui` dependency, PTY fixtures, `just tui`/`just test-tui` recipes, and
+  herdr-app inspector launchers. The non-interactive `aven-dispatch inspect
+  --json` snapshot remains the diagnostics surface, and Aven's own TUI is
+  unchanged.
 - Install a bundled `herdr-aven-tasks` OpenCode skill with `just install`. It
   triages Aven tasks against dispatcher attempts, `hc` terminals, and OpenCode
   sessions, and reports running, awaiting-review, stale, and not-started work.

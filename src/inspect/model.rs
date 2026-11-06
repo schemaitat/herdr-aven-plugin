@@ -1,9 +1,8 @@
-//! Immutable, sanitized inspector snapshot.
+//! Immutable, sanitized inspection snapshot.
 //!
 //! This is the presentation-neutral read boundary consumed by `inspect
-//! --json` and (in later phases) the terminal inspector. It deliberately keeps
-//! source evidence, ownership and health separate instead of collapsing them
-//! into one "state" field.
+//! --json`. It deliberately keeps source evidence, ownership and health
+//! separate instead of collapsing them into one "state" field.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

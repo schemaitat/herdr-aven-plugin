@@ -15,7 +15,6 @@ mod model;
 mod picker;
 mod process;
 mod store;
-mod tui;
 mod watch;
 mod worktrees;
 
@@ -302,18 +301,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Open the keyboard-driven read-only dispatcher inspector.
-    Tui {
-        /// Aven project key; inferred from the repository when omitted.
-        #[arg(long)]
-        project: Option<String>,
-        /// Aven workspace key; defaults to the Aven default workspace.
-        #[arg(long)]
-        workspace: Option<String>,
-        /// Directory used to infer the project and repository.
-        #[arg(long, default_value = ".")]
-        cwd: PathBuf,
-    },
     /// Read a scoped, sanitized correlation snapshot without mutating state.
     Inspect {
         /// Aven project key; inferred from the repository when omitted.
@@ -541,16 +528,6 @@ fn main() -> Result<()> {
             cwd,
             store: path,
             json,
-        }),
-        Commands::Tui {
-            project,
-            workspace,
-            cwd,
-        } => tui::run(tui::Args {
-            project,
-            workspace,
-            cwd,
-            store: path,
         }),
         Commands::Doctor => dispatch::doctor(&path),
     };

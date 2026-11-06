@@ -249,30 +249,6 @@ export default class AvenWorktree extends View {
     }
   }
 
-  async openInspector(cx) {
-    const folder = this.state.folder || this.space()?.folder;
-    if (!folder) return;
-    const existing = terminals().find(
-      (terminal) => terminal.state === "live" && terminal.cwd === folder && String(terminal.name ?? "").startsWith("aven-inspector-"),
-    );
-    if (existing) {
-      run("terminal.peek", { terminal: existing.address });
-      return;
-    }
-    try {
-      const name = `aven-inspector-${Date.now().toString(36)}`;
-      const result = await hc([
-        "run", "--bg", "--json", "--no-parent", "--outlive-parent",
-        "--name", name, "--cwd", folder, "--", "aven-dispatch", "tui",
-      ]);
-      if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not start the inspector");
-      run("terminal.peek", { terminal: JSON.parse(result.stdout).address });
-    } catch (error) {
-      this.state = { ...this.state, error: String(error?.message ?? error) };
-      this.notify(cx);
-    }
-  }
-
   status(t, status, blocked) {
     return h_flex()
       .gap(5)
@@ -529,8 +505,7 @@ export default class AvenWorktree extends View {
              .when(Boolean(state.task?.ref), (section) => section.child(
                this.button(t, "open-task", "Open task", (_event, cx) => this.openTask(cx)),
              ))
-             .child(this.button(t, "open", "Open Aven", (_event, cx) => this.openAven(cx)))
-             .child(this.button(t, "inspect", "Inspector", (_event, cx) => this.openInspector(cx)))))
+             .child(this.button(t, "open", "Open Aven", (_event, cx) => this.openAven(cx)))))
        );
   }
 }

@@ -45,56 +45,23 @@ For the dashboard, install Node 24 LTS and run `just ui-install` once.
 
 ## Getting started
 
-### Dispatcher inspector
+### Dispatcher diagnostics
 
 ```sh
-aven-dispatch tui --project HAP
-just tui
+aven-dispatch inspect --json --project HAP
 ```
 
-The inspector is a keyboard-driven, read-only k9s-style view of the same
-scoped snapshot used by diagnostics. It shows overview, task/epic, attempt,
-session/agent and herdr-core terminal tables, with worktree placement, source
-health and provenance in details. Aven acceptance, persisted dispatcher state,
-OpenCode API activity and terminal observations remain separate; missing,
-stale, capped or contradictory evidence is labelled accordingly.
+`inspect` prints the scoped, read-only dispatcher snapshot as JSON: overview,
+task/epic, attempt, session/agent and herdr-core terminal tables, with worktree
+placement, source health and provenance. Aven acceptance, persisted dispatcher
+state, OpenCode API activity and terminal observations remain separate; missing,
+stale, capped or contradictory evidence is labelled accordingly. Reads are
+bounded (500 tasks per list, 80 context admissions per cycle, 2,000 attempts,
+64 linked sessions, 4,000 terminals, 4 MiB responses, four workers, four-second
+timeouts) and never migrate or mutate the dispatcher store.
 
-Keys: `j`/`k` or arrows move, `PgUp`/`PgDn` page, `Home`/`End` jump, `/` searches
-labels/refs/IDs, `:` selects `overview`, `tasks`, `attempts`, `sessions` or
-`terminals`, `f` cycles a state filter, `e` toggles epic-only, `S` reverses
-sort, `i` opens details, `Enter` focuses the selected resource's explicitly
-owned terminal (or opens a chooser), `r` refreshes, `?` opens help, `Esc`
-closes/cancels the active surface, and `q`/Ctrl+C quits.
-
-Aven/dispatcher reads refresh about every five seconds and herdr-core/API reads
-about every two. Each lane has at most one read in flight, refresh requests
-coalesce, and failed refreshes retain last-good rows as visibly stale. Live API
-activity expires after 4.5 seconds and becomes unknown rather than idle. Reads
-are bounded (500 tasks per list, 80 context admissions per cycle, 2,000
-attempts, 64 linked sessions, 4,000 terminals, 4 MiB responses, four workers,
-four-second timeouts) and never migrate or mutate the dispatcher store.
-Hydrated contexts are cached per task id across cycles and only re-read when the
-listed `updated_at` changes, the task was not seen before, or the entry is older
-than 30 seconds; uncovered and stale tasks are hydrated ahead of warm ones so
-coverage still converges above the 80-task window.
-
-Enter resolves only explicitly persisted terminal ownership from an attempt,
-phase, session or terminal row. Multiple candidates open an in-TUI chooser;
-cancellation performs no focus call. Immediately before revealing the target,
-the inspector revalidates the herdr-core identity, exact terminal liveness and
-ownership labels, then asks the optional herdr-app to focus or peek that exact
-terminal. Missing, replaced, moved-to-another-core, timed-out or errored
-targets fail visibly without fallback, input forwarding or Aven/store mutation.
-Standalone inspection keeps running after a successful focus.
-
-Diagnostics:
-
-```sh
-aven-dispatch inspect --json
-```
-
-The optional herdr-app mod adds a **Dispatcher inspector** action (`i`) that
-starts the same TUI in a dedicated `aven-inspector-*` terminal and reveals it.
+There is no interactive dispatcher TUI. Use the Kanban board, the Aven overlay,
+and `aven tui` for interactive work.
 
 ### Optional read-only local dashboard
 
@@ -633,8 +600,7 @@ The companion `aven-worktree` panel is installed with the same command. Every
 dispatched worktree space opens an **Aven** pane beside the agent showing the
 root epic, its phases and progress, the current task, and the persisted
 dispatcher state, with buttons to open the current task directly, the generic
-Aven TUI, or the dispatcher inspector and a row that peeks the attempt
-terminal. The panel is created once per worktree and remembers that in the
+Aven TUI, and a row that peeks the attempt terminal. The panel is created once per worktree and remembers that in the
 persisted attempt. If you close it, reopen it
 for the focused space with `herdr-app do mod.open --name aven-worktree` (or the
 command palette's mod picker). It is read-only: it never changes tasks, prompts,
@@ -1057,7 +1023,6 @@ retained approved plan can be dispatched again without duplicate planning.
 just fmt       # Check Rust formatting
 just check     # Compile checks
 just test      # Rust unit tests and shell/integration fixtures
-just test-tui  # Inspector rendering, stalled-source, terminal and focus-effect PTY checks
 just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
 just app-test  # Node 24 Kanban and right-panel model/tabs fixtures
 just app-check # herdr-app check all optional Aven mods
@@ -1085,7 +1050,7 @@ The Rust dispatcher keeps its internal boundaries deliberately small:
 - `src/agents.rs` and `src/picker.rs` own agent/model selection and terminal
   picker mechanics.
 - `src/store.rs` owns durable SQLite state; `src/store/read_only.rs` owns the
-  non-mutating inspector reader.
+  non-mutating inspection reader.
 - `src/process.rs` owns bounded Aven/OpenCode/process transport helpers, not
   central-store persistence. Worktree Git is not here.
 - `src/dispatch/` owns dispatcher command behavior: planning/admission,
