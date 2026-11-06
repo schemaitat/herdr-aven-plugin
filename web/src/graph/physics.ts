@@ -9,8 +9,28 @@ export const NODE_RADIUS = { epic: 64, default: 36 } as const;
 /** Extra radius-aware clearance in deterministic layouts and force collision. */
 export const CLEARANCE_GAP = 14;
 export const nodeRadius = (node: Pick<Entity, 'kind'>) => node.kind === 'epic' ? NODE_RADIUS.epic : NODE_RADIUS.default;
+const FNV_OFFSET = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+// Length-prefix every field so concatenated values cannot alias each other.
+const hashField = (hash: number, value: string) => {
+  hash = Math.imul(hash ^ value.length, FNV_PRIME);
+  for (let index = 0; index < value.length; index++) hash = Math.imul(hash ^ value.charCodeAt(index), FNV_PRIME);
+  return hash;
+};
+/**
+ * Order-independent fingerprint of graph topology. Status, labels and other
+ * presentation fields are intentionally excluded; only ids, kinds and edge
+ * endpoints participate. Hashing avoids the large JSON string previously
+ * allocated on every sync while keeping the same change-detection contract.
+ */
 export function topologyKey(nodes: Entity[], edges: GraphEdge[]) {
-  return JSON.stringify([nodes.map(node => [node.id, node.kind]).sort(), edges.map(edge => [edge.id, edge.source, edge.target, edge.kind]).sort()]);
+  const orderedNodes = [...nodes].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0);
+  const orderedEdges = [...edges].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : a.source < b.source ? -1 : a.source > b.source ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0);
+  let hash = hashField(hashField(FNV_OFFSET, 'nodes'), String(orderedNodes.length));
+  for (const node of orderedNodes) hash = hashField(hashField(hash, node.id), node.kind);
+  hash = hashField(hashField(hash, 'edges'), String(orderedEdges.length));
+  for (const edge of orderedEdges) hash = hashField(hashField(hashField(hashField(hash, edge.id), edge.source), edge.target), edge.kind);
+  return (hash >>> 0).toString(16);
 }
 const copy = (positions: Map<string, Position>) => new Map([...positions].map(([id, point]) => [id, { ...point }]));
 interface Particle extends SimulationNodeDatum { id: string; x: number; y: number; radius: number; anchor: Position }
