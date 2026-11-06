@@ -2,5 +2,5 @@
   "place": "none",
   "title": "Aven Kanban",
   "focusable": true,
-  "overlay": { "width": 1800, "height": 680 }
+  "overlay": { "width": 1600, "height": 680 }
 }
