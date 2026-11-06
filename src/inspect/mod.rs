@@ -1,7 +1,7 @@
-//! Read-only dispatcher inspector boundary.
+//! Read-only dispatcher inspection boundary.
 //!
-//! `inspect --json` is the nonterminal diagnostic surface for the same
-//! immutable snapshot the terminal inspector renders in a later phase. It
+//! `inspect --json` is the nonterminal diagnostic surface for the immutable
+//! snapshot assembled from Aven, dispatcher, herdr-core and OpenCode reads. It
 //! never mutates Aven, dispatcher records, OpenCode sessions or terminal focus.
 
 pub(crate) mod model;

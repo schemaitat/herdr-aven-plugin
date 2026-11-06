@@ -8,7 +8,6 @@
     "o": "aven-tasks.open",
     "a": "aven-tasks.add",
     "k": "aven-tasks.kanban",
-    "i": "aven-tasks.inspect",
     "r": "aven-tasks.refresh",
     "escape": "aven-tasks.close"
   },

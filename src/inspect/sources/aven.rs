@@ -212,10 +212,10 @@ struct AvenRead {
 
 /// How long a hydrated context stays usable before a background re-read.
 ///
-/// The TUI base lane refreshes every 5 s, so a 5 s window would expire every
-/// entry on every cycle and the cache would never hit. `updated_at` changes
-/// still invalidate immediately; the window only bounds how long an otherwise
-/// unchanged context is trusted without re-reading it.
+/// Callers that poll the snapshot refresh about every 5 s, so a 5 s window
+/// would expire every entry on every cycle and the cache would never hit.
+/// `updated_at` changes still invalidate immediately; the window only bounds
+/// how long an otherwise unchanged context is trusted without re-reading it.
 const CONTEXT_CACHE_TTL_MS: u64 = 30_000;
 
 #[derive(Debug, Clone)]

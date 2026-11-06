@@ -38,15 +38,6 @@ preflight:
 inspect *args:
     cargo run -- inspect --json {{args}}
 
-# Interactive read-only dispatcher inspector.
-tui *args:
-    cargo run -- tui {{args}}
-
-# Terminal lifecycle, rendering, stalled-source and focus-effect PTY checks.
-test-tui:
-    cargo build --workspace
-    sh test/dispatcher-tui.test.sh
-
 # Real herdr-core + fake OpenCode/Aven processes in an isolated HC_SESSION.
 test-e2e:
     cargo build --workspace

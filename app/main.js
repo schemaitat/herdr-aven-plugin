@@ -38,7 +38,6 @@ export default class AvenTasks extends View {
         if (name === "open") await this.launch("tui");
         else if (name === "add") await this.launch("compose");
         else if (name === "kanban") this.openKanban();
-        else if (name === "inspect") await this.launchInspector();
         else if (name === "refresh") await this.refresh();
         else if (name === "close") this.close();
         else cx.notify();
@@ -142,31 +141,6 @@ export default class AvenTasks extends View {
     }
   }
 
-  async launchInspector() {
-    const folder = this.cwd;
-    if (!folder) {
-      this.error = "No focused folder; open a terminal first.";
-      this.cx.notify();
-      return;
-    }
-    const prefix = "aven-inspector-";
-    const existing = terminals().find(terminal => terminal.state === "live" && terminal.cwd === folder && String(terminal.name ?? "").startsWith(prefix))
-      ?? this.live.find(terminal => terminal.state === "live" && terminal.cwd === folder && String(terminal.name ?? "").startsWith(prefix));
-    if (existing) {
-      await this.reveal(existing.address);
-      return;
-    }
-    const name = `${prefix}${Date.now().toString(36)}`;
-    try {
-      const result = await hc(["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name, "--cwd", folder, "--", "aven-dispatch", "tui"]);
-      if (result.code !== 0) throw new Error(result.stderr.trim() || "could not start the dispatcher inspector");
-      await this.reveal(JSON.parse(result.stdout).address);
-    } catch (error) {
-      this.error = String(error?.message ?? error);
-      this.cx.notify();
-    }
-  }
-
   action(label, hint, onClick) {
     const t = theme();
     return h_flex()
@@ -203,7 +177,6 @@ export default class AvenTasks extends View {
         else if (key === "o") this.launch("tui");
         else if (key === "a") this.launch("compose");
         else if (key === "k") this.openKanban();
-        else if (key === "i") this.launchInspector();
         else if (key === "r") this.refresh();
         else return;
         cx.stop_propagation();
@@ -213,7 +186,6 @@ export default class AvenTasks extends View {
       .child(this.action("Open aven", "o", () => this.launch("tui")))
       .child(this.action("Add a task", "a", () => this.launch("compose")))
       .child(this.action("Kanban board", "k", () => this.openKanban()))
-      .child(this.action("Dispatcher inspector", "i", () => this.launchInspector()))
       .child(this.action("Refresh terminals", "r", () => this.refresh()))
       .when(this.error, el => el.child(div().px(10).py(6).text_size(11).text_color(t.blocked).child(this.error)))
       .when(dispatch.length > 0, el => el.child(h_flex().px(10).pt(8).pb(3).text_size(11).font_semibold().text_color(t.dim).child("Live terminals")).children(dispatch.map(terminal => h_flex()
