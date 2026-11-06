@@ -25,12 +25,14 @@ pub(crate) struct Snapshot {
     pub(crate) scope: Scope,
     pub(crate) limits: Limits,
     pub(crate) sources: Vec<SourceHealth>,
+    pub(crate) core: CoreRecord,
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) attempts: Vec<AttemptRecord>,
     pub(crate) sessions: Vec<SessionRecord>,
     pub(crate) panes: Vec<PaneRecord>,
     pub(crate) workspaces: Vec<WorkspaceRecord>,
     pub(crate) worktrees: Vec<WorktreeRecord>,
+    pub(crate) app: AppRecord,
     pub(crate) candidates: Vec<PaneCandidate>,
     pub(crate) relationships: Vec<Relationship>,
     pub(crate) conflicts: Vec<EvidenceConflict>,
@@ -129,6 +131,41 @@ impl SourceHealth {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub(crate) struct CoreRecord {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) machine: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub(crate) struct AppRecord {
+    pub(crate) spaces: Vec<AppSpace>,
+    pub(crate) placements: Vec<AppPlacement>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct AppSpace {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) folder: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct AppPlacement {
+    pub(crate) terminal: String,
+    pub(crate) pane: String,
+    pub(crate) space: String,
+    pub(crate) space_name: String,
+    pub(crate) tab: String,
+    pub(crate) tab_name: String,
+    pub(crate) status: String,
+    pub(crate) app: String,
+    pub(crate) name: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct EntityRef {
     pub(crate) kind: String,
@@ -209,6 +246,12 @@ pub(crate) struct TaskRecord {
     pub(crate) project: String,
     pub(crate) status: String,
     pub(crate) is_epic: bool,
+    pub(crate) deleted: bool,
+    pub(crate) priority: String,
+    pub(crate) available_at: String,
+    pub(crate) due_on: String,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) epic_parent: Option<EntityRef>,
     pub(crate) epic_children: Vec<EntityRef>,
@@ -263,6 +306,21 @@ pub(crate) struct PhaseRecord {
     pub(crate) integrated_commit: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub(crate) struct TerminalObservationRecord {
+    pub(crate) core_id: String,
+    pub(crate) address: String,
+    pub(crate) state: String,
+    pub(crate) status: String,
+    pub(crate) status_kind: String,
+    pub(crate) program: String,
+    pub(crate) reason: String,
+    pub(crate) turn: u64,
+    pub(crate) seq: u64,
+    pub(crate) updated_at: u64,
+    pub(crate) recovery: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct AttemptRecord {
     pub(crate) task_id: String,
@@ -294,6 +352,8 @@ pub(crate) struct AttemptRecord {
     pub(crate) babysitter_pane: String,
     pub(crate) session_id: String,
     pub(crate) pane: String,
+    pub(crate) log_task_ref: String,
+    pub(crate) terminals: BTreeMap<String, TerminalObservationRecord>,
     pub(crate) phases: Vec<PhaseRecord>,
 }
 
@@ -383,6 +443,18 @@ pub(crate) struct PaneRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) agent_session_id: Option<String>,
     pub(crate) focused: bool,
+    pub(crate) core_id: String,
+    pub(crate) name: String,
+    pub(crate) state: String,
+    pub(crate) status: String,
+    pub(crate) status_kind: String,
+    pub(crate) program: String,
+    pub(crate) reason: String,
+    pub(crate) turn: u64,
+    pub(crate) reported: bool,
+    pub(crate) recovered_shell: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -408,6 +480,9 @@ pub(crate) enum WorktreeOrigin {
 pub(crate) struct WorktreeRecord {
     pub(crate) path: String,
     pub(crate) branch: String,
+    pub(crate) head: String,
+    pub(crate) detached: bool,
+    pub(crate) primary: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) open_workspace_id: Option<String>,
     pub(crate) origin: WorktreeOrigin,

@@ -1,15 +1,12 @@
 import { spawn } from 'node:child_process';
 
 export interface Scope { cwd: string; project: string; workspace: string; core: boolean; session: string }
+// Structural reads belong to `aven-dispatch inspect`. The dashboard keeps only
+// project discovery and the bounded Aven context read used by dispatcher log
+// history; both are read-only and narrowly scoped.
 export type ReadCommand =
   | { kind: 'projects' }
-  | { kind: 'list'; upcoming?: boolean }
-  | { kind: 'context'; ref: string }
-  | { kind: 'worktrees' }
-  | { kind: 'app' }
-  | { kind: 'core-list' }
-  | { kind: 'core-status' };
-export const LIST_LIMIT = 500;
+  | { kind: 'context'; ref: string };
 export type Runner = (command: ReadCommand) => Promise<unknown>;
 export const identifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 export const PROJECT_LIMIT = 100;
@@ -18,21 +15,12 @@ export interface CommandVector { program: string; args: string[]; format: 'json'
 
 export function commandVector(scope: Scope, command: ReadCommand): CommandVector {
   if (!identifier.test(scope.project) || !identifier.test(scope.workspace)) throw new Error('Invalid startup scope');
-  const avenScope = ['--project', scope.project, '--workspace', scope.workspace];
   switch (command.kind) {
     case 'projects': return { program: 'aven', args: ['project', 'list', '--workspace', scope.workspace, '--limit', String(PROJECT_LIMIT), '--json'], format: 'json' };
-    case 'list': return { program: 'aven', args: ['list', ...avenScope, '--limit', String(LIST_LIMIT), '--json', ...(command.upcoming ? ['--upcoming'] : [])], format: 'json' };
     case 'context': {
       if (!/^[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(command.ref)) throw new Error('Invalid task reference');
       return { program: 'aven', args: ['context', command.ref, '--workspace', scope.workspace, '--json'], format: 'json' };
     }
-    // Every worktree operation goes through herdr-core, including this read-only inventory.
-    case 'worktrees': return { program: 'hc', args: ['exec', '--cwd', scope.cwd, 'git', 'worktree', 'list', '--porcelain'], format: 'text' };
-    // Optional desktop topology; absent app is a normal headless state.
-    case 'app': return { program: 'herdr-app', args: ['ls'], format: 'json' };
-    // Headless fallback when the dispatcher inventory file is absent.
-    case 'core-list': return { program: 'hc', args: ['ls', '--all', '--json'], format: 'json' };
-    case 'core-status': return { program: 'hc', args: ['server', 'status', '--json'], format: 'json' };
     default: throw new Error('Unsupported source command');
   }
 }

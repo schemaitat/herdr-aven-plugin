@@ -6,12 +6,14 @@
 //! through its snapshot/worktree read API, and OpenCode is queried through
 //! authenticated GET-only V2 endpoints of an already running service.
 
+mod app;
 mod assemble;
 mod aven;
 mod core;
 mod dispatcher;
 mod opencode;
 mod scope;
+mod worktrees;
 
 use anyhow::Result;
 use scope::{configured_secrets, resolve_scope};
@@ -36,6 +38,9 @@ pub(crate) struct Options {
     pub(crate) context_cache: aven::ContextCache,
     /// Selected immutable task id to hydrate first in the next bounded cycle.
     pub(crate) priority_task: Option<String>,
+    /// Callers that own live OpenCode activity (the dashboard) skip the
+    /// inspector's one-shot API read.
+    pub(crate) skip_api: bool,
 }
 
 #[derive(Clone)]
@@ -49,9 +54,11 @@ pub(crate) struct BaseRead {
 
 #[derive(Clone, Default)]
 pub(crate) struct LiveRead {
+    pub(crate) core: CoreRecord,
     pub(crate) panes: Vec<PaneRecord>,
     pub(crate) workspaces: Vec<WorkspaceRecord>,
     pub(crate) worktrees: Vec<WorktreeRecord>,
+    pub(crate) app: AppRecord,
     pub(crate) sessions: Vec<SessionRecord>,
     pub(crate) sources: Vec<SourceHealth>,
     pub(crate) warnings: Vec<String>,
@@ -88,18 +95,30 @@ pub(crate) fn read_base(options: &Options) -> Result<BaseRead> {
 
 /// herdr-core/API lane. It consumes only the last-good scoped attempts from the
 /// Aven lane and never writes back to it.
-pub(crate) fn read_live(scope: &Scope, attempts: &[AttemptRecord]) -> LiveRead {
+pub(crate) fn read_live(scope: &Scope, attempts: &[AttemptRecord], options: &Options) -> LiveRead {
     let secrets = configured_secrets();
-    let (panes, workspaces, worktrees, core_health) = core::read_core(scope, attempts, &secrets);
+    let (core, panes, workspaces, core_health) =
+        core::read_core(scope, attempts, &options.store, &secrets);
+    let (worktrees, _primary, worktree_health) = worktrees::read_worktrees(scope, &secrets);
+    let (app, app_health) = app::read_app(scope, &secrets);
     let (mut sessions, mut warnings) = assemble::link_sessions(attempts, &panes);
-    let api_health = opencode::read_api_activity(&mut sessions, &secrets);
+    let api_health = if options.skip_api {
+        SourceHealth::ok(
+            "opencode",
+            "API activity skipped at caller request; the caller owns the live OpenCode transport.",
+        )
+    } else {
+        opencode::read_api_activity(&mut sessions, &secrets)
+    };
     warnings.truncate(64);
     LiveRead {
+        core,
         panes,
         workspaces,
         worktrees,
+        app,
         sessions,
-        sources: vec![core_health, api_health],
+        sources: vec![core_health, worktree_health, app_health, api_health],
         warnings,
     }
 }
@@ -110,7 +129,7 @@ pub(crate) fn assemble(base: &BaseRead, live: &LiveRead) -> Snapshot {
 
 pub(crate) fn collect(options: &Options) -> Result<Snapshot> {
     let base = read_base(options)?;
-    let live = read_live(&base.scope, &base.attempts);
+    let live = read_live(&base.scope, &base.attempts, options);
     Ok(assemble(&base, &live))
 }
 

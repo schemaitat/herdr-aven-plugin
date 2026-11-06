@@ -119,4 +119,5 @@ ui-test-browser:
 
 # Deterministic graph, live, accessibility, outage and measured performance fixtures.
 ui-test-e2e:
+    cargo build --workspace
     npm --prefix web run test:e2e

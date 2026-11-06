@@ -35,6 +35,32 @@ impl RawTerminal {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct RawObservation {
+    #[serde(default)]
+    core_id: String,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    status_kind: String,
+    #[serde(default)]
+    program: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    turn: u64,
+    #[serde(default)]
+    seq: u64,
+    #[serde(default)]
+    updated_at: u64,
+    #[serde(default)]
+    recovery: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct RawAttempt {
     #[serde(default)]
     task_id: String,
@@ -84,6 +110,10 @@ struct RawAttempt {
     session_id: String,
     #[serde(default)]
     pane: String,
+    #[serde(default)]
+    log_task_ref: String,
+    #[serde(default)]
+    terminals: BTreeMap<String, RawObservation>,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -352,6 +382,29 @@ fn accept_attempt(
         babysitter_pane: sanitize(&raw.babysitter_pane, 128, secrets),
         session_id: sanitize(&raw.session_id, 132, secrets),
         pane: sanitize(&raw.pane, 128, secrets),
+        log_task_ref: sanitize(&raw.log_task_ref, 256, secrets),
+        terminals: raw
+            .terminals
+            .into_iter()
+            .map(|(key, observation)| {
+                (
+                    sanitize(&key, 256, secrets),
+                    TerminalObservationRecord {
+                        core_id: sanitize(&observation.core_id, 128, secrets),
+                        address: sanitize(&observation.address, 128, secrets),
+                        state: sanitize(&observation.state, 64, secrets),
+                        status: sanitize(&observation.status, 256, secrets),
+                        status_kind: sanitize(&observation.status_kind, 64, secrets),
+                        program: sanitize(&observation.program, 128, secrets),
+                        reason: sanitize(&observation.reason, 256, secrets),
+                        turn: observation.turn,
+                        seq: observation.seq,
+                        updated_at: observation.updated_at,
+                        recovery: sanitize(&observation.recovery, 256, secrets),
+                    },
+                )
+            })
+            .collect(),
         phases: raw
             .phases
             .iter()
@@ -536,6 +589,8 @@ mod tests {
             babysitter_pane: String::new(),
             session_id: "ses_one".into(),
             pane: "w1:p1".into(),
+            log_task_ref: String::new(),
+            terminals: BTreeMap::new(),
             phases: Vec::new(),
         }];
         let serialized = serde_json::to_string(&attempts).unwrap();

@@ -101,6 +101,16 @@ struct AvenTask {
     #[serde(default)]
     is_epic: bool,
     #[serde(default)]
+    deleted: bool,
+    #[serde(default)]
+    priority: String,
+    #[serde(default)]
+    available_at: String,
+    #[serde(default)]
+    due_on: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
     epic_parent: Option<AvenRef>,
     #[serde(default)]
     epic_children: Vec<AvenRef>,
@@ -640,6 +650,20 @@ fn build_task_records(
                 is_epic: context_task
                     .map(|details| details.is_epic)
                     .unwrap_or(task.is_epic),
+                deleted: task.deleted,
+                priority: sanitize(
+                    if task.priority.is_empty() {
+                        "none"
+                    } else {
+                        &task.priority
+                    },
+                    64,
+                    secrets,
+                ),
+                available_at: sanitize(&task.available_at, 64, secrets),
+                due_on: sanitize(&task.due_on, 64, secrets),
+                created_at: sanitize(&task.created_at, 64, secrets),
+                updated_at: sanitize(&task.updated_at, 64, secrets),
                 epic_parent: epic_parent.map(|parent| {
                     EntityRef::task(
                         &parent.id,
@@ -758,6 +782,11 @@ mod tests {
             project: "app".into(),
             status: "todo".into(),
             is_epic: false,
+            deleted: false,
+            priority: String::new(),
+            available_at: String::new(),
+            due_on: String::new(),
+            created_at: String::new(),
             epic_parent: None,
             epic_children: Vec::new(),
             updated_at: updated_at.into(),

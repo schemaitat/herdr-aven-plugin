@@ -1,12 +1,7 @@
 import { resolve } from 'node:path';
 import { entityId, type EdgeKind, type Entity, type GraphSnapshot, type Provenance, type Relationship } from '../shared/graph.js';
-import type { Runner } from './commands.js';
 import type { ProjectConfig } from './config.js';
-import { avenSource, type AvenRead } from './sources/aven.js';
-import { readApp, type AppRead } from './sources/app.js';
-import { readCore, type CoreRead } from './sources/core.js';
-import { readDispatcher, type DispatchRead } from './sources/dispatcher.js';
-import { readWorktrees, type WorktreeRead } from './sources/worktrees.js';
+import { createInspectSource, type AvenRead, type AppRead, type CoreRead, type DispatchRead, type InspectExecutor, type WorktreeRead } from './sources/inspect.js';
 import { attemptTime, effectiveTimes, sourceTime } from '../shared/scope.js';
 
 type Config = ProjectConfig;
@@ -177,18 +172,10 @@ export function normalize(config: Config, aven: AvenRead, sources: Sources, now 
   };
 }
 
-async function readSources(config: Config, run: Runner): Promise<{ aven: AvenRead; core: CoreRead; worktrees: WorktreeRead; app: AppRead }> {
-  const readAven = avenSource(config.scope, run);
-  const [aven, core, worktrees, app] = await Promise.all([
-    readAven(),
-    readCore(config.scope, config.terminalsPath, run),
-    readWorktrees(config.scope, config.primary, run),
-    readApp(config.scope, run),
-  ]);
-  return { aven, core, worktrees, app };
-}
-
-export function createSnapshotSource(config: Config, run: Runner) {
+// One structural snapshot source. Both collector lanes share its cache so the
+// inspector is never run twice for the same cycle.
+export function createSnapshotSource(config: Config, execute?: InspectExecutor) {
+  const read = createInspectSource(config, execute);
   let cache: GraphSnapshot | undefined;
   let time = 0;
   let pending: Promise<GraphSnapshot> | undefined;
@@ -196,9 +183,8 @@ export function createSnapshotSource(config: Config, run: Runner) {
     if (cache && Date.now() - time < 4000) return cache;
     if (pending) return pending;
     pending = (async () => {
-      const sources = await readSources(config, run);
-      const dispatch = await readDispatcher(config.storePath, sources.aven);
-      const snapshot = normalize(config, sources.aven, { ...sources, dispatcher: dispatch });
+      const sources = await read();
+      const snapshot = normalize(config, sources.aven, sources);
       // Keep last good Aven entities visible during outages, explicitly stale; never turn absence into completion.
       if (sources.aven.health.status === 'unavailable' && cache) {
         return { ...cache, health: cache.health.map(health => ({ ...health, status: 'stale' as const, message: 'Refresh unavailable; showing last snapshot' })) };
@@ -210,29 +196,22 @@ export function createSnapshotSource(config: Config, run: Runner) {
   };
 }
 
-// Independent source cadences; each lane is serialized by the shared collector.
-export function createGraphReader(config: Config, run: Runner) {
-  const readAven = avenSource(config.scope, run);
-  let aven: AvenRead = { tasks: [], contexts: new Map(), health: { source: 'aven', status: 'unavailable', observedAt: '', message: 'Loading' } };
-  let dispatch: DispatchRead = { attempts: [], health: { source: 'dispatcher', status: 'unavailable', observedAt: '', message: 'Loading' } };
-  let core: CoreRead = { core: { id: '', name: '', version: '', machine: '' }, terminals: [], observedAt: '', health: { source: 'core', status: 'unavailable', observedAt: '', message: 'Loading' } };
-  let trees: WorktreeRead = { primary: config.primary, worktrees: [], health: { source: 'worktrees', status: 'unavailable', observedAt: '', message: 'Loading' } };
-  let app: AppRead = { spaces: [], placements: [], health: { source: 'app', status: 'unavailable', observedAt: '', message: 'Loading' } };
-  return async (lane: 'fast' | 'slow') => {
-    if (lane === 'slow') {
-      const next = await readAven();
-      aven = next.health.status === 'unavailable' && aven.tasks.length ? { ...aven, health: { ...aven.health, status: 'stale', message: next.health.message } } : next;
-      dispatch = await readDispatcher(config.storePath, aven);
-    } else {
-      const [nextCore, nextTrees, nextApp] = await Promise.all([
-        readCore(config.scope, config.terminalsPath, run),
-        readWorktrees(config.scope, config.primary, run),
-        readApp(config.scope, run),
-      ]);
-      core = nextCore.health.status === 'unavailable' && core.terminals.length ? { ...core, health: { ...core.health, status: 'stale', message: nextCore.health.message } } : nextCore;
-      trees = nextTrees.health.status === 'unavailable' && trees.worktrees.length ? { ...trees, health: { ...trees.health, status: 'stale', message: nextTrees.health.message } } : nextTrees;
-      app = nextApp;
-    }
-    return normalize(config, aven, { core, worktrees: trees, app, dispatcher: dispatch });
+// The inspector is the structural source for every lane; live OpenCode activity
+// is applied by the collector after each structural refresh.
+export function createGraphReader(config: Config, execute?: InspectExecutor) {
+  const read = createInspectSource(config, execute);
+  let aven: AvenRead | undefined;
+  let dispatcher: DispatchRead | undefined;
+  let core: CoreRead | undefined;
+  let worktrees: WorktreeRead | undefined;
+  let app: AppRead | undefined;
+  return async (_lane: 'fast' | 'slow') => {
+    const next = await read();
+    aven = next.aven.health.status === 'unavailable' && aven?.tasks.length ? { ...aven, health: { ...aven.health, status: 'stale', message: next.aven.health.message } } : next.aven;
+    dispatcher = next.dispatcher.health.status === 'unavailable' && dispatcher?.attempts.length ? { ...dispatcher, health: { ...dispatcher.health, status: 'stale', message: next.dispatcher.health.message } } : next.dispatcher;
+    core = next.core.health.status === 'unavailable' && core?.terminals.length ? { ...core, health: { ...core.health, status: 'stale', message: next.core.health.message } } : next.core;
+    worktrees = next.worktrees.health.status === 'unavailable' && worktrees?.worktrees.length ? { ...worktrees, health: { ...worktrees.health, status: 'stale', message: next.worktrees.health.message } } : next.worktrees;
+    app = next.app;
+    return normalize(config, aven, { core, worktrees, app, dispatcher });
   };
 }

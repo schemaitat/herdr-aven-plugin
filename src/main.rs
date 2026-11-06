@@ -354,6 +354,10 @@ enum Commands {
         /// Print the immutable snapshot as JSON.
         #[arg(long)]
         json: bool,
+        /// Skip the one-shot OpenCode activity read; callers that own the live
+        /// OpenCode transport use this to avoid duplicate activity semantics.
+        #[arg(long)]
+        no_api: bool,
     },
     /// Validate local Aven and OpenCode V2 capabilities without mutation.
     Doctor,
@@ -590,12 +594,14 @@ fn main() -> Result<()> {
             workspace,
             cwd,
             json,
+            no_api,
         } => inspect::run(inspect::Args {
             project,
             workspace,
             cwd,
             store: path,
             json,
+            skip_api: no_api,
         }),
         Commands::Doctor => dispatch::doctor(&path),
     };

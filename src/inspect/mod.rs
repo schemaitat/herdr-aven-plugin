@@ -19,6 +19,7 @@ pub(crate) struct Args {
     pub(crate) cwd: PathBuf,
     pub(crate) store: PathBuf,
     pub(crate) json: bool,
+    pub(crate) skip_api: bool,
 }
 
 pub(crate) fn run(args: Args) -> Result<()> {
@@ -27,6 +28,7 @@ pub(crate) fn run(args: Args) -> Result<()> {
         workspace: args.workspace,
         cwd: args.cwd,
         store: args.store,
+        skip_api: args.skip_api,
         ..Default::default()
     })?;
     let output = if args.json {
