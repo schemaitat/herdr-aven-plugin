@@ -374,6 +374,60 @@ fn serialize_aven_attempt_snapshot(attempt: &Attempt) -> Result<String> {
     Ok(snapshot)
 }
 
+/// Compare the durable, workflow-scoped Aven snapshot with the current
+/// dispatcher attempt while ignoring observation timestamps that naturally
+/// advance on every read. This repairs a stale Aven snapshot even when an old
+/// store row incorrectly says publication is no longer pending.
+pub(crate) fn aven_snapshot_matches(task: &Value, attempt: &Attempt) -> Result<bool> {
+    let key = format!("dispatch.attempt.{}", attempt.workflow);
+    let Some(encoded) = task
+        .pointer(&format!("/metadata/{key}"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(false);
+    };
+    let Ok(observed) = serde_json::from_str::<Attempt>(encoded) else {
+        return Ok(false);
+    };
+    let normalize = |attempt: &Attempt| -> Result<Value> {
+        let mut value = serde_json::to_value(aven_attempt_snapshot(attempt))?;
+        if let Some(lifecycle) = value.get_mut("lifecycle")
+            && let Some(object) = lifecycle.as_object_mut()
+        {
+            object.insert("reduced_at".into(), Value::from(0));
+        }
+        if let Some(terminals) = value.get_mut("terminals")
+            && let Some(roles) = terminals.as_object_mut()
+        {
+            for terminal in roles.values_mut() {
+                if let Some(object) = terminal.as_object_mut() {
+                    object.insert("updated_at".into(), Value::from(0));
+                }
+            }
+        }
+        Ok(value)
+    };
+    if normalize(&observed)? != normalize(attempt)? {
+        return Ok(false);
+    }
+    let summary_owner = task
+        .pointer("/metadata/dispatch.summary-owner")
+        .and_then(Value::as_str);
+    if summary_owner.is_none_or(|owner| owner == attempt.workflow)
+        && (task
+            .pointer("/metadata/dispatch.state")
+            .and_then(Value::as_str)
+            != Some(attempt.state.as_str())
+            || task
+                .pointer("/metadata/dispatch.attempt-id")
+                .and_then(Value::as_str)
+                != Some(attempt.attempt_id.as_str()))
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 // Durable task link repair. A failure remains visible as pending
 // synchronization instead of being silently swallowed.
 pub(crate) fn repair_aven_links(attempt: &mut Attempt, store: &mut LockedStore) -> Result<()> {
@@ -543,6 +597,32 @@ mod tests {
             );
             assert!(serialize_aven_attempt_snapshot(&attempt).is_err());
         }
+    }
+
+    #[test]
+    fn stale_aven_snapshot_is_detected_but_observation_timestamps_are_ignored() {
+        let mut attempt: Attempt = serde_json::from_value(serde_json::json!({
+            "task_id":"task", "task_ref":"APP-TASK", "workflow":"implementation",
+            "attempt_id":"att", "branch":"branch", "worktree":"/tmp", "session_id":"ses",
+            "prompt_id":"msg", "state":"completed", "aven":{}, "created_at":1,
+            "lifecycle":{"observation":"stopped-success","contradiction":"","revision":1,"reduced_at":20},
+            "terminals":{"builder":{"core_id":"core","address":"t1","state":"live","program":"opencode","status":"idle","updated_at":30}}
+        }))
+        .unwrap();
+        let mut snapshot = aven_attempt_snapshot(&attempt);
+        snapshot.lifecycle.reduced_at = 10;
+        snapshot.terminals.get_mut("builder").unwrap().updated_at = 15;
+        let task = serde_json::json!({
+            "metadata":{
+                "dispatch.attempt-id":"att",
+                "dispatch.state":"completed",
+                "dispatch.attempt.implementation":serde_json::to_string(&snapshot).unwrap()
+            }
+        });
+        assert!(aven_snapshot_matches(&task, &attempt).unwrap());
+
+        attempt.state = "needs-review".into();
+        assert!(!aven_snapshot_matches(&task, &attempt).unwrap());
     }
 
     #[test]

@@ -232,13 +232,16 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.commit()
 PY
 PATH="$fake:$PATH" OPENCODE_FIXTURE_OUTCOME=succeeded "$binary" --store "$terminal_store" watch --once > "$work/terminal-refresh-success"
-python3 - "$terminal_store" <<'PY'
+python3 - "$terminal_store" "$state" <<'PY'
 import json, sqlite3, sys
 attempt = json.loads(sqlite3.connect(sys.argv[1]).execute("SELECT payload FROM attempts").fetchone()[0])
 assert attempt["terminals"]["builder"]["state"] == "removed", attempt["terminals"]
 assert attempt["state"] == "completed", attempt
 assert attempt["lifecycle"]["observation"] == "stopped-success", attempt["lifecycle"]
 assert not attempt["lifecycle"]["contradiction"], attempt["lifecycle"]
+aven = json.load(open(sys.argv[2]))["tasks"]["APP-DONE"]["metadata"]
+assert aven["dispatch.state"] == "completed", aven
+assert json.loads(aven["dispatch.attempt.implementation"])["state"] == "completed", aven
 PY
 
 unknown_terminal_store=$work/terminal-refresh-unknown.sqlite

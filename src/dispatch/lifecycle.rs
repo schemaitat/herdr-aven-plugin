@@ -300,6 +300,11 @@ pub(crate) fn apply_reduction(
 
 /// Terminal owned execution is proven stopped only when every recorded role
 /// has a stopped/terminal observation.
+fn terminal_observation_is_live(observation: &crate::model::TerminalObservation) -> bool {
+    observation.state == "live"
+        && !(observation.program == "opencode" && observation.status == "idle")
+}
+
 pub(crate) fn terminal_observation_flags(attempt: &Attempt) -> (bool, bool) {
     let mut live = false;
     let mut unknown = false;
@@ -308,7 +313,8 @@ pub(crate) fn terminal_observation_flags(attempt: &Attempt) -> (bool, bool) {
             continue;
         }
         match observation.state.as_str() {
-            "live" => live = true,
+            "live" if terminal_observation_is_live(observation) => live = true,
+            "live" => {}
             "finished" | "removed" => {}
             _ => unknown = true,
         }
@@ -380,6 +386,22 @@ mod tests {
         let reduction = reduce_state("running", Some("done"), ExecutionObservation::Unknown);
         assert_eq!(reduction.state, "needs-review");
         assert_eq!(reduction.contradiction, "terminal_unknown_execution");
+    }
+
+    #[test]
+    fn idle_opencode_terminal_is_not_live_execution_but_working_is() {
+        let mut observation = crate::model::TerminalObservation {
+            address: "t1".into(),
+            state: "live".into(),
+            program: "opencode".into(),
+            status: "idle".into(),
+            ..Default::default()
+        };
+        assert!(!terminal_observation_is_live(&observation));
+        observation.status = "working".into();
+        assert!(terminal_observation_is_live(&observation));
+        observation.status.clear();
+        assert!(terminal_observation_is_live(&observation));
     }
 
     #[test]

@@ -208,6 +208,12 @@ pub(crate) fn reconcile_attempt(store: &mut LockedStore, mut attempt: Attempt) -
         store_attempt(store, attempt.clone());
         println!("advanced cumulative worktree phases");
     }
+    if !attempt.aven_update_pending
+        && !crate::dispatch::aven::aven_snapshot_matches(&task, &attempt)?
+    {
+        attempt.aven_update_pending = true;
+        store_attempt(store, attempt.clone());
+    }
     if attempt.aven_update_pending {
         match write_aven_links(&attempt.aven, &attempt, store) {
             Ok(()) => {
