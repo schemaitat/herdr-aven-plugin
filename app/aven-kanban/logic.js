@@ -92,6 +92,27 @@ function timeValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// Dispatcher merge requires a durable marker, not just approval.state. Keep the
+// board's necessary-condition check pure and identical for hydrate and preflight.
+export function approvalMarker(metadata) {
+  const state = String(metadata?.["approval.state"] ?? "").trim();
+  const id = String(metadata?.["approval.id"] ?? "").trim();
+  const commit = String(metadata?.["approval.commit"] ?? "").trim();
+  const workflow = String(metadata?.["approval.workflow"] ?? "").trim();
+  const approved = state === "approved" && Boolean(id) && Boolean(commit) && Boolean(workflow);
+  return { state, id, commit, workflow, approved, incomplete: state === "approved" && !approved };
+}
+
+// Aven tasks are workspace-scoped. Hydrated details must never be reused across
+// workspaces, and a changed or failed read must invalidate the cached snapshot.
+export function detailCacheKey(workspace, id) {
+  return `${String(workspace ?? "")}\u0000${String(id ?? "")}`;
+}
+
+export function detailIsCurrent(cached, workspace, row) {
+  return cached?.workspace === String(workspace ?? "") && cached?.updatedAt === row?.updated_at;
+}
+
 function phaseProgress(children) {
   const total = Array.isArray(children) ? children.length : 0;
   const complete = (children ?? []).filter((child) => child?.open === false || TERMINAL_STATUSES.has(child?.status)).length;
@@ -111,20 +132,27 @@ export function normalizeEpic(row, detail) {
   const childIds = (Array.isArray(children) ? children : [])
     .map((child) => String(child?.id ?? "").trim())
     .filter(Boolean);
+  const status = String(hydrated && detailTask.status ? detailTask.status : (row.status ?? "unknown"));
+  const approval = approvalMarker(hydrated ? metadata : {});
   return {
     id,
     ref,
     title: String(hydrated && detailTask.title ? detailTask.title : (row.title ?? "Untitled epic")),
     project: String(row.project?.key ?? row.project ?? ""),
-    status: String(hydrated && detailTask.status ? detailTask.status : (row.status ?? "unknown")),
+    status,
     created_at: String(row.created_at ?? ""),
     updated_at: String(row.updated_at ?? ""),
     available_at: String(row.available_at ?? ""),
     hydrated,
     mergedOnMain: row.mergedOnMain === true,
     planWorkedOut: hydrated && metadata["sdd.plan-worked-out"] === "true",
-    approvalState: hydrated ? String(metadata["approval.state"] ?? "") : "",
-    approved: hydrated && metadata["approval.state"] === "approved",
+    approvalState: approval.state,
+    approvalId: approval.id,
+    approvalCommit: approval.commit,
+    approvalWorkflow: approval.workflow,
+    approved: hydrated && status === "done" && approval.approved,
+    approvalIncomplete: hydrated && approval.incomplete,
+    approvalInvalid: hydrated && (approval.incomplete || (approval.approved && status !== "done")),
     deliveryState: hydrated ? String(metadata["delivery.state"] ?? "") : "",
     deliveryTarget: hydrated ? String(metadata["delivery.target"] ?? "") : "",
     deliveryObligation: hydrated ? String(metadata["delivery.obligation"] ?? "") : "",
@@ -264,6 +292,7 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   if (attemptSelection?.ambiguous) warnings.push("Multiple current dispatcher attempts; dispatch actions paused.");
   if (attempt?.contradiction) warnings.push(attempt.contradiction.replaceAll("_", " "));
   if (!epic.hydrated && epic.status === "todo") warnings.push("Plan metadata is not loaded yet.");
+  if (epic.approvalInvalid) warnings.push("Approval marker is incomplete or belongs to a non-done task; rerun /approve.");
   if (TERMINAL_STATUSES.has(epic.status) && execution === "active") warnings.push("Terminal Aven status conflicts with active execution.");
 
   const terminalStatus = TERMINAL_STATUSES.has(epic.status);
@@ -288,7 +317,7 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
     || (candidate.terminal?.address && liveAgents.some((live) =>
       live.address === candidate.terminal.address && live.status === "working")));
   const approved = epic.approved === true;
-  const readyToMerge = column === "review" && approved && epic.status !== "canceled";
+  const readyToMerge = column === "review" && approved && epic.status === "done";
   return {
     ...epic,
     column,

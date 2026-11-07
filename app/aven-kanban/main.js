@@ -2,9 +2,10 @@ import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals, theme } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, assertBoardCoverage, buildBoard, detailArgs, dispatchTerminalName,
-  epicArgs, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, markMergedOnMain, mergeEpicRows,
-  mergePrompt, mergeTabArgs, mergeTabName, moveSelection, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, approvalMarker, assertBoardCoverage, buildBoard, detailArgs,
+  detailCacheKey, detailIsCurrent, dispatchTerminalName, epicArgs, filterRowsByCreated, indexAttempts, isLiveEpicTerminal,
+  markMergedOnMain, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, openArgs, selectAttempt, selectedCard,
+  selectMainSpace, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -13,7 +14,8 @@ const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
 const DETAIL_METADATA = [
-  "sdd.plan-worked-out", "approval.state", "delivery.state", "delivery.target", "delivery.obligation",
+  "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
+  "delivery.state", "delivery.target", "delivery.obligation",
 ];
 
 function message(error) { return String(error?.message ?? error); }
@@ -193,24 +195,28 @@ export default class AvenKanban extends View {
         assertBoardCoverage({ attempts: rawAttempts.length });
         const baseRows = mergeEpicRows({ available, upcoming });
         assertBoardCoverage({ epics: baseRows.length });
-        const currentIds = new Set(baseRows.map((row) => row.id));
-        for (const id of this.details.keys()) if (!currentIds.has(id)) this.details.delete(id);
-        const needed = baseRows.filter((row) => this.details.get(row.id)?.updatedAt !== row.updated_at);
+        const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
+        for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
+        const needed = baseRows.filter((row) =>
+          !detailIsCurrent(this.details.get(detailCacheKey(workspace, row.id)), workspace, row));
         const failures = [];
         await mapLimit(needed, async (row) => {
+          const key = detailCacheKey(workspace, row.id);
           try {
             const result = await exec("aven", detailArgs(workspace, row.ref), cwd ? { cwd } : undefined);
             const detail = safeDetail(parse(result, `Epic ${row.ref}`));
             if (detail.task.id !== row.id || !detail.task.is_epic) throw new Error("identity mismatch");
-            this.details.set(row.id, { updatedAt: row.updated_at, detail });
+            this.details.set(key, { workspace, updatedAt: row.updated_at, detail });
           } catch (error) {
+            // A failed read must not leave an older approval marker usable.
+            this.details.delete(key);
             failures.push(`${row.ref}: ${message(error)}`);
           }
         });
         const details = {};
         for (const row of baseRows) {
-          const cached = this.details.get(row.id);
-          if (cached?.updatedAt === row.updated_at) details[row.id] = cached.detail;
+          const cached = this.details.get(detailCacheKey(workspace, row.id));
+          if (detailIsCurrent(cached, workspace, row)) details[row.id] = cached.detail;
         }
         const baseWithDetails = mergeEpicRows({ available, upcoming, details });
         const attemptIndex = indexAttempts(rawAttempts);
@@ -425,6 +431,15 @@ export default class AvenKanban extends View {
     return ["opencode"];
   }
 
+  async exactDetail(workspace, epic, cwd) {
+    const result = await exec("aven", detailArgs(workspace, epic.ref), cwd ? { cwd } : undefined);
+    const detail = safeDetail(parse(result, `Epic ${epic.ref}`));
+    if (detail.task.id !== epic.id || !detail.task.is_epic) {
+      throw new Error(`approval identity mismatch for ${epic.ref}`);
+    }
+    return detail;
+  }
+
   merge(epic, cx) {
     if (!epic.mergeable || this.pendingMerges.has(epic.id)) return;
     this.pendingMerges.add(epic.id);
@@ -432,6 +447,21 @@ export default class AvenKanban extends View {
       try {
         const root = await this.rootFolder(this.spaceFolder());
         if (!root) throw new Error("the primary checkout is unavailable");
+        const workspace = this.workspace();
+        // Re-read the exact task now: a cached or stale approval marker must
+        // never open a merge handoff. The dispatcher journal still validates it.
+        const detail = await this.exactDetail(workspace, epic, root);
+        const approval = approvalMarker(detail.metadata);
+        const missing = [];
+        if (approval.state !== "approved") missing.push(`state=${approval.state || "missing"}`);
+        if (!approval.id) missing.push("approval.id");
+        if (!approval.commit) missing.push("approval.commit");
+        if (!approval.workflow) missing.push("approval.workflow");
+        if (detail.task.status !== "done") missing.push(`status=${detail.task.status || "unknown"}`);
+        if (missing.length) {
+          this.details.delete(detailCacheKey(workspace, epic.id));
+          throw new Error(`${epic.ref} has no complete durable approval (${missing.join(", ")}); rerun /approve.`);
+        }
         const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
         const target = selectMainSpace(spaces(), root, activeSpaceId);
         if (!target?.id) throw new Error("no main app space is available");
@@ -505,7 +535,8 @@ export default class AvenKanban extends View {
       .when(card.readyToMerge, (el) => el.child(h_flex().gap(4).items_center()
         .child(div().text_size(10).font_semibold().text_color(t.done).child("✓ ready to merge"))
         .child(div().text_size(8.5).text_color(t.dim).child("approved"))))
-      .when(card.column === "review" && !card.approved, (el) => el.child(div().text_size(8.5).text_color(t.dim).child("awaiting approval")))
+      .when(card.column === "review" && !card.approved, (el) => el.child(div().text_size(8.5).text_color(t.dim)
+        .child(card.approvalInvalid ? "approval incomplete or invalid; rerun /approve" : "awaiting approval")))
       .when(card.warnings.length > 0, (el) => el.child(div().text_size(9).text_color(t.blocked).child(card.warnings.join(" "))))
       .child(h_flex().gap(4).items_center()
         .child(this.button(`aven-kanban-open-${card.id}`, "Open", (_event, clickCx) => this.open(card, clickCx)))

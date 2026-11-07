@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
-  assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, dispatchTerminalName,
-  epicArgs, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, markMergedOnMain,
-  mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, normalizeAttempt,
-  normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
+  approvalMarker, assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, detailCacheKey,
+  detailIsCurrent, dispatchTerminalName, epicArgs, filterRowsByCreated, flattenBoard, indexAttempts,
+  isLiveEpicTerminal, markMergedOnMain, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection,
+  normalizeAttempt, normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
@@ -19,6 +19,10 @@ const rawEpic = (id, status = "todo", extra = {}) => ({
 const detail = (row, metadata = {}, extra = {}) => ({
   task: { ...row, ...extra }, metadata,
 });
+const fullApproval = {
+  "approval.state": "approved", "approval.id": "approval_one",
+  "approval.commit": "abc123", "approval.workflow": "implementation",
+};
 const attempt = (taskId, extra = {}) => ({
   task_id: taskId, task_ref: `HAP-${taskId}`, workflow: "implementation", attempt_id: `att-${taskId}`,
   generation: 0, created_at: 100, state: "running", execution_mode: "single-session",
@@ -78,12 +82,13 @@ const merged = mergeEpicRows({
     plannedRow,
   ],
   upcoming: [plannedRow, rawEpic("FUTURE", "backlog", { available_at: "2027-01-01T00:00:00Z" })],
-  details: { PLANNED: detail(plannedRow, { "sdd.plan-worked-out": "true", "approval.state": "approved", "delivery.target": "main" }) },
+  details: { PLANNED: detail(plannedRow, { "sdd.plan-worked-out": "true", ...fullApproval, "delivery.target": "main" }) },
 });
 assert.deepEqual(merged.map(({ id }) => id), ["FUTURE", "PLANNED", "OLD"]);
 const planned = merged.find(({ id }) => id === "PLANNED");
 assert.equal(planned.planWorkedOut, true);
-assert.equal(planned.approved, true);
+assert.equal(planned.approved, false, "a marker on a non-done task is not usable approval");
+assert.equal(planned.approvalId, "approval_one");
 assert.equal(planned.hydrated, true);
 assert.equal(planned.deliveryTarget, "main");
 assert.deepEqual(planned.taskIds, ["PLANNED"]);
@@ -131,17 +136,48 @@ const unhydratedRow = rawEpic("UNKNOWN");
 assert.match(cardForEpic(normalizeEpic(unhydratedRow), selectAttempt([], unhydratedRow.id)).warnings.join(" "), /Plan metadata/, "unhydrated todo is labeled rather than presented as certainly unplanned");
 
 // Approval is the merge gate, not execution or a live builder terminal.
-const approvedReview = card("done", { "approval.state": "approved", "delivery.state": "committed" });
+const approvedReview = card("done", { ...fullApproval, "delivery.state": "committed" });
 assert.equal(approvedReview.column, "review");
 assert.equal(approvedReview.approved, true);
+assert.equal(approvedReview.approvalId, "approval_one");
 assert.equal(approvedReview.readyToMerge, true);
 assert.equal(approvedReview.mergeable, true);
-assert.equal(card("done", { "approval.state": "approved", "delivery.state": "committed" }, []).mergeable, true, "approval survives a finished builder terminal");
+assert.equal(card("done", { ...fullApproval, "delivery.state": "committed" }, []).mergeable, true, "approval survives a finished builder terminal");
 assert.equal(card("done", { "delivery.state": "committed" }).approved, false);
 assert.equal(card("done", { "delivery.state": "committed" }).mergeable, false, "pending delivery alone is not approval");
 assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review" })]).mergeable, false, "review execution alone is not approval");
-assert.equal(card("done", { "approval.state": "approved", "delivery.state": "merged" }).mergeable, false, "delivered work is not mergeable");
-assert.equal(card("canceled", { "approval.state": "approved", "delivery.state": "pending" }).mergeable, false, "canceled work is never mergeable");
+assert.equal(card("done", { ...fullApproval, "delivery.state": "merged" }).mergeable, false, "delivered work is not mergeable");
+assert.equal(card("canceled", { ...fullApproval, "delivery.state": "pending" }).mergeable, false, "canceled work is never mergeable");
+
+// The dispatcher requires the durable marker, not just approval.state. A
+// state-only marker must stay out of ready-to-merge and explain why.
+assert.deepEqual(approvalMarker({ "approval.state": "approved" }), {
+  state: "approved", id: "", commit: "", workflow: "", approved: false, incomplete: true,
+});
+const stateOnly = card("done", { "approval.state": "approved", "delivery.state": "committed" });
+assert.equal(stateOnly.column, "review");
+assert.equal(stateOnly.approved, false);
+assert.equal(stateOnly.approvalIncomplete, true);
+assert.equal(stateOnly.readyToMerge, false);
+assert.equal(stateOnly.mergeable, false);
+assert.match(stateOnly.warnings.join(" "), /incomplete/);
+const partial = card("done", { ...fullApproval, "approval.id": "", "delivery.state": "committed" });
+assert.equal(partial.mergeable, false, "a missing approval id blocks the merge action");
+assert.equal(normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), fullApproval)).approved, true);
+const nonDoneApproval = card("active", fullApproval);
+assert.equal(nonDoneApproval.approved, false, "an approval marker on a non-done task is invalid");
+assert.equal(nonDoneApproval.approvalInvalid, true);
+assert.equal(nonDoneApproval.readyToMerge, false);
+
+// Hydrated details are workspace-scoped and must be re-read after a change or
+// a failed read rather than reusing a stale approval snapshot.
+assert.equal(detailCacheKey("default", "ONE"), "default\u0000ONE");
+assert.notEqual(detailCacheKey("default", "ONE"), detailCacheKey("notes", "ONE"));
+const cachedDetail = { workspace: "default", updatedAt: "t1", detail: detail(rawEpic("ONE", "done"), fullApproval) };
+assert.equal(detailIsCurrent(cachedDetail, "default", { updated_at: "t1" }), true);
+assert.equal(detailIsCurrent(cachedDetail, "notes", { updated_at: "t1" }), false, "a detail from another workspace is never current");
+assert.equal(detailIsCurrent(cachedDetail, "default", { updated_at: "t2" }), false, "a changed row is re-read");
+assert.equal(detailIsCurrent(undefined, "default", { updated_at: "t1" }), false, "a failed/absent read has no current snapshot");
 
 // Agent activity covers the root and every child task, but failed/interrupted
 // work is not presented as actively running.
@@ -178,7 +214,7 @@ assert.equal("prompt" in safeAttempt, false);
 
 // Merge is a task-id prompt launched in the main checkout, never a message to a
 // builder/coordinator pane.
-const approvedEpic = normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), { "approval.state": "approved" }));
+const approvedEpic = normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), fullApproval));
 assert.equal(mergePrompt(approvedEpic), `${MERGE_PROMPT} ONE`);
 assert.equal(mergeTabName(approvedEpic), "merge HAP-ONE");
 assert.deepEqual(mergeTabArgs({
