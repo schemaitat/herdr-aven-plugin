@@ -61,6 +61,8 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'approval.state' 'a
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'approval.id' 'the durable approval id gates the merge action'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'approval.id' 'detail hydration reads the durable approval id'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'approval incomplete or invalid' 'the board explains an invalid approval marker'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'detailNeedsRefresh' 'approval-sensitive details bypass the second-granular timestamp cache'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'detailNeedsRefresh' 'the board re-reads approval-sensitive details on every refresh'
 assert_file_lacks "$PLUGIN_ROOT/app/aven-kanban/main.js" '"git", ["merge"' 'board never merges Git directly'
 assert_file_lacks "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"message", epic.id' 'merge never messages a builder terminal'
 assert_file_lacks "$PLUGIN_ROOT/app/main.js" 'launchInspector' 'overlay no longer exposes the removed dispatcher inspector'

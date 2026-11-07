@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
   approvalMarker, assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, detailCacheKey,
-  detailIsCurrent, dispatchTerminalName, epicArgs, filterRowsByCreated, flattenBoard, indexAttempts,
+  detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs, filterRowsByCreated, flattenBoard, indexAttempts,
   isLiveEpicTerminal, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName,
   moveSelection, normalizeAttempt, normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName,
   upcomingArgs,
@@ -183,6 +183,12 @@ assert.equal(detailIsCurrent(cachedDetail, "default", { updated_at: "t1" }), tru
 assert.equal(detailIsCurrent(cachedDetail, "notes", { updated_at: "t1" }), false, "a detail from another workspace is never current");
 assert.equal(detailIsCurrent(cachedDetail, "default", { updated_at: "t2" }), false, "a changed row is re-read");
 assert.equal(detailIsCurrent(undefined, "default", { updated_at: "t1" }), false, "a failed/absent read has no current snapshot");
+const sameSecondApproval = { workspace: "default", updatedAt: "t1", detail: { task: { status: "done" }, metadata: fullApproval } };
+assert.equal(detailNeedsRefresh(sameSecondApproval, "default", { updated_at: "t1" }), true, "approval-sensitive cards are re-read even when second-granular timestamps collide");
+const sameSecondActive = { workspace: "default", updatedAt: "t1", detail: { task: { status: "active" }, metadata: {} } };
+assert.equal(detailNeedsRefresh(sameSecondActive, "default", { updated_at: "t1" }), false, "ordinary unchanged cards stay cached");
+assert.equal(detailNeedsRefresh(sameSecondActive, "notes", { updated_at: "t1" }), true, "a workspace change forces a re-read");
+assert.equal(detailNeedsRefresh(undefined, "default", { updated_at: "t1" }), true, "a failed/absent read is retried");
 
 // Agent activity covers the root and every child task, but failed/interrupted
 // work is not presented as actively running.

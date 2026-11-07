@@ -3,9 +3,9 @@ import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals, theme } from "herdr";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, assertBoardCoverage, buildBoard, detailArgs,
-  detailCacheKey, detailIsCurrent, dispatchTerminalName, epicArgs, filterRowsByCreated, indexAttempts, isLiveEpicTerminal,
-  markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, openArgs,
-  selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
+  detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs, filterRowsByCreated, indexAttempts,
+  isLiveEpicTerminal, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName,
+  moveSelection, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -198,7 +198,7 @@ export default class AvenKanban extends View {
         const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
         for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
         const needed = baseRows.filter((row) =>
-          !detailIsCurrent(this.details.get(detailCacheKey(workspace, row.id)), workspace, row));
+          detailNeedsRefresh(this.details.get(detailCacheKey(workspace, row.id)), workspace, row));
         const failures = [];
         await mapLimit(needed, async (row) => {
           const key = detailCacheKey(workspace, row.id);

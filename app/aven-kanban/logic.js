@@ -113,6 +113,15 @@ export function detailIsCurrent(cached, workspace, row) {
   return cached?.workspace === String(workspace ?? "") && cached?.updatedAt === row?.updated_at;
 }
 
+// Aven `updated_at` has second granularity, so a metadata-only edit inside the
+// same second can leave the row timestamp unchanged. Re-read anything that can
+// affect the merge gate on every refresh instead of trusting the timestamp.
+export function detailNeedsRefresh(cached, workspace, row) {
+  if (!detailIsCurrent(cached, workspace, row)) return true;
+  return cached.detail?.task?.status === "done"
+    || Boolean(cached.detail?.metadata?.["approval.state"]);
+}
+
 // Fresh-read gate for the merge handoff. Returns a human-readable list of the
 // missing pieces, or an empty string when the exact task may open /ha-merge.
 export function mergeApprovalIssue(task, metadata) {
