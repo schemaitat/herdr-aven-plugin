@@ -588,7 +588,10 @@ never unlocks merging. Review cards without approval say **awaiting approval**
 and have no merge button.
 
 **Merge into main** opens a tab named `merge <task-ref>` in the main app space
-and starts the user's installed agent with `/ha-merge <immutable-task-id>`. The
+and starts the user's installed agent with `/ha-merge <immutable-task-id>`.
+OpenCode is launched with its `--prompt` flag because Herdr appends the first
+message as a positional argument and a bare OpenCode positional is a project
+directory; other selected agents keep their existing first-message behavior. The
 main space is the visible space whose folder is the repository's primary
 checkout (the parent of the Git common directory); if none exists, the active
 space is used and the tab still starts in that primary checkout. Clicking again

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the Kanban **Merge into main** handoff for OpenCode: Herdr appends the
+  first message as a positional argument, so launch OpenCode with `--prompt`
+  instead of letting `/ha-merge <task-id>` be mistaken for a project directory
+  and fail with `ENOENT ... chdir`. Non-OpenCode merge agents are unchanged.
 - Remove the `aven-worktree` herdr-app panel and stop splitting an Aven pane
   beside dispatched agent terminals. The Aven-right layout panel now describes
   the focused worktree: root epic and progress, focused phase and position,

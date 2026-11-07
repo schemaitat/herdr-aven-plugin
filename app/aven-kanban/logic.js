@@ -219,12 +219,22 @@ export function mergeTabName(epic) {
   return `merge ${epic.ref}`;
 }
 
+// Herdr appends a tab's first message to the agent argv as its last token.
+// OpenCode treats a bare positional argument as a project directory, so give
+// it the supported --prompt flag for that trailing message instead.
+export function mergeAgentRun(argv) {
+  const run = Array.isArray(argv) ? argv : [];
+  const program = String(run[0] ?? "").split(/[\\/]/).pop();
+  if (program !== "opencode" || run.includes("--prompt")) return run;
+  return [...run, "--prompt"];
+}
+
 export function mergeTabArgs({ name, space, folder, argv, task }) {
   if (!name || !space || !folder || !Array.isArray(argv) || argv.length === 0 || !task) {
     throw new Error("A main-space merge tab needs a name, space, folder, agent, and prompt.");
   }
   return ["do", "tab.new", "--name", name, "--space", space, "--folder", folder,
-    "--argv", JSON.stringify(argv), "--task", task];
+    "--argv", JSON.stringify(mergeAgentRun(argv)), "--task", task];
 }
 
 function normalizedPath(value) {

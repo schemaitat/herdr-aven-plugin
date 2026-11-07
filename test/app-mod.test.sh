@@ -53,6 +53,8 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'ready to merge' 'ap
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'Merge into main' 'review cards expose the merge handoff'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'mergeTabArgs' 'merge opens a main-space tab'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"tab.new"' 'merge starts an agent tab through the app'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'mergeAgentRun' 'merge adapts the agent launch arguments'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"--prompt"' 'merge starts OpenCode with its prompt flag, not a positional directory'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'knownAgents' 'merge selects an installed agent'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" '"--summary"' 'dispatcher reads use bounded prompt-free summaries'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"/ha-merge"' 'merge handoff selects the approved local-main workflow'

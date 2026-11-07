@@ -4,7 +4,7 @@ import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
   assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, dispatchTerminalName,
   epicArgs, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, markMergedOnMain,
-  mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, normalizeAttempt,
+  mergeAgentRun, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, normalizeAttempt,
   normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -181,12 +181,22 @@ assert.equal("prompt" in safeAttempt, false);
 const approvedEpic = normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), { "approval.state": "approved" }));
 assert.equal(mergePrompt(approvedEpic), `${MERGE_PROMPT} ONE`);
 assert.equal(mergeTabName(approvedEpic), "merge HAP-ONE");
+// Herdr appends the task as a positional argument. OpenCode takes a starting
+// prompt through --prompt; a bare positional is a project directory.
+assert.deepEqual(mergeAgentRun(["opencode"]), ["opencode", "--prompt"]);
+assert.deepEqual(mergeAgentRun(["/opt/opencode/bin/opencode"]), ["/opt/opencode/bin/opencode", "--prompt"]);
+assert.deepEqual(mergeAgentRun(["opencode", "--prompt"]), ["opencode", "--prompt"]);
+assert.deepEqual(mergeAgentRun(["claude"]), ["claude"], "non-OpenCode agents keep positional prompts");
+assert.deepEqual(mergeAgentRun(["opencode", "--model", "x"]), ["opencode", "--model", "x", "--prompt"]);
 assert.deepEqual(mergeTabArgs({
   name: "merge HAP-ONE", space: "sp-main", folder: "/repo", argv: ["opencode"], task: `${MERGE_PROMPT} ONE`,
 }), [
   "do", "tab.new", "--name", "merge HAP-ONE", "--space", "sp-main", "--folder", "/repo",
-  "--argv", '["opencode"]', "--task", `${MERGE_PROMPT} ONE`,
+  "--argv", '["opencode","--prompt"]', "--task", `${MERGE_PROMPT} ONE`,
 ]);
+assert.deepEqual(mergeTabArgs({
+  name: "merge HAP-ONE", space: "sp-main", folder: "/repo", argv: ["claude"], task: `${MERGE_PROMPT} ONE`,
+})[9], '["claude"]', "merge args leave a positional-prompt agent unchanged");
 assert.throws(() => mergeTabArgs({ name: "", space: "sp-main", folder: "/repo", argv: ["opencode"], task: "x" }), /needs a name/);
 assert.throws(() => mergeTabArgs({ name: "n", space: "", folder: "/repo", argv: ["opencode"], task: "x" }), /needs a name/);
 assert.throws(() => mergePrompt({}), /No approved task identity/);
