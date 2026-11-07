@@ -100,7 +100,7 @@ add_epic() {
 backlog_ref=$(add_epic "Dummy backlog epic" backlog)
 planned_ref=$(add_epic "Dummy planned epic" todo --metadata sdd.plan-worked-out=true --metadata sdd.plan-kind=multi-phase)
 progress_ref=$(add_epic "Dummy in-progress epic" active --metadata sdd.plan-worked-out=true)
-review_ref=$(add_epic "Dummy approved review epic" done --metadata sdd.plan-worked-out=true --metadata approval.state=approved --metadata delivery.state=committed)
+review_ref=$(add_epic "Dummy approved review epic" done --metadata sdd.plan-worked-out=true --metadata approval.state=approved --metadata approval.id=approval_e2e --metadata approval.commit=e2e-commit --metadata approval.workflow=implementation --metadata delivery.state=committed)
 done_ref=$(add_epic "Dummy delivered epic" done --metadata delivery.state=merged --metadata delivery.target=main)
 main_done_ref=$(add_epic "Dummy main-delivered epic" done)
 review_id=$(aven show "$review_ref" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).id))')

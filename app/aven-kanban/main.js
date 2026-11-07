@@ -2,10 +2,10 @@ import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals, theme } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, approvalMarker, assertBoardCoverage, buildBoard, detailArgs,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, assertBoardCoverage, buildBoard, detailArgs,
   detailCacheKey, detailIsCurrent, dispatchTerminalName, epicArgs, filterRowsByCreated, indexAttempts, isLiveEpicTerminal,
-  markMergedOnMain, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, openArgs, selectAttempt, selectedCard,
-  selectMainSpace, terminalName, upcomingArgs,
+  markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, openArgs,
+  selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -451,16 +451,10 @@ export default class AvenKanban extends View {
         // Re-read the exact task now: a cached or stale approval marker must
         // never open a merge handoff. The dispatcher journal still validates it.
         const detail = await this.exactDetail(workspace, epic, root);
-        const approval = approvalMarker(detail.metadata);
-        const missing = [];
-        if (approval.state !== "approved") missing.push(`state=${approval.state || "missing"}`);
-        if (!approval.id) missing.push("approval.id");
-        if (!approval.commit) missing.push("approval.commit");
-        if (!approval.workflow) missing.push("approval.workflow");
-        if (detail.task.status !== "done") missing.push(`status=${detail.task.status || "unknown"}`);
-        if (missing.length) {
+        const issue = mergeApprovalIssue(detail.task, detail.metadata);
+        if (issue) {
           this.details.delete(detailCacheKey(workspace, epic.id));
-          throw new Error(`${epic.ref} has no complete durable approval (${missing.join(", ")}); rerun /approve.`);
+          throw new Error(`${epic.ref} has no complete durable approval (${issue}); rerun /approve.`);
         }
         const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
         const target = selectMainSpace(spaces(), root, activeSpaceId);

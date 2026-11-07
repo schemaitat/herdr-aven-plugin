@@ -113,6 +113,19 @@ export function detailIsCurrent(cached, workspace, row) {
   return cached?.workspace === String(workspace ?? "") && cached?.updatedAt === row?.updated_at;
 }
 
+// Fresh-read gate for the merge handoff. Returns a human-readable list of the
+// missing pieces, or an empty string when the exact task may open /ha-merge.
+export function mergeApprovalIssue(task, metadata) {
+  const approval = approvalMarker(metadata);
+  const missing = [];
+  if (approval.state !== "approved") missing.push(`state=${approval.state || "missing"}`);
+  if (!approval.id) missing.push("approval.id");
+  if (!approval.commit) missing.push("approval.commit");
+  if (!approval.workflow) missing.push("approval.workflow");
+  if (task?.status !== "done") missing.push(`status=${task?.status || "unknown"}`);
+  return missing.join(", ");
+}
+
 function phaseProgress(children) {
   const total = Array.isArray(children) ? children.length : 0;
   const complete = (children ?? []).filter((child) => child?.open === false || TERMINAL_STATUSES.has(child?.status)).length;

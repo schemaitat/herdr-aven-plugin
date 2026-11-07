@@ -4,8 +4,9 @@ import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
   approvalMarker, assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, detailCacheKey,
   detailIsCurrent, dispatchTerminalName, epicArgs, filterRowsByCreated, flattenBoard, indexAttempts,
-  isLiveEpicTerminal, markMergedOnMain, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection,
-  normalizeAttempt, normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName, upcomingArgs,
+  isLiveEpicTerminal, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName,
+  moveSelection, normalizeAttempt, normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace, terminalName,
+  upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
@@ -164,6 +165,10 @@ assert.match(stateOnly.warnings.join(" "), /incomplete/);
 const partial = card("done", { ...fullApproval, "approval.id": "", "delivery.state": "committed" });
 assert.equal(partial.mergeable, false, "a missing approval id blocks the merge action");
 assert.equal(normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), fullApproval)).approved, true);
+assert.equal(mergeApprovalIssue({ status: "done" }, fullApproval), "", "a complete marker may open the merge handoff");
+assert.match(mergeApprovalIssue({ status: "done" }, { "approval.state": "approved" }), /approval\.id/, "the fresh merge gate names a missing approval id");
+assert.match(mergeApprovalIssue({ status: "active" }, fullApproval), /status=active/, "the fresh merge gate rejects a non-done task");
+assert.match(mergeApprovalIssue({ status: "done" }, {}), /state=missing/, "the fresh merge gate rejects a missing marker");
 const nonDoneApproval = card("active", fullApproval);
 assert.equal(nonDoneApproval.approved, false, "an approval marker on a non-done task is invalid");
 assert.equal(nonDoneApproval.approvalInvalid, true);
