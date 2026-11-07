@@ -549,7 +549,13 @@ A **Created** control row filters visible cards by `created_at` with `All`,
 `1w`, `2w`, `1mo`, and `1y` windows (fixed 7/14/30/365-day lookbacks). The choice
 persists across overlay openings, and a hidden card cannot stay selected. Cards
 whose root epic or any child task has a working dispatcher attempt pulse a
-working indicator. Pressing `Enter` jumps to that agent's space and terminal;
+working indicator. A live herdr agent whose address matches a recorded role
+terminal corroborates activity; conversely, an attempt whose recorded role
+terminals have all stopped (`finished`/`removed`) or whose lifecycle observation
+is `stopped-*` no longer pulses even when the read-only dispatcher summary still
+exposes an unreconciled pending checkpoint. Done and canceled epics never pulse:
+a genuinely live attempt stays visible as a terminal/execution contradiction
+warning instead. Pressing `Enter` jumps to that agent's space and terminal;
 when no live agent is available it opens the epic's Aven TUI as before.
 
 Cards show the qualified ref, title, Aven status, phase progress, and known
