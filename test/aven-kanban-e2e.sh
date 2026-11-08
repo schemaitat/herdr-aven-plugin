@@ -179,21 +179,39 @@ herdr-app shot "$root/kanban-board.png" >/dev/null
 
 # Initial selection is the first Backlog card. Three next commands select the
 # sole Review card across the five one-card columns.
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.merge >/dev/null
+#
+# The board hydrates approval metadata asynchronously, so a merge/ship command
+# sent before that read finishes is a silent no-op. Re-send the command while
+# polling for its tab; a successful handoff closes the board and later sends
+# are ignored.
+wait_for_tab() {
+  wait_command=$1
+  wait_space=$2
+  wait_name=$3
+  wait_file=$4
+  wait_found=
+  wait_attempt=0
+  while [ -z "$wait_found" ] && [ "$wait_attempt" -lt 10 ]; do
+    herdr-app do "$wait_command" >/dev/null 2>&1 || true
+    wait_count=0
+    while [ -z "$wait_found" ] && [ "$wait_count" -lt 20 ]; do
+      if herdr-app ls > "$wait_file" 2>/dev/null; then
+        wait_found=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); const tab = (space?.tabs || []).find((entry) => entry.name === name); const terminal = tab?.terminals?.[0]?.terminal; if (terminal) process.stdout.write(terminal);' "$wait_file" "$wait_space" "$wait_name")
+      fi
+      [ -n "$wait_found" ] && break
+      sleep 0.1
+      wait_count=$((wait_count + 1))
+    done
+    wait_attempt=$((wait_attempt + 1))
+  done
+  printf '%s' "$wait_found"
+}
+
 space_id=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/space.json")
-address=
-count=0
-while [ -z "$address" ] && [ "$count" -lt 200 ]; do
-  if herdr-app ls > "$root/ls.json" 2>/dev/null; then
-    address=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); const tab = (space?.tabs || []).find((entry) => entry.name === name); const terminal = tab?.terminals?.[0]?.terminal; if (terminal) process.stdout.write(terminal);' "$root/ls.json" "$space_id" "merge $review_ref")
-  fi
-  [ -n "$address" ] && break
-  sleep 0.1
-  count=$((count + 1))
-done
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+address=$(wait_for_tab aven-kanban.merge "$space_id" "merge $review_ref" "$root/ls.json")
 if [ -z "$address" ]; then
   herdr-app status > "$root/failure-status.json" || true
   herdr-app shot "$root/kanban-failure.png" >/dev/null || true
@@ -225,17 +243,7 @@ sleep 2
 herdr-app do aven-kanban.next >/dev/null
 herdr-app do aven-kanban.next >/dev/null
 herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.ship >/dev/null
-ship_address=
-count=0
-while [ -z "$ship_address" ] && [ "$count" -lt 200 ]; do
-  if herdr-app ls > "$root/ls-ship.json" 2>/dev/null; then
-    ship_address=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); const tab = (space?.tabs || []).find((entry) => entry.name === name); const terminal = tab?.terminals?.[0]?.terminal; if (terminal) process.stdout.write(terminal);' "$root/ls-ship.json" "$space_id" "ship $review_ref")
-  fi
-  [ -n "$ship_address" ] && break
-  sleep 0.1
-  count=$((count + 1))
-done
+ship_address=$(wait_for_tab aven-kanban.ship "$space_id" "ship $review_ref" "$root/ls-ship.json")
 [ -n "$ship_address" ] || fail 'Ship PR did not open the main-space ship tab'
 count=0
 ship_seen=no
