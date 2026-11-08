@@ -42,7 +42,14 @@ trap cleanup EXIT INT TERM
 
 export HERDR_APP_HOME="$app_home"
 export HC_SESSION="$session"
+# Aven honours AVEN_DB for the task database but resolves its config.yaml
+# independently. `aven project create --path` and `aven project path add`
+# append managed overrides to that file, so without AVEN_CONFIG_DIR a test run
+# would map this checkout to the disposable E2E project and leave the real
+# board scoped to an empty project.
 export AVEN_DB="$root/aven.sqlite"
+export AVEN_CONFIG_DIR="$root/config"
+mkdir -p "$AVEN_CONFIG_DIR"
 export AVEN_DISPATCH_STORE="$root/dispatch.sqlite"
 export AVEN_KANBAN_E2E="$root"
 export PATH="$root/bin:$PATH"

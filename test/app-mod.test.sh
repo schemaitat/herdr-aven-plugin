@@ -83,6 +83,8 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'cardArchiveable' 'a
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'mapLimit(terminal' 'ancestry checks run in the bounded pool'
 assert_file_lacks "$PLUGIN_ROOT/app/aven-kanban/main.js" '"git", ["merge"' 'board never merges Git directly'
 assert_file_lacks "$PLUGIN_ROOT/app/aven-kanban/logic.js" '"message", epic.id' 'merge never messages a builder terminal'
+assert_file_contains "$PLUGIN_ROOT/test/aven-kanban-e2e.sh" 'AVEN_CONFIG_DIR="$root/config"' 'native Kanban E2E isolates the Aven config'
+assert_file_contains "$PLUGIN_ROOT/test/aven-kanban-e2e.sh" 'export AVEN_CONFIG_DIR' 'native Kanban E2E exports the isolated Aven config'
 assert_file_lacks "$PLUGIN_ROOT/app/main.js" 'launchInspector' 'overlay no longer exposes the removed dispatcher inspector'
 assert_file_lacks "$PLUGIN_ROOT/app/main.js" '"aven-dispatch", "tui"' 'overlay never launches the removed Rust inspector'
 assert_file_contains "$PLUGIN_ROOT/app/aven-panel/logic.js" '"--workspace", workspace' 'browser and popup use explicit workspace'

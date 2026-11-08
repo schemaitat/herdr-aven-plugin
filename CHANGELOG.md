@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep the native Kanban E2E from polluting the real Aven config: the test now
+  sets `AVEN_CONFIG_DIR` alongside its isolated database, so
+  `aven project create --path` can no longer map the checkout to the disposable
+  E2E project and leave the board scoped to an empty project.
 - Fix the Kanban **Merge** and **Ship PR** handoff choosing the wrong app space:
   the selector now uses the live terminal of a space's first tab to find the
   repository's primary checkout instead of the space's configured `folder`,
