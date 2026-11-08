@@ -415,7 +415,7 @@ function insideFolder(value, folder) {
 // `$HOME` (or a stale checkout) while the space still shows the repository.
 // Herdr takes a space's repository from the terminal its first tab shows; read
 // that live pane folder instead of trusting `folder`.
-function firstPaneFolder(space, panes) {
+export function firstPaneFolder(space, panes) {
   const tabs = Array.isArray(space?.tabs) ? [...space.tabs] : [];
   tabs.sort((left, right) => (left?.index ?? 0) - (right?.index ?? 0));
   for (const tab of tabs) {
@@ -529,6 +529,10 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   let column;
   if (deliveredByMain) column = "done";
   else if (PENDING_DELIVERY_STATES.has(epic.deliveryState)) column = "ready";
+  // Until local-main ancestry is known, terminal work without an approval
+  // cannot claim Ready to land. It stays Done provisionally and may move to
+  // Ready once the evidence says its result is not on main.
+  else if (epic.ancestryPending === true && terminalStatus && epic.approved !== true) column = "done";
   else if (terminalStatus && execution === "active") column = "ready";
   else if (epic.status === "canceled") column = "done";
   else if (epic.status === "done") column = execution === "review" && attempt?.state === "needs-review" ? "ready" : "done";

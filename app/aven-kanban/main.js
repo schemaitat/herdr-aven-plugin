@@ -4,7 +4,8 @@ import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, pane
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
-  enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, hydrateDetails, indexAttempts, isLiveEpicTerminal,
+  enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, hydrateDetails, indexAttempts,
+  isLiveEpicTerminal,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard, selectMainSpace,
   shipPrompt, shipTabName, terminalName, upcomingArgs,
@@ -18,9 +19,6 @@ const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
 const ARCHIVE_SHARED = "aven-kanban.archived";
-// Shared readiness marker: `{ seq, pending }` lets other mods (and the native
-// E2E) distinguish a provisional frame from the authoritative one.
-const ENRICHMENT_SHARED = "aven-kanban.enrichment";
 
 // The reference Board palette. The overlay keeps its own look instead of
 // depending on the app theme, as the layout does.
@@ -87,9 +85,15 @@ export default class AvenKanban extends View {
     this.sources = null;
     this.mainMerged = new Set();
     this.coverageError = "";
-    this.enrichmentSeq = Number(shared(ENRICHMENT_SHARED)?.seq) || 0;
+    this.ancestryChecked = false;
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
+    // Navigation and archive presses that arrive before classification settles
+    // are replayed against the authoritative board, so a provisional frame
+    // cannot move the selection to a card that later changes column.
+    this.pendingMoves = 0;
+    this.pendingArchive = "";
+    this.pendingArchiveAll = false;
     this.mainEvidence = { head: "", entries: new Map() };
     this.questions = new Map();
     this.programs = {};
@@ -130,9 +134,10 @@ export default class AvenKanban extends View {
   spaceFolder() {
     const space = this.space();
     const focus = focused();
-    return focus?.space === space?.id && focus.cwd
-      ? focus.cwd
-      : (space?.folder || this.folder || String(props()?.cwd ?? ""));
+    if (focus?.space === space?.id && focus.cwd) return focus.cwd;
+    // A space's `folder` is only where its new terminals start. The board may
+    // open before focus lands, so prefer a live pane cwd before that default.
+    return firstPaneFolder(space, panes()) || space?.folder || this.folder || String(props()?.cwd ?? "");
   }
   notify(cx) { if (!this.closed) { try { (cx ?? this.cx).notify(); } catch {} } }
 
@@ -170,9 +175,10 @@ export default class AvenKanban extends View {
     if (!folder) return "";
     try {
       const result = await exec("git", ["-C", folder, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
-      const common = result.code === 0 ? result.stdout.trim().replace(/\/+$/, "") : "";
+      if (result.code !== 0) return "";
+      const common = result.stdout.trim().replace(/\/+$/, "");
       return common.endsWith("/.git") ? common.slice(0, -5) : folder;
-    } catch { return folder; }
+    } catch { return ""; }
   }
 
   liveAgentsSnapshot() {
@@ -190,7 +196,10 @@ export default class AvenKanban extends View {
   // and Git evidence enrich the same rows afterwards.
   async readSources() {
     const workspace = this.workspace();
-    const cwd = await this.rootFolder(this.spaceFolder());
+    const folder = this.spaceFolder();
+    // Never guess a checkout from the app's own cwd: a wrong repository would
+    // silently mark another project's work as delivered.
+    const cwd = folder ? await this.rootFolder(folder) : "";
     const [availableResult, upcomingResult, attemptsResult] = await Promise.all([
       exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
@@ -220,7 +229,7 @@ export default class AvenKanban extends View {
     return markMergedOnMain(
       mergeEpicRows({ available: sources.available, upcoming: sources.upcoming, details }),
       this.mainMerged,
-    );
+    ).map((row) => ({ ...row, ancestryPending: !this.ancestryChecked }));
   }
 
   publishRows(cx, flags = {}) {
@@ -238,15 +247,33 @@ export default class AvenKanban extends View {
       coverageError: this.coverageError,
       enriching: flags.enriching === true, evidencePending: flags.evidencePending === true,
     };
-    this.publishEnrichment();
     this.retainSelection(cx);
+    this.replayPending(cx);
   }
 
-  publishEnrichment() {
-    setShared(ENRICHMENT_SHARED, {
-      seq: this.enrichmentSeq,
-      pending: enrichmentPending(this.state),
-    });
+  settled() {
+    return !this.state.loading && this.ancestryChecked && !enrichmentPending(this.state);
+  }
+
+  replayPending(cx) {
+    if (!this.settled()) return;
+    const moves = this.pendingMoves;
+    const archiveId = this.pendingArchive;
+    const archiveAll = this.pendingArchiveAll;
+    this.pendingMoves = 0;
+    this.pendingArchive = "";
+    this.pendingArchiveAll = false;
+    if (!moves && !archiveId && !archiveAll) return;
+    const step = moves < 0 ? -1 : 1;
+    for (let index = 0; index < Math.abs(moves); index += 1) {
+      this.selectedId = moveSelection(this.columns(), this.selectedId, step);
+    }
+    this.retainSelection(cx);
+    if (archiveId) {
+      const card = archiveId === "*" ? this.selected() : selectedCard(this.columns(), archiveId);
+      if (card) this.archive(card, cx);
+    }
+    if (archiveAll) this.archiveAll(cx);
   }
 
   // Read-only delivery evidence for terminal cards. Exact attempt commits are
@@ -296,8 +323,7 @@ export default class AvenKanban extends View {
   refresh(cx) {
     if (this.refreshing || this.closed) return;
     this.refreshing = true;
-    this.enrichmentSeq += 1;
-    setShared(ENRICHMENT_SHARED, { seq: this.enrichmentSeq, pending: true });
+    this.ancestryChecked = false;
     this.state = { ...this.state, loading: !this.state.rows.length, error: "" };
     this.notify(cx);
     cx.spawn(async (taskCx) => {
@@ -328,8 +354,19 @@ export default class AvenKanban extends View {
           },
         });
         this.publishRows(taskCx, { evidencePending: true });
-        const mainEvidence = await this.evidenceFromMain(sources.cwd, this.mergedRows(), sources.attemptIndex);
+        // The checkout can be briefly unavailable right after the overlay
+        // opens (its space or live pane is still settling). Wait a bounded
+        // moment for a real Git checkout instead of classifying against a
+        // wrong folder, then settle with an explicit error if it never appears.
+        let cwd = sources.cwd;
+        for (let attempt = 0; !cwd && attempt < 25; attempt += 1) {
+          await exec("sleep", ["0.2"]);
+          const folder = this.spaceFolder();
+          cwd = folder ? await this.rootFolder(folder) : "";
+        }
+        const mainEvidence = await this.evidenceFromMain(cwd, this.mergedRows(), sources.attemptIndex);
         this.mainMerged = mainEvidence.merged;
+        this.ancestryChecked = true;
         const coverage = [];
         if (hydration.failures.length) coverage.push(`${hydration.failures.length} epic metadata read(s) failed: ${hydration.failures.slice(0, 3).join("; ")}`);
         if (mainEvidence.error) coverage.push(mainEvidence.error);
@@ -340,7 +377,8 @@ export default class AvenKanban extends View {
           ...this.state, loading: false, error: message(error), stale: this.state.rows.length > 0,
           enriching: false, evidencePending: false,
         };
-        this.publishEnrichment();
+        this.ancestryChecked = true;
+        this.replayPending(taskCx);
         this.notify(taskCx);
       } finally {
         this.refreshing = false;
@@ -385,6 +423,10 @@ export default class AvenKanban extends View {
   }
 
   select(delta, cx) {
+    if (!this.settled()) {
+      this.pendingMoves += delta;
+      return;
+    }
     this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
     this.dispatchMenuEpicId = null;
     this.notify(cx);
@@ -502,6 +544,12 @@ export default class AvenKanban extends View {
   }
   shipSelected(cx) { const card = this.selected(); if (card) this.ship(card, cx); }
   archiveSelected(cx) {
+    if (!this.settled()) {
+      // The moves that precede this press are still queued; archive whatever
+      // the authoritative board selects after replaying them.
+      this.pendingArchive = "*";
+      return;
+    }
     const card = this.selected();
     if (card?.column === "done") this.archive(card, cx);
     else this.notify(cx);
@@ -691,6 +739,11 @@ export default class AvenKanban extends View {
   archive(card, cx) {
     // Archive keys are immutable IDs, so a provisional or unhydrated card must
     // never be archived under a classification that enrichment may change.
+    // Presses that arrive while the board settles are replayed afterwards.
+    if (!this.settled()) {
+      if (card?.id) this.pendingArchive = String(card.id);
+      return;
+    }
     if (!cardArchiveable(card, this.state)) return;
     this.archived.add(archiveKey(this.workspace(), card.id));
     setShared(ARCHIVE_SHARED, [...this.archived]);
@@ -698,6 +751,10 @@ export default class AvenKanban extends View {
     this.retainSelection(cx);
   }
   archiveAll(cx) {
+    if (!this.settled()) {
+      this.pendingArchiveAll = true;
+      return;
+    }
     if (enrichmentPending(this.state)) return;
     const done = this.columns().find((column) => column.id === "done")?.cards ?? [];
     for (const card of done) {

@@ -26,7 +26,9 @@
   delivery evidence now enrich the same cards in the background with a
   four-worker limit, the board labels incomplete enrichment, and Archive stays
   fail-closed until classification is complete while Merge and Ship keep their
-  exact fresh-approval re-read.
+  exact fresh-approval re-read. The ancestry check waits briefly for the space's
+  live checkout, and early navigation and archive presses replay on the
+  authoritative board.
 - Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
   NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
   LAND / DONE columns with colour bars, agent glyphs, timers, facts and

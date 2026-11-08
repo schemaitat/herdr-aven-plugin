@@ -131,6 +131,16 @@ assert.equal(card("done", { "delivery.state": "pending" }, [], { mergedOnMain: t
 assert.equal(card("canceled", {}, [attempt("ONE", { state: "interrupted" })], { mergedOnMain: true }).column, "done");
 assert.equal(card("active", { "delivery.state": "pending" }, [], { mergedOnMain: true }).column, "ready", "an active epic cannot be closed from code ancestry alone (HAP-SZ57)");
 assert.equal(card("done", {}, [attempt("ONE", { state: "needs-review" })]).column, "ready", "unmerged terminal work remains Ready to land");
+// Before ancestry evidence lands, terminal work without an approval waits in
+// Done instead of claiming Ready to land; approved review work keeps its card.
+const pendingAncestry = (status, metadata, attempts) => {
+  const row = rawEpic("ONE", status);
+  const epic = normalizeEpic(row, detail(row, metadata));
+  return cardForEpic({ ...epic, ancestryPending: true }, selectAttempt(attempts, epic.id), attempts, []);
+};
+assert.equal(pendingAncestry("done", {}, [attempt("ONE", { state: "needs-review" })]).column, "done", "provisional terminal work stays Done until ancestry is known");
+assert.equal(pendingAncestry("done", fullApproval, [attempt("ONE", { state: "needs-review" })]).column, "ready", "approved review work is provisional Ready to land");
+assert.equal(pendingAncestry("done", {}, []).mergedOnMain, false);
 const marked = markMergedOnMain([normalizeEpic(rawEpic("ONE", "done")), normalizeEpic(rawEpic("TWO", "done"))], new Set(["ONE"]));
 assert.equal(marked[0].mergedOnMain, true);
 assert.equal(marked[1].mergedOnMain, false);

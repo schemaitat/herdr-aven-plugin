@@ -556,7 +556,9 @@ four-worker limit; a note above the columns says when metadata or delivery
 evidence is still loading. **Merge** and **Ship PR** still re-read the exact
 approval before opening a handoff, and **Archive** stays closed until the board
 and card are fully classified, so a provisional column can never hide work that
-enrichment would reclassify.
+enrichment would reclassify. The ancestry check waits briefly for the space's
+live checkout, and navigation or archive presses made while the board is still
+settling are replayed against the authoritative cards.
 
 The today strip counts **Landed today** (with seven daily bars), **Needs you**,
 **Working**, **Ready to land**, and **Open**. **Next move** quotes the oldest
