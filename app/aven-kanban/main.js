@@ -117,6 +117,8 @@ export default class AvenKanban extends View {
     this.questions = new Map();
     this.programs = {};
     this.renderTimes = new Map();
+    this.renderAgents = [];
+    this.renderTerminals = [];
     const storedFilter = String(shared("aven-kanban.created-filter") ?? "");
     this.createdFilter = CREATED_FILTERS.some((filter) => filter.id === storedFilter) ? storedFilter : "all";
     this.projectFilter = String(shared("aven-kanban.project-filter") ?? "");
@@ -376,13 +378,14 @@ export default class AvenKanban extends View {
   relatedAgent(card) {
     const attempts = card.relatedAttempts?.length ? card.relatedAttempts : (card.attempt ? [card.attempt] : []);
     const addresses = attempts.map((attempt) => attempt.terminal?.address).filter(Boolean);
-    const live = agents();
+    // Live lookups leave the JS sandbox; use the snapshot taken at the start of
+    // this render instead of asking the app once per card.
     for (const address of addresses) {
-      const agent = live.find((candidate) => candidate.address === address);
+      const agent = this.renderAgents.find((candidate) => candidate.address === address);
       if (agent) return agent;
     }
     for (const address of addresses) {
-      const terminal = terminals().find((candidate) => candidate.address === address && candidate.state === "live");
+      const terminal = this.renderTerminals.find((candidate) => candidate.address === address && candidate.state === "live");
       if (terminal) {
         return {
           address,
@@ -403,6 +406,8 @@ export default class AvenKanban extends View {
 
   async readQuestions(cx) {
     if (this.asking || this.closed) return;
+    this.renderAgents = agents();
+    this.renderTerminals = terminals();
     const cards = this.columns().find((column) => column.id === "needs_you")?.cards ?? [];
     if (!cards.length) {
       if (this.questions.size) { this.questions.clear(); this.notify(cx); }
@@ -878,8 +883,7 @@ export default class AvenKanban extends View {
       .when(alert, (el) => el.child(div().w(6).h(6).rounded(3).bg(C.you)));
   }
 
-  chips(cx) {
-    const board = this.boardColumns();
+  chips(board, cx) {
     const cards = board.flatMap((column) => column.cards);
     const projects = projectChips(cards);
     const stats = boardStats(board);
@@ -896,11 +900,18 @@ export default class AvenKanban extends View {
   }
 
   render(cx) {
+    this.renderAgents = agents();
+    this.renderTerminals = terminals();
     this.renderTimes = this.times();
-    const columns = this.columns();
+    // Build the board once; the project filter only narrows the cards, it does
+    // not need a second pass over every epic and live agent.
+    const board = this.boardColumns();
+    const columns = this.projectFilter
+      ? board.map((column) => ({ ...column, cards: column.cards.filter((card) => card.project === this.projectFilter) }))
+      : board;
     const stats = boardStats(columns);
+    const allStats = boardStats(board);
     const next = nextMove(columns);
-    const shown = this.createdRows().length;
     return v_flex().id("aven-kanban").size_full().min_h(0).bg(C.main).text_color(C.text)
       .track_focus(this.handle)
       .on_size_change((_size, sizeCx) => { if (!this.closed) { this.handle.focus(); this.notify(sizeCx); } })
@@ -937,16 +948,16 @@ export default class AvenKanban extends View {
         .when(Boolean(this.state.error), (el) => el.child(mono(10, C.red, `Aven: ${this.state.error}`)))
         .when(Boolean(this.state.coverageError), (el) => el.child(mono(10, C.red, `Incomplete metadata: ${this.state.coverageError}`)))
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
-        .child(this.chips(cx))
+        .child(this.chips(board, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
           .child(mono(10, C.dim, "j/k move · ⏎ go to agent · a answer/archive · g go · h ship · m merge · d dispatch · r refresh"))
           .child(div().flex_1())
-          .child(mono(10, C.dim, `${stats.total} of ${shown} epics`)))
+          .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
           .when(this.state.loading, (el) => el.child(div().p(16).font_family(SANS).text_size(12).text_color(C.dim).child("Loading epics…")))
           .when(!this.state.loading && columns.every((column) => column.cards.length === 0), (el) => el.child(div().p(16)
             .font_family(SANS).text_size(12).text_color(C.dim)
-            .child(shown ? "No epics match this filter." : "No epics in this project.")))
+            .child(allStats.total ? "No epics match this filter." : "No epics in this project.")))
           .when(!this.state.loading && columns.some((column) => column.cards.length > 0),
             (el) => el.children(columns.map((column) => this.column(column, cx))))));
   }
