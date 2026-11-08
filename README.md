@@ -531,45 +531,52 @@ that chord is free), with `ctrl-shift-a` followed by `k`, or with:
 herdr-app do mod.open --name aven-kanban
 ```
 
-The board lists nondeleted root epics from the repository's inferred Aven
-project in the explicit local `default` workspace. Scheduled open epics and
-terminal done/canceled epics are included. Five flexible columns always fit the
-overlay width without horizontal scrolling and combine independent Aven and
-dispatcher facts instead of creating another task store:
+The board is drawn in the visual language of the Board layout from
+[jkuepker/herdr-layouts](https://github.com/jkuepker/herdr-layouts): a dark
+Graphite-style palette, a compact top bar, a today strip, a NEXT MOVE banner,
+project chips, and colour-accented, independently scrolling columns. It lists
+nondeleted root epics from the repository's inferred Aven project in the
+explicit local `default` workspace. Scheduled open epics and terminal
+done/canceled epics are included. Five flexible columns always fit the overlay
+width without horizontal scrolling and combine independent Aven and dispatcher
+facts instead of creating another task store:
 
 | Column | Contents |
 | --- | --- |
-| **Backlog** | Unplanned inbox, backlog, and todo epics. |
-| **Planned out** | Todo epics with `sdd.plan-worked-out=true` and no current execution/review attempt. |
-| **In progress** | Active epics and running, pending, failed, or interrupted execution. |
-| **Review** | Needs-review/completed execution awaiting approval or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
+| **Backlog** | Inbox, backlog, and todo epics. A todo epic with `sdd.plan-worked-out=true` stays here with a **planned out** badge. |
+| **Needs you** | A presentation split of Working cards whose related live agent (or live terminal observation) reports `blocked`. The card quotes the lowest question on the agent's screen, read with `hc read`; questions stay in memory. |
+| **Working** | Active epics and running, pending, failed, or interrupted execution. |
+| **Ready to land** | Needs-review/completed execution awaiting approval or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
 | **Done** | Delivered or legacy accepted done epics, terminal work whose exact attempt result is verified on local main, and canceled epics. |
 
-A **Created** control row filters visible cards by `created_at` with `All`,
-`1w`, `2w`, `1mo`, and `1y` windows (fixed 7/14/30/365-day lookbacks). The choice
-persists across overlay openings, and a hidden card cannot stay selected. Cards
-whose root epic or any child task has a working dispatcher attempt pulse a
-working indicator. A live herdr agent whose address matches a recorded role
-terminal corroborates activity; conversely, an attempt whose recorded role
-terminals have all stopped (`finished`/`removed`) or whose lifecycle observation
-is `stopped-*` no longer pulses even when the read-only dispatcher summary still
-exposes an unreconciled pending checkpoint. Done and canceled epics never pulse:
-a genuinely live attempt stays visible as a terminal/execution contradiction
-warning instead. Pressing `Enter` jumps to that agent's space and terminal;
-when no live agent is available it opens the epic's Aven TUI as before.
+The today strip counts **Landed today** (with seven daily bars), **Needs you**,
+**Working**, **Ready to land**, and **Open**. **Next move** quotes the oldest
+needs-you card and offers **Answer** and **Go to agent**. Cards show the agent
+glyph, project chip, qualified ref, timer or status, title, an **ASKS YOU** box
+for needs-you cards, phase plan/execution/delivery facts, warnings, and a 3px
+left bar in their column colour.
 
-Cards show the qualified ref, title, Aven status, phase progress, and known
-plan/execution/delivery badges. Contradictory terminal/execution evidence and
-incomplete metadata reads stay visible. For terminal done/canceled cards, the
-board performs a bounded read-only check of the exact attempt branch/worktree
-commit against the current local `main`; verified ancestry moves the card to
-Done with an `on main` badge and, when closeout is absent or pending, an explicit
-**closeout not recorded** warning. This is presentation evidence only: it
-never edits Aven delivery metadata or treats active epics as complete. HAP-SZ57
-therefore remains Review while its implementation is merged but its epic/child
-are still open. Legacy done epics without delivery metadata remain Done as
-accepted historical work. Failed/interrupted non-merged execution stays In
-progress rather than appearing ready to merge.
+**Project chips** filter by project and show per-project counts plus a yellow
+dot when a card there needs you. A **Created** control filters visible cards by
+`created_at` with `All`, `1w`, `2w`, `1mo`, and `1y` windows (fixed
+7/14/30/365-day lookbacks). Both choices persist across overlay openings, and a
+hidden card cannot stay selected. Cards whose root epic or any child task has a
+working dispatcher attempt pulse a working indicator. A live herdr agent whose
+address matches a recorded role terminal corroborates activity; conversely, an
+attempt whose recorded role terminals have all stopped (`finished`/`removed`)
+or whose lifecycle observation is `stopped-*` no longer pulses even when the
+read-only dispatcher summary still exposes an unreconciled pending checkpoint.
+Done and canceled epics never pulse: a genuinely live attempt stays visible as
+a terminal/execution contradiction warning instead.
+
+For terminal done/canceled cards, the board performs a bounded read-only check
+of the exact attempt branch/worktree commit against the current local `main`;
+verified ancestry moves the card to Done with an `on main` badge and, when
+closeout is absent or pending, an explicit **closeout not recorded** warning.
+This is presentation evidence only: it never edits Aven delivery metadata or
+treats active epics as complete. Legacy done epics without delivery metadata
+remain Done as accepted historical work. Failed/interrupted non-merged
+execution stays Working rather than appearing ready to land.
 
 **Open** starts or reveals the exact epic's Aven TUI. **Dispatch** offers the
 same dispatch, plan, plan-and-implement, implement, reset, and babysitter
@@ -581,33 +588,52 @@ identity; repeated activation is deduplicated.
 | Board key | Action |
 | --- | --- |
 | `j` / `k` or arrows | Select next / previous card |
-| `Enter` or `o` | Jump to a live agent's space, or open the selected epic |
+| `Enter` or `o` | Jump to a live agent's space/tab, or open the selected epic |
+| `g` | Go to the selected card's live agent |
+| `a` | Answer on a Needs you card; Archive on a Done card |
+| `A` | Archive all visible Done cards |
+| `h` | Ship PR for an approved Ready to land card |
 | `d` | Toggle the selected epic's Dispatch menu |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
-| `m` | Open `/ha-merge` for an approved Review epic in the main space |
+| `m` | Open `/ha-merge` for an approved Ready to land epic in the main space |
 | `r` | Refresh |
 | `Esc` | Close a Dispatch menu, then the board |
 
-An approved Review card shows a green **✓ ready to merge** check. Approval means
-the root task metadata contains `approval.state=approved`; execution state alone
-never unlocks merging. Review cards without approval say **awaiting approval**
-and have no merge button.
+**Answer** focuses the blocked agent's exact terminal (and its pane) so the
+question can be answered immediately. **Go to agent** selects the agent's space
+and tab and focuses it; when no live agent exists, `Enter`/`o` falls back to the
+epic's Aven TUI.
 
-**Merge into main** opens a tab named `merge <task-ref>` in the main app space
-and starts the user's installed agent with `/ha-merge <immutable-task-id>`.
-OpenCode is launched with its `--prompt` flag because Herdr appends the first
-message as a positional argument and a bare OpenCode positional is a project
-directory; other selected agents keep their existing first-message behavior. The
-main space is the visible space whose folder is the repository's primary
-checkout (the parent of the Git common directory); if none exists, the active
-space is used and the tab still starts in that primary checkout. Clicking again
-reuses the task-named tab. The handoff is tied only to the immutable task ID, so
-it survives a recreated worktree space and does not depend on the builder or
-coordinator terminal still existing. This is a handoff to the existing
+An approved Ready to land card shows a green **✓ ready to merge** check and
+offers **Merge** and **Ship PR**. Approval means the root task metadata contains
+a complete durable approval (`approval.state=approved` plus `approval.id`,
+`approval.commit`, and `approval.workflow`); execution state alone never unlocks
+either handoff. Cards without approval say **awaiting approval** and have no
+handoff buttons.
+
+**Merge** opens a tab named `merge <task-ref>` in the main app space and starts
+the user's installed agent with `/ha-merge <immutable-task-id>`. **Ship PR**
+opens a tab named `ship <task-ref>` with a separate explicit prompt to push only
+the approved task branch, open a pull request following repository conventions,
+and not merge, force-push, rewrite history, or change Aven acceptance. Both
+re-read the exact durable approval before opening a tab. OpenCode is launched
+with its `--prompt` flag because Herdr appends the first message as a positional
+argument and a bare OpenCode positional is a project directory; other selected
+agents keep their existing first-message behavior. The main space is the
+visible space whose folder is the repository's primary checkout (the parent of
+the Git common directory); if none exists, the active space is used and the tab
+still starts in that primary checkout. Clicking again reuses the task-named tab.
+Merge is a handoff to the existing
 [finish workflow](#finish-a-dispatched-worktree), not a one-click Git mutation:
-`/ha-merge` requires a durable `/approve` result and clean worktrees. Its invocation
-is the explicit merge trigger; no second confirmation is required. The board itself never commits, merges, pushes, opens a PR,
-changes Aven acceptance, applies closeout, or closes a space.
+`/ha-merge` requires a durable `/approve` result and clean worktrees. Its
+invocation is the explicit merge trigger; no second confirmation is required.
+
+**Archive** and **Archive all** hide Done cards in local shared state keyed by
+workspace and immutable epic ID. They never edit Aven status, metadata, delivery
+or history, and they are per app user. The board itself never commits, merges,
+pushes, opens a pull request, changes Aven acceptance, applies closeout, or
+closes a space; Merge and Ship PR are agent handoffs that keep the human in
+control.
 
 Refresh is non-overlapping. Full Aven metadata is cached by immutable epic ID
 and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
@@ -622,9 +648,11 @@ stale results; partial metadata failures are not presented as complete coverage.
 
 For native verification, `just app-test-e2e` creates an isolated app home, core
 session, Aven DB, dispatcher store, and six dummy epics. It checks keyboard
-selection and asserts that merge launches a main-space tab with the exact
-`/ha-merge <immutable-task-id>` prompt, never a builder/coordinator message. It
-retains `kanban-board.png` and `kanban-handoff.png` under
+selection, asserts that Merge launches a main-space tab with the exact
+`/ha-merge <immutable-task-id>` prompt, asserts that Ship PR launches a separate
+task-named tab with its ship prompt, and asserts that Archive and Archive all
+persist both Done IDs without editing Aven. It retains `kanban-board.png`,
+`kanban-handoff.png`, `kanban-ship.png`, and `kanban-archive.png` under
 `/tmp/opencode/aven-kanban-e2e.*` for visual inspection. The test needs
 herdr-app, herdr-core, Aven, and a display; it is intentionally separate from
 headless `just test` and cleans up only the app/core/resources it created.

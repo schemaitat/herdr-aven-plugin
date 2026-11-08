@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
+  NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
+  LAND / DONE columns with colour bars, agent glyphs, timers, facts and
+  warnings. Cards gain **Answer** and **Go to agent** for live blocked agents,
+  **Ship PR** as a separate approved agent handoff, and local **Archive** /
+  **Archive all** for Done. Questions are read from the blocked agent's screen;
+  Merge keeps the durable `/ha-merge` gate and the board still never mutates
+  Git or Aven itself.
 - Fix the Kanban **Merge into main** handoff for OpenCode: Herdr appends the
   first message as a positional argument, so launch OpenCode with `--prompt`
   instead of letting `/ha-merge <task-id>` be mistaken for a project directory
