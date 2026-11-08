@@ -19,6 +19,8 @@ commands=$PLUGIN_ROOT/aven-commands.yaml
 assert_file_contains "$commands" 'execution: terminal'
 assert_file_contains "$commands" 'aven/sdd-plan-implement'
 assert_file_contains "$commands" '--skills-dir'
+assert_file_contains "$commands" 'name: describe-llm'
+assert_file_contains "$commands" 'args: [describe, --llm]'
 assert_file_lacks "$commands" 'herdr plugin'
 assert_file_lacks "$commands" 'herdr worktree'
 

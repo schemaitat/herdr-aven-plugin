@@ -12,6 +12,7 @@ pub(crate) mod phases;
 pub(crate) mod plan;
 pub(crate) mod reset;
 pub(crate) mod runtime;
+pub(crate) mod summary;
 pub(crate) mod supervision;
 
 use self::runtime::{

@@ -82,6 +82,11 @@ assert_file_contains "$config" "name: dispatch-reset" "reset workflow command"
 assert_file_contains "$config" "keys: [z r]" "reset workflow key"
 assert_file_contains "$config" "detail_keys: [z r]" "reset workflow detail key"
 assert_file_contains "$config" "args: [reset]" "reset has no implicit confirmation"
+assert_file_contains "$config" "name: describe-llm" "LLM summary command"
+assert_file_contains "$config" "keys: [d l, z l]" "LLM summary keys include the requested d l sequence"
+assert_file_contains "$config" "detail_keys: [d l, z l]" "LLM summary works in task detail"
+assert_file_contains "$config" "args: [describe, --llm]" "LLM summary uses the dispatcher describe command"
+assert_file_contains "$config" "target: focused" "LLM summary stays limited to the focused task"
 
 # aven can parse the result.
 aven config get sync.enabled >/dev/null ||

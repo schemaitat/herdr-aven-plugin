@@ -177,6 +177,20 @@ enum Commands {
         #[arg(long)]
         reconcile_all: bool,
     },
+    /// Generate or print an LLM summary for a long Aven description.
+    Describe {
+        /// Task ref, or omit when invoked by an Aven focused-task command.
+        task: Option<String>,
+        /// Generate a new summary with the LLM; the default is read-only.
+        #[arg(long)]
+        llm: bool,
+        /// OpenCode model in provider/model form (or AVEN_DISPATCH_SUMMARY_MODEL).
+        #[arg(long, env = "AVEN_DISPATCH_SUMMARY_MODEL")]
+        model: Option<String>,
+        /// Print the structured outcome as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Invalidate dispatch execution state while preserving the durable Aven plan.
     Reset {
         /// Task ref, or omit when invoked by an Aven focused-task command.
@@ -464,6 +478,12 @@ fn main() -> Result<()> {
             interval,
             reconcile_all,
         } => watch_command(path, once, stop, status, interval, reconcile_all),
+        Commands::Describe {
+            task,
+            llm,
+            model,
+            json,
+        } => dispatch::summary::run(path, task, llm, model, json),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
         Commands::Approve {
             task,
