@@ -96,6 +96,12 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-panel-tabs/main.js" 'refreshDispatch
 assert_file_contains "$PLUGIN_ROOT/app/aven-panel-tabs/main.js" 'selector("aven", "Aven"' 'tabs expose the Aven selector'
 assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"aven-panel-tabs"' 'owned layout selects the owned tabs mod'
 assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"id": "aven"' 'owned layout has Aven stack child'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"theme": "graphite"' 'owned layout uses the Board theme'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"accent": "#b4a0db"' 'owned layout uses the Board lilac accent'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"font": "JetBrains Mono"' 'owned layout uses the Board mono font'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"ui_font": "Geist"' 'owned layout uses the Board UI font'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"color": "#625187"' 'owned layout uses the Board focus border'
+assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"radius": 6' 'owned layout uses the Board pane radius'
 
 [ ! -e "$PLUGIN_ROOT/herdr-plugin.toml" ] || fail 'legacy herdr plugin manifest must be retired'
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'
