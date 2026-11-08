@@ -475,10 +475,20 @@ function attemptStopped(attempt) {
   return observed.length > 0 && observed.every((observation) => STOPPED_TERMINAL_STATES.has(observation.state));
 }
 
-export function attemptWorking(attempt, liveAgents = []) {
+// A stored terminal observation is a checkpoint from an earlier read. Only a
+// live herdr agent at a recorded role terminal is current evidence that an
+// accepted task's execution is still active.
+export function attemptLiveWorking(attempt, liveAgents = []) {
   if (!attempt) return false;
   const addresses = terminalAddresses(attempt);
-  if (addresses.size && liveAgents.some((live) => live.status === "working" && addresses.has(String(live.address ?? "")))) return true;
+  if (!addresses.size) return false;
+  return (liveAgents ?? []).some((live) =>
+    live.status === "working" && addresses.has(String(live.address ?? "")));
+}
+
+export function attemptWorking(attempt, liveAgents = []) {
+  if (!attempt) return false;
+  if (attemptLiveWorking(attempt, liveAgents)) return true;
   return WORKING_EXECUTION_STATES.has(attempt.state) && !attemptStopped(attempt);
 }
 
@@ -512,6 +522,13 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   const attempts = (relatedAttempts.length ? relatedAttempts : (attempt ? [attempt] : [])).map(normalizeAttempt);
   const terminalStatus = TERMINAL_STATUSES.has(epic.status);
   const working = attempts.some((candidate) => attemptWorking(candidate, liveAgents));
+  // The read-only dispatcher summary never reconciles its stored checkpoints.
+  // For accepted work, only current live presence or the dispatcher's durable
+  // contradiction may claim active execution.
+  const terminalExecution = terminalStatus && (
+    attempts.some((candidate) => Boolean(candidate.contradiction))
+    || attempts.some((candidate) => attemptLiveWorking(candidate, liveAgents))
+  );
   const needsYou = !terminalStatus && !attemptSelection?.ambiguous
     && attempts.some((candidate) => attemptNeedsYou(candidate, liveAgents));
   const warnings = [];
@@ -519,7 +536,7 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   if (attempt?.contradiction) warnings.push(attempt.contradiction.replaceAll("_", " "));
   if (!epic.hydrated && epic.status === "todo") warnings.push("Plan metadata is not loaded yet.");
   if (epic.approvalInvalid) warnings.push("Approval marker is incomplete or belongs to a non-done task; rerun /approve.");
-  if (terminalStatus && execution === "active" && working) warnings.push("Terminal Aven status conflicts with active execution.");
+  if (terminalExecution) warnings.push("Terminal Aven status conflicts with active execution.");
 
   const deliveredByMain = terminalStatus && epic.mergedOnMain === true;
   if (deliveredByMain && !RECORDED_DELIVERY_STATES.has(epic.deliveryState)) {
@@ -533,7 +550,7 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   // cannot claim Ready to land. It stays Done provisionally and may move to
   // Ready once the evidence says its result is not on main.
   else if (epic.ancestryPending === true && terminalStatus && epic.approved !== true) column = "done";
-  else if (terminalStatus && execution === "active") column = "ready";
+  else if (terminalExecution) column = "ready";
   else if (epic.status === "canceled") column = "done";
   else if (epic.status === "done") column = execution === "review" && attempt?.state === "needs-review" ? "ready" : "done";
   else if (execution === "review") column = "ready";

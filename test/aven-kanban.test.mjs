@@ -265,10 +265,22 @@ assert.equal(staleDone.agentActive, false, "done work whose terminals stopped mu
 assert.match(staleDone.warnings.join(" "), /closeout not recorded/);
 assert.doesNotMatch(staleDone.warnings.join(" "), /conflicts with active execution/,
   "an unreconciled pending checkpoint is not active execution");
-const liveDone = card("done", {}, [attempt("ONE", { state: "terminal-pending", terminals: liveTerminals })], { mergedOnMain: true });
+// A read-only summary can retain a dispatch-time `live` observation for an
+// attempt that was never reconciled after acceptance. Without a live herdr
+// agent, that checkpoint is stale evidence, not active execution.
+const storedLiveDone = card("done", {}, [attempt("ONE", { state: "running", terminals: liveTerminals })]);
+assert.equal(storedLiveDone.column, "done",
+  "an unreconciled stored-live checkpoint does not move accepted work to Ready");
+assert.doesNotMatch(storedLiveDone.warnings.join(" "), /conflicts with active execution/,
+  "a stored-live checkpoint alone is not active execution");
+const liveDone = card("done", {}, [attempt("ONE", { state: "terminal-pending", terminals: liveTerminals })],
+  { mergedOnMain: true }, [{ address: "t-builder", status: "working" }]);
 assert.equal(liveDone.agentActive, false, "terminal epics are inert for the working pulse");
 assert.match(liveDone.warnings.join(" "), /conflicts with active execution/,
-  "genuine activity on terminal work stays a visible contradiction");
+  "a live working agent keeps genuine activity visible as a contradiction");
+assert.equal(card("done", {}, [attempt("ONE", { state: "terminal-pending", terminals: liveTerminals })],
+  { mergedOnMain: true }).warnings.join(" ").includes("conflicts with active execution"), false,
+  "the same stored-live card without live agent evidence stays quiet");
 const stopped = attempt("ONE", { state: "completed", terminals: finishedTerminals });
 assert.equal(cardForEpic(normalizeEpic(rawEpic("ONE", "active"), detail(rawEpic("ONE", "active"), {})),
   selectAttempt([stopped], "ONE"), [stopped], [{ address: "t-builder", status: "working" }]).agentActive, true,
