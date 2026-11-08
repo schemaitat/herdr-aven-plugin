@@ -222,6 +222,29 @@ export function cardSummary(task) {
   return { ...summary, text: lines.join(" · "), lines };
 }
 
+export const SUMMARY_GENERATING_TIMEOUT_MS = 10 * 60 * 1000;
+export const SUMMARY_ERROR_RETRY_MS = 10 * 60 * 1000;
+
+export function summaryState(metadata, now = Date.now()) {
+  const state = String(metadata?.["summary.llm.state"] ?? "").trim();
+  const at = Number(metadata?.["summary.llm.state-at"] ?? 0);
+  const age = Number.isFinite(at) && at > 0 ? now - at : null;
+  const generating = state === "generating" && (age === null || age < SUMMARY_GENERATING_TIMEOUT_MS);
+  const errorCooling = state === "error" && age !== null && age >= 0 && age < SUMMARY_ERROR_RETRY_MS;
+  return { state, at, age, generating, errorCooling };
+}
+
+// Automatic generation is eligible only for a long description without a
+// current summary. Active work and a recent failure are left alone so a
+// refresh cannot loop on the same task.
+export function autoSummaryCandidate(task, now = Date.now()) {
+  if (!summaryNeeded(task?.description)) return false;
+  const summary = storedSummary(task?.metadata, task?.description);
+  if (summary && !summary.stale) return false;
+  const state = summaryState(task?.metadata, now);
+  return !state.generating && !state.errorCooling;
+}
+
 export function mergeCoverage(results) {
   const rows = new Map();
   const errors = [];

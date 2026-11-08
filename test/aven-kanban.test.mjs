@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_LABEL,
-  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard, cardForEpic,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS,
+  SUMMARY_LABEL, autoSummaryCandidate, approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard, cardForEpic,
   cardSummary, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
   filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs, projectChips, selectAttempt,
-  selectedCard, selectMainSpace, shipPrompt, shipTabName, summaryDigest, summaryNeeded, taskSummary, terminalName,
+  selectedCard, selectMainSpace, shipPrompt, shipTabName, summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName,
   upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -147,6 +147,35 @@ assert.equal(
 const summaryCard = cardForEpic(summarized, selectAttempt([], "SUM"));
 assert.equal(summaryCard.summaryCard, "First point. · Second point. · Third point.");
 assert.equal(summaryCard.column, "backlog");
+assert.equal(summarized.summaryAuto, false, "a current summary is not auto-generated");
+const missingSummary = normalizeEpic(summaryRow, { task: { ...summaryRow }, description: longText, metadata: {} });
+assert.equal(missingSummary.summaryAuto, true, "a long description without a summary is queued");
+const generatingSummary = normalizeEpic(summaryRow, {
+  task: { ...summaryRow },
+  description: longText,
+  metadata: { "summary.llm.state": "generating", "summary.llm.state-at": String(Date.now()) },
+});
+assert.equal(generatingSummary.summaryGenerating, true);
+assert.deepEqual(generatingSummary.summaryLines, []);
+assert.equal(generatingSummary.summaryAuto, false, "an active run is not queued again");
+const erroredSummary = normalizeEpic(summaryRow, {
+  task: { ...summaryRow },
+  description: longText,
+  metadata: { "summary.llm.state": "error", "summary.llm.state-at": String(Date.now()) },
+});
+assert.equal(erroredSummary.summaryAuto, false, "a recent failure cools down");
+const oldErroredSummary = normalizeEpic(summaryRow, {
+  task: { ...summaryRow },
+  description: longText,
+  metadata: { "summary.llm.state": "error", "summary.llm.state-at": String(Date.now() - SUMMARY_ERROR_RETRY_MS - 1000) },
+});
+assert.equal(oldErroredSummary.summaryAuto, true, "an old failure is retryable");
+assert.equal(summaryState({ "summary.llm.state": "generating", "summary.llm.state-at": String(Date.now()) }).generating, true);
+assert.equal(
+  detailNeedsRefresh({ workspace: "default", updatedAt: "t1", detail: { task: { status: "active" }, metadata: { "summary.llm.state": "generating" } } }, "default", { updated_at: "t1" }),
+  true,
+  "a generating state is re-read even when the second-granular timestamp matches",
+);
 assert.equal(
   detailNeedsRefresh({ workspace: "default", updatedAt: "t1", detail: { task: { status: "active" }, metadata: { "summary.llm": "x" } } }, "default", { updated_at: "t1" }),
   true,

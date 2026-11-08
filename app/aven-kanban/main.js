@@ -4,7 +4,7 @@ import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, prop
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
-  filterArchived, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, markMergedOnMain,
+  filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, nextMove, openArgs, projectChips,
   selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
@@ -20,6 +20,7 @@ const DETAIL_METADATA = [
   "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
   "delivery.state", "delivery.target", "delivery.obligation",
   "summary.llm", "summary.llm.digest", "summary.llm.generated-at",
+  "summary.llm.state", "summary.llm.state-at", "summary.llm.error",
 ];
 
 // The reference Board palette. The overlay keeps its own look instead of
@@ -115,6 +116,9 @@ export default class AvenKanban extends View {
     this.details = new Map();
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
+    this.autoBusy = false;
+    this.autoRequests = new Set();
+    this.autoAttempts = new Map();
     this.mainEvidence = { head: "", entries: new Map() };
     this.questions = new Map();
     this.programs = {};
@@ -309,6 +313,7 @@ export default class AvenKanban extends View {
           coverageError: coverage.join("; "),
         };
         this.retainSelection(taskCx);
+        this.autoSummarize(taskCx);
       } catch (error) {
         this.state = { ...this.state, loading: false, error: message(error), stale: this.state.rows.length > 0 };
         this.notify(taskCx);
@@ -340,6 +345,34 @@ export default class AvenKanban extends View {
     const columns = this.columns();
     this.selectedId = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
     this.notify(cx);
+  }
+
+  // Generate at most one missing summary at a time, selected card first. The
+  // Rust command takes a per-task lock, so a panel-triggered run cannot double
+  // the same task; this queue only bounds the board's own launches.
+  autoSummarize(cx) {
+    if (this.autoBusy || this.closed) return;
+    const selected = this.selected();
+    const cards = flattenBoard(this.columns());
+    const ordered = [selected, ...cards].filter(Boolean);
+    const card = ordered.find((candidate) => candidate.summaryAuto
+      && !this.autoRequests.has(candidate.ref)
+      && Date.now() - (this.autoAttempts.get(candidate.ref) ?? 0) >= 120000);
+    if (!card) return;
+    this.autoBusy = true;
+    this.autoRequests.add(card.ref);
+    this.autoAttempts.set(card.ref, Date.now());
+    cx.spawn(async (taskCx) => {
+      try {
+        const cwd = await this.rootFolder(this.spaceFolder());
+        await exec("aven-dispatch", ["describe", card.ref, "--llm", "--auto", "--workspace", this.workspace()], cwd ? { cwd } : undefined);
+      } catch {}
+      finally {
+        this.autoBusy = false;
+        this.autoRequests.delete(card.ref);
+        if (!this.closed) this.refresh(taskCx);
+      }
+    });
   }
 
   setFilter(id, cx) {
@@ -787,10 +820,14 @@ export default class AvenKanban extends View {
         .when(card.summaryLines.length > 0, (el) => el.child(v_flex().gap(1).pt(1)
           .child(h_flex().gap(5).items_center()
             .child(mono(9, C.accent, SUMMARY_LABEL))
-            .when(card.summaryStale, (row) => row.child(mono(9, C.dim, "stale"))))
+            .when(card.summaryStale, (row) => row.child(mono(9, C.dim, "stale")))
+            .when(card.summaryGenerating, (row) => row.child(mono(9, C.dim, "generating…"))))
           .children(card.summaryLines.map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
             .child(mono(9, C.accent, "•"))
             .child(div().flex_1().min_w(0).whitespace_normal().font_family(SANS).text_size(10.5).text_color(C.soft).child(line))))))
+        .when(card.summaryLines.length === 0 && card.summaryGenerating, (el) => el.child(h_flex().gap(5).items_center().pt(1)
+          .child(mono(9, C.accent, SUMMARY_LABEL))
+          .child(mono(9, C.dim, "generating…"))))
         .when(card.column === "needs_you", (el) => el.child(v_flex().px(8).py(6).rounded(4).bg(C.youAsk)
           .child(mono(9.5, C.you, "ASKS YOU"))
           .child(div().font_family(SANS).text_size(11.5).text_color(C.soft)

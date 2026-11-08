@@ -1,10 +1,11 @@
-//! On-demand LLM summaries for long Aven descriptions.
+//! On-demand and background LLM summaries for long Aven descriptions.
 //!
-//! A summary is display text stored in Aven task metadata. Generation is
-//! explicit (`aven-dispatch describe --llm`); a plain `describe` is a read-only
-//! print. The digest is a stable 32-bit FNV-1a over the normalized description
-//! and is implemented identically in the app-mod JavaScript so either surface
-//! can mark a summary stale.
+//! A summary is display text stored in Aven task metadata. `describe --llm`
+//! generates it, `describe --llm --auto` is the background form that skips
+//! current work and records a per-task state, and a plain `describe` is a
+//! read-only print. The digest is a stable 32-bit FNV-1a over the normalized
+//! description and is implemented identically in the app-mod JavaScript so
+//! either surface can mark a summary stale.
 
 use crate::{
     dispatch::parse_context,
@@ -13,7 +14,10 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 pub(crate) const SUMMARY_MIN_CHARS: usize = 100;
 pub(crate) const SUMMARY_MAX_CHARS: usize = 600;
@@ -28,6 +32,11 @@ pub(crate) const SUMMARY_METADATA: &str = "summary.llm";
 pub(crate) const SUMMARY_DIGEST_METADATA: &str = "summary.llm.digest";
 pub(crate) const SUMMARY_GENERATED_AT_METADATA: &str = "summary.llm.generated-at";
 pub(crate) const SUMMARY_MODEL_METADATA: &str = "summary.llm.model";
+pub(crate) const SUMMARY_STATE_METADATA: &str = "summary.llm.state";
+pub(crate) const SUMMARY_STATE_AT_METADATA: &str = "summary.llm.state-at";
+pub(crate) const SUMMARY_ERROR_METADATA: &str = "summary.llm.error";
+const GENERATING_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+const ERROR_RETRY_MS: u64 = 10 * 60 * 1000;
 const PROMPT_DESCRIPTION_LIMIT: usize = 8000;
 
 /// A description is compared after CRLF normalization and trimming so the
@@ -314,6 +323,98 @@ fn stored_summary(payload: &Value) -> Option<(String, bool)> {
     Some((text.to_owned(), stale))
 }
 
+fn summary_is_current(payload: &Value) -> bool {
+    let text = metadata_value(payload, SUMMARY_METADATA).trim();
+    if text.is_empty() {
+        return false;
+    }
+    let digest = metadata_value(payload, SUMMARY_DIGEST_METADATA);
+    !digest.is_empty() && digest == summary_digest(description(payload))
+}
+
+/// Automatic generation skips work that is already current, actively running,
+/// or recently failed. The timestamps make a crashed "generating" marker and a
+/// failed run retryable without looping on every UI refresh.
+fn auto_skip(payload: &Value) -> Option<&'static str> {
+    let state = metadata_value(payload, SUMMARY_STATE_METADATA);
+    let at = metadata_value(payload, SUMMARY_STATE_AT_METADATA)
+        .parse::<u64>()
+        .unwrap_or(0);
+    let age = now().saturating_sub(at);
+    match state {
+        "generating" if at == 0 || age < GENERATING_TIMEOUT_MS => {
+            Some("generation already in progress")
+        }
+        "error" if at > 0 && age < ERROR_RETRY_MS => {
+            Some("previous generation failed; retry later")
+        }
+        _ => None,
+    }
+}
+
+fn auto_disabled() -> bool {
+    matches!(
+        env::var("AVEN_DISPATCH_SUMMARY_AUTO")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+struct SummaryLock {
+    _file: fs::File,
+}
+
+/// One generation per immutable task across the panel, the Kanban board and
+/// explicit invocations. The OS releases the lock when the process exits.
+fn acquire_summary_lock(store: &Path, task_id: &str) -> Result<Option<SummaryLock>> {
+    let directory = store
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("summary-locks");
+    fs::create_dir_all(&directory).with_context(|| format!("create {}", directory.display()))?;
+    let path = directory.join(format!("{task_id}.lock"));
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(SummaryLock { _file: file })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error).context("lock summary generation"),
+    }
+}
+
+fn store_state(
+    invocation: &Invocation,
+    reference: &str,
+    state: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    let mut args = vec![
+        "edit".to_owned(),
+        reference.to_owned(),
+        "--metadata".to_owned(),
+        format!("{SUMMARY_STATE_METADATA}={state}"),
+        "--metadata".to_owned(),
+        format!("{SUMMARY_STATE_AT_METADATA}={}", now()),
+    ];
+    if let Some(error) = error {
+        args.push("--metadata".to_owned());
+        args.push(format!(
+            "{SUMMARY_ERROR_METADATA}={}",
+            clamp_chars(error, 400)
+        ));
+    }
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    aven(invocation, &borrowed, None)?;
+    Ok(())
+}
+
 fn store_summary(
     invocation: &Invocation,
     reference: &str,
@@ -348,11 +449,20 @@ fn generate(
     payload: &Value,
     fallback_ref: &str,
     model: Option<&str>,
+    auto: bool,
 ) -> Result<Value> {
     let reference = task_ref(payload, fallback_ref).to_owned();
     let text = description(payload);
     if !summary_needed(text) {
         return Ok(json!({ "ref": reference, "status": "skipped", "reason": SKIPPED }));
+    }
+    if auto {
+        if summary_is_current(payload) {
+            return Ok(json!({ "ref": reference, "status": "current" }));
+        }
+        if let Some(reason) = auto_skip(payload) {
+            return Ok(json!({ "ref": reference, "status": "skipped", "reason": reason }));
+        }
     }
     let title = task_title(payload, &reference);
     let phases = payload
@@ -408,6 +518,7 @@ fn render(result: &Value) -> String {
             };
             format!("LLM SUMMARY {reference}{suffix}\n{summary}")
         }
+        "current" => format!("LLM SUMMARY {reference}\nup to date"),
         "skipped" => format!(
             "LLM SUMMARY {reference}\nskipped: {}",
             result
@@ -426,65 +537,154 @@ fn render(result: &Value) -> String {
     }
 }
 
-/// Generate summaries for a task and its long phase descriptions, or print a
-/// stored summary without mutating Aven.
-pub(crate) fn run(
-    _path: PathBuf,
-    task: Option<String>,
-    llm: bool,
-    model: Option<String>,
-    json_output: bool,
-) -> Result<()> {
-    let (invocation, reference) = describe_context(task)?;
-    let primary = show_task(&invocation, &reference)?;
-    let primary_ref = task_ref(&primary, &reference).to_owned();
-    let model = summary_model(model.as_deref());
-    let mut results = Vec::new();
-    if llm {
-        results.push(
-            generate(&invocation, &primary, &primary_ref, Some(&model))
-                .unwrap_or_else(|error| json!({ "ref": primary_ref, "status": "failed", "error": error.to_string() })),
-        );
-        let is_epic = primary
-            .pointer("/task/is_epic")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if is_epic {
-            let children = primary
-                .pointer("/task/epic_children")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for child in children.into_iter().take(SUMMARY_LIMIT) {
-                let Some(child_ref) = child.get("ref").and_then(Value::as_str).map(str::to_owned)
-                else {
-                    continue;
-                };
-                let result = match show_task(&invocation, &child_ref) {
-                    Ok(payload) => generate(&invocation, &payload, &child_ref, Some(&model)),
-                    Err(error) => Err(error),
-                };
-                results.push(result.unwrap_or_else(|error| {
-                    json!({ "ref": child_ref, "status": "failed", "error": error.to_string() })
-                }));
-            }
-        }
-    } else {
-        results.push(print_summary(&primary, &primary_ref));
-    }
-
+fn emit(results: &[Value], json_output: bool) -> Result<()> {
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        println!("{}", serde_json::to_string_pretty(results)?);
     } else {
-        for result in &results {
+        for result in results {
             println!("{}", render(result));
             println!();
         }
+    }
+    Ok(())
+}
+
+/// Generate summaries for a task and its long phase descriptions, print a
+/// stored summary, or (with `auto`) generate only missing/stale work.
+pub(crate) fn run(
+    path: PathBuf,
+    task: Option<String>,
+    llm: bool,
+    auto: bool,
+    model: Option<String>,
+    workspace: Option<String>,
+    json_output: bool,
+) -> Result<()> {
+    let (mut invocation, reference) = describe_context(task)?;
+    if let Some(workspace) = workspace.filter(|value| !value.trim().is_empty()) {
+        invocation.workspace = Some(workspace);
+    }
+    let primary = show_task(&invocation, &reference)?;
+    let primary_ref = task_ref(&primary, &reference).to_owned();
+    let model = summary_model(model.as_deref());
+    if !llm {
+        let result = print_summary(&primary, &primary_ref);
+        return emit(&[result], json_output);
+    }
+    if auto && auto_disabled() {
+        println!("LLM SUMMARY {primary_ref}\nauto summary disabled");
+        return Ok(());
+    }
+    let task_id = primary
+        .pointer("/task/id")
+        .and_then(Value::as_str)
+        .unwrap_or(&primary_ref)
+        .to_owned();
+    let Some(_lock) = acquire_summary_lock(&path, &task_id)? else {
+        println!("LLM SUMMARY {primary_ref}\ngeneration already in progress");
+        return Ok(());
+    };
+
+    let mut targets = vec![primary.clone()];
+    let is_epic = primary
+        .pointer("/task/is_epic")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if is_epic {
+        let children = primary
+            .pointer("/task/epic_children")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for child in children.into_iter().take(SUMMARY_LIMIT) {
+            let Some(child_ref) = child.get("ref").and_then(Value::as_str).map(str::to_owned)
+            else {
+                continue;
+            };
+            match show_task(&invocation, &child_ref) {
+                Ok(payload) => targets.push(payload),
+                Err(error) => targets.push(json!({
+                    "task": { "ref": child_ref },
+                    "description": "",
+                    "metadata": {},
+                    "_read_error": error.to_string(),
+                })),
+            }
+        }
+    }
+
+    if auto {
+        let needs_work = targets.iter().any(|payload| {
+            summary_needed(description(payload))
+                && !summary_is_current(payload)
+                && auto_skip(payload).is_none()
+        });
+        if !needs_work {
+            let results = targets
+                .iter()
+                .map(|payload| {
+                    let reference = task_ref(payload, &primary_ref);
+                    if !summary_needed(description(payload)) {
+                        json!({ "ref": reference, "status": "skipped", "reason": SKIPPED })
+                    } else if summary_is_current(payload) {
+                        json!({ "ref": reference, "status": "current" })
+                    } else {
+                        json!({
+                            "ref": reference,
+                            "status": "skipped",
+                            "reason": auto_skip(payload).unwrap_or("not needed"),
+                        })
+                    }
+                })
+                .collect::<Vec<_>>();
+            return emit(&results, json_output);
+        }
+    } else if !targets
+        .iter()
+        .any(|payload| summary_needed(description(payload)))
+    {
+        // A short description is skipped without writing state metadata.
+        let results = targets
+            .iter()
+            .map(|payload| {
+                json!({
+                    "ref": task_ref(payload, &primary_ref),
+                    "status": "skipped",
+                    "reason": SKIPPED,
+                })
+            })
+            .collect::<Vec<_>>();
+        return emit(&results, json_output);
+    }
+
+    store_state(&invocation, &primary_ref, "generating", None)?;
+    let mut results = Vec::new();
+    for payload in &targets {
+        let target_ref = task_ref(payload, &primary_ref).to_owned();
+        let result = if let Some(error) = payload.get("_read_error").and_then(Value::as_str) {
+            Ok(json!({ "ref": target_ref, "status": "failed", "error": error }))
+        } else {
+            generate(&invocation, payload, &target_ref, Some(&model), auto)
+        };
+        results.push(result.unwrap_or_else(
+            |error| json!({ "ref": target_ref, "status": "failed", "error": error.to_string() }),
+        ));
     }
     let failures = results
         .iter()
         .filter(|result| result.get("status").and_then(Value::as_str) == Some("failed"))
         .count();
+    if failures > 0 {
+        store_state(
+            &invocation,
+            &primary_ref,
+            "error",
+            Some(&format!("{failures} summary operation(s) failed")),
+        )?;
+    } else {
+        store_state(&invocation, &primary_ref, "done", None)?;
+    }
+    emit(&results, json_output)?;
     if failures > 0 {
         bail!("{failures} LLM summary operation(s) failed");
     }
@@ -593,5 +793,56 @@ mod tests {
         assert_eq!(print_summary(&payload, "HAP-X")["status"], "skipped");
         let long = json!({ "description": "x".repeat(101), "metadata": {} });
         assert_eq!(print_summary(&long, "HAP-X")["status"], "missing");
+    }
+
+    #[test]
+    fn auto_skips_current_generating_and_recent_errors() {
+        let text = "x".repeat(101);
+        let current = json!({
+            "description": text,
+            "metadata": {
+                SUMMARY_METADATA: "- one",
+                SUMMARY_DIGEST_METADATA: summary_digest(&text),
+            }
+        });
+        assert!(summary_is_current(&current));
+        assert_eq!(auto_skip(&current), None);
+
+        let generating = json!({
+            "description": text,
+            "metadata": {
+                SUMMARY_STATE_METADATA: "generating",
+                SUMMARY_STATE_AT_METADATA: now().to_string(),
+            }
+        });
+        assert_eq!(
+            auto_skip(&generating),
+            Some("generation already in progress")
+        );
+
+        let stale_generating = json!({
+            "description": text,
+            "metadata": {
+                SUMMARY_STATE_METADATA: "generating",
+                SUMMARY_STATE_AT_METADATA: (now() - GENERATING_TIMEOUT_MS - 1_000).to_string(),
+            }
+        });
+        assert_eq!(
+            auto_skip(&stale_generating),
+            None,
+            "a crashed run is retryable"
+        );
+
+        let recent_error = json!({
+            "description": text,
+            "metadata": {
+                SUMMARY_STATE_METADATA: "error",
+                SUMMARY_STATE_AT_METADATA: now().to_string(),
+            }
+        });
+        assert_eq!(
+            auto_skip(&recent_error),
+            Some("previous generation failed; retry later")
+        );
     }
 }

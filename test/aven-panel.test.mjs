@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import {
-  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, SUMMARY_CARD_LIMIT, SUMMARY_LABEL, canonicalId, cardSummary,
+  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS,
+  SUMMARY_GENERATING_TIMEOUT_MS, SUMMARY_LABEL, autoSummaryCandidate, canonicalId, cardSummary,
   descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs,
   inferredUpcomingArgs, isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs,
   phaseOverview, phaseProgress, projectArgs, projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel,
-  storedSummary, summaryDigest, summaryNeeded, taskSummary, terminalName, upcomingArgs,
+  storedSummary, summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
@@ -69,6 +70,24 @@ assert.equal(
   SUMMARY_CARD_LIMIT,
   "card summary lines are bounded",
 );
+
+// Automatic background generation only targets long, non-current summaries and
+// respects an active run or a recent failure.
+const autoNow = Date.now();
+assert.equal(autoSummaryCandidate({ description: longDescription, metadata: {} }, autoNow), true);
+assert.equal(autoSummaryCandidate({ description: "short", metadata: {} }, autoNow), false);
+assert.equal(autoSummaryCandidate({ description: longDescription, metadata: { "summary.llm": "ok", "summary.llm.digest": summaryDigest(longDescription) } }, autoNow), false, "current summaries are not regenerated");
+const staleTask = { description: longDescription, metadata: { "summary.llm": "old", "summary.llm.digest": "deadbeef" } };
+assert.equal(autoSummaryCandidate(staleTask, autoNow), true, "stale summaries are regenerated");
+const generatingTask = { ...staleTask, metadata: { ...staleTask.metadata, "summary.llm.state": "generating", "summary.llm.state-at": String(autoNow - 1000) } };
+assert.equal(autoSummaryCandidate(generatingTask, autoNow), false, "an active run is not duplicated");
+assert.equal(summaryState(generatingTask.metadata, autoNow).generating, true);
+const crashedGenerating = { ...generatingTask, metadata: { ...generatingTask.metadata, "summary.llm.state-at": String(autoNow - SUMMARY_GENERATING_TIMEOUT_MS - 1000) } };
+assert.equal(autoSummaryCandidate(crashedGenerating, autoNow), true, "a crashed run is retryable");
+const errorTask = { ...staleTask, metadata: { ...staleTask.metadata, "summary.llm.state": "error", "summary.llm.state-at": String(autoNow - 1000) } };
+assert.equal(autoSummaryCandidate(errorTask, autoNow), false, "recent errors cool down");
+const oldError = { ...errorTask, metadata: { ...errorTask.metadata, "summary.llm.state-at": String(autoNow - SUMMARY_ERROR_RETRY_MS - 1000) } };
+assert.equal(autoSummaryCandidate(oldError, autoNow), true, "an old error is retryable");
 assert.deepEqual(DISPATCH_ACTIONS.map(({ label }) => label), ["z d", "z s", "z p", "z i", "z r", "z x", "z b"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"], "buttons send lowercase task-detail bindings through hc");
 assert.ok(DISPATCH_ACTIONS.every(({ description }) => description.length > 0), "each dispatcher shortcut has a menu description");

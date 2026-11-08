@@ -8,10 +8,14 @@
   stores `summary.llm`, `summary.llm.digest`, and `summary.llm.generated-at` in
   Aven metadata. The Aven-right sidebar and Kanban board show at most three
   short bullet lines under an **LLM SUMMARY** label for descriptions longer than
-  100 characters, mark a changed description **stale**, and never generate
-  during a refresh. A plain `describe` is read-only. Summaries default to the
+  100 characters and mark a changed description **stale**. A plain `describe`
+  is read-only. Summaries default to the
   build agent's model, `github-copilot/gpt-6-luna`, with
-  `--model`/`AVEN_DISPATCH_SUMMARY_MODEL` overrides.
+  `--model`/`AVEN_DISPATCH_SUMMARY_MODEL` overrides. The sidebar and Kanban also
+  enqueue a bounded background `describe --auto` for long descriptions without
+  a current summary, recording `summary.llm.state` (`generating`/`done`/`error`),
+  showing **generating…**, and exposing `AVEN_DISPATCH_SUMMARY_AUTO=0` as a kill
+  switch.
 - Paint the optional **Aven right** layout in the Kanban Board palette: the
   graphite near-black canvas and chrome, lilac accent, JetBrains Mono/Geist
   type, compact pane frames and focus border. The look is scoped to that layout

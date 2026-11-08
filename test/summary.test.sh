@@ -21,15 +21,18 @@ argslog=$work/args.log
 short='A short description under the threshold.'
 long=$(python3 -c 'print("Summarize this long task. " + "detail " * 20)')
 child=$(python3 -c 'print("Phase detail that is also long. " + "step " * 20)')
+auto_long=$(python3 -c 'print("Auto generation task. " + "detail " * 20)')
 
-python3 - "$state" "$short" "$long" "$child" <<'PY'
+python3 - "$state" "$short" "$long" "$child" "$auto_long" <<'PY'
 import json, sys
-state, short, long, child = sys.argv[1:5]
+state, short, long, child, auto_long = sys.argv[1:6]
 tasks = {
     "HAP-LONG": {"ref": "HAP-LONG", "title": "Long task", "description": long,
                  "is_epic": False, "metadata": {}},
     "HAP-SHORT": {"ref": "HAP-SHORT", "title": "Short task", "description": short,
                   "is_epic": False, "metadata": {}},
+    "HAP-AUTO": {"ref": "HAP-AUTO", "title": "Auto task", "description": auto_long,
+                 "is_epic": False, "metadata": {}},
     "HAP-ROOT": {"ref": "HAP-ROOT", "title": "Root epic", "description": long,
                  "is_epic": True, "metadata": {},
                  "epic_children": [{"ref": "HAP-CHILD", "id": "CHILD", "title": "Child",
@@ -94,7 +97,8 @@ chmod +x "$fake/aven"
 
 cat > "$fake/opencode" <<'PY'
 #!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
+time.sleep(float(os.environ.get("SUMMARY_SLEEP", "0")))
 prompt = sys.argv[-1]
 with open(os.environ["SUMMARY_PROMPTS"], "a", encoding="utf-8") as handle:
     handle.write(prompt + "\n---\n")
@@ -109,7 +113,7 @@ chmod +x "$fake/opencode"
 
 run_describe() {
   PATH="$fake:$PATH" SUMMARY_STATE="$state" SUMMARY_PROMPTS="$prompts" SUMMARY_ARGS="$argslog" \
-    OPENCODE_BIN="$fake/opencode" "$binary" describe "$@"
+    SUMMARY_SLEEP="${SUMMARY_SLEEP:-0}" OPENCODE_BIN="$fake/opencode" "$binary" describe "$@"
 }
 
 metadata() {
@@ -181,6 +185,46 @@ out=$(run_describe HAP-ROOT --llm)
 assert_contains "$out" "LLM SUMMARY HAP-ROOT"
 assert_contains "$out" "LLM SUMMARY HAP-CHILD"
 [ -n "$(metadata HAP-CHILD summary.llm)" ] || fail 'phase child summary was not stored'
+
+# Auto mode skips a current summary without calling the model again.
+before_calls=$(wc -l < "$argslog")
+out=$(run_describe HAP-LONG --llm --auto)
+assert_contains "$out" "up to date"
+assert_eq "$(wc -l < "$argslog")" "$before_calls" 'auto does not regenerate a current summary'
+
+# Auto mode generates a missing summary and records durable state.
+out=$(run_describe HAP-AUTO --llm --auto)
+assert_contains "$out" "- First durable point."
+assert_eq "$(metadata HAP-AUTO summary.llm.state)" 'done'
+[ -n "$(metadata HAP-AUTO summary.llm)" ] || fail 'auto summary was not stored'
+
+# A kill switch prevents automatic work and mutation.
+python3 - "$state" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    state = json.load(handle)
+state["tasks"]["HAP-AUTO"]["metadata"] = {}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle)
+PY
+before_calls=$(wc -l < "$argslog")
+out=$(PATH="$fake:$PATH" SUMMARY_STATE="$state" SUMMARY_PROMPTS="$prompts" SUMMARY_ARGS="$argslog" \
+  AVEN_DISPATCH_SUMMARY_AUTO=0 OPENCODE_BIN="$fake/opencode" "$binary" describe HAP-AUTO --llm --auto)
+assert_contains "$out" 'auto summary disabled'
+assert_eq "$(wc -l < "$argslog")" "$before_calls" 'disabled auto does not call the model'
+assert_eq "$(metadata HAP-AUTO summary.llm)" '' 'disabled auto does not mutate Aven'
+
+# A concurrent auto run cannot double-call the model for one task.
+SUMMARY_SLEEP=2 run_describe HAP-AUTO --llm --auto > "$work/first-auto" &
+first=$!
+sleep 0.5
+out=$(run_describe HAP-AUTO --llm --auto)
+assert_contains "$out" 'already in progress'
+wait "$first"
+assert_contains "$(cat "$work/first-auto")" '- First durable point.'
+after_calls=$(wc -l < "$argslog")
+assert_eq "$((after_calls - before_calls))" 1 'a concurrent auto run calls the model once'
 
 # Staleness is reported when the stored digest no longer matches.
 python3 - "$state" <<'PY'

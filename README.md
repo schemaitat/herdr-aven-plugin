@@ -773,7 +773,10 @@ text in Aven metadata:
 | `summary.llm` | At most three short bullet lines (one per line), kept within Aven's metadata limit. |
 | `summary.llm.digest` | 32-bit FNV-1a of the normalized source description; the UI uses it for the **stale** hint. |
 | `summary.llm.generated-at` | Unix milliseconds when the summary was written. |
-| `summary.llm.model` | The OpenCode model when it was supplied explicitly. |
+| `summary.llm.model` | The OpenCode model used for the summary. |
+| `summary.llm.state` | Background coordination: `generating`, `done`, or `error`. |
+| `summary.llm.state-at` | Unix milliseconds for the state marker. |
+| `summary.llm.error` | Bounded error text when a run fails. |
 
 Only descriptions longer than 100 characters are summarized. Each summary is
 at most three short bullet lines (about 18 words each); Markdown emphasis and
@@ -783,8 +786,16 @@ characters or fewer is skipped, and a plain `aven-dispatch describe <ref>`
 (without `--llm`) only prints the stored summary and never mutates Aven. Select
 a model with `--model provider/model` or `AVEN_DISPATCH_SUMMARY_MODEL`; otherwise
 it uses `github-copilot/gpt-6-luna`, the build agent's configured model.
-Summaries are regenerated only when you press `d l`/`z l`; the sidebar and
-Kanban board only read them.
+
+Generation is both explicit and automatic. Pressing `d l`/`z l` always
+regenerates the focused task in a terminal. Separately, the sidebar and Kanban
+board enqueue a background `describe --auto` for a long description without a
+current summary: the selected/focused card first, one run at a time, with a
+per-task lock. The UI shows **generating…** while `summary.llm.state` is
+`generating`, retries a failed run only after ten minutes, and treats a
+`generating` marker older than ten minutes as retryable. Set
+`AVEN_DISPATCH_SUMMARY_AUTO=0` (also `false`, `off`, or `no`) to disable
+automatic generation.
 
 ### Dispatch flow
 

@@ -184,9 +184,15 @@ enum Commands {
         /// Generate a new summary with the LLM; the default is read-only.
         #[arg(long)]
         llm: bool,
+        /// Background form: skip current work and record generating/done/error.
+        #[arg(long, requires = "llm")]
+        auto: bool,
         /// OpenCode model in provider/model form (or AVEN_DISPATCH_SUMMARY_MODEL).
         #[arg(long, env = "AVEN_DISPATCH_SUMMARY_MODEL")]
         model: Option<String>,
+        /// Aven workspace key; the focused command context supplies it otherwise.
+        #[arg(long)]
+        workspace: Option<String>,
         /// Print the structured outcome as JSON.
         #[arg(long)]
         json: bool,
@@ -481,9 +487,11 @@ fn main() -> Result<()> {
         Commands::Describe {
             task,
             llm,
+            auto,
             model,
+            workspace,
             json,
-        } => dispatch::summary::run(path, task, llm, model, json),
+        } => dispatch::summary::run(path, task, llm, auto, model, workspace, json),
         Commands::Reset { task, yes, dry_run } => reset(path, task, yes, dry_run),
         Commands::Approve {
             task,
