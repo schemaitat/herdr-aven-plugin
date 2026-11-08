@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make dispatcher branch names self-describing: new branches are
+  `{project}/{task-slug}-dispatch-{task-id}` and phase branches are
+  `{project}/{task-slug}-phase-NN-dispatch-{task-id}`, so the derived worktree
+  directory can be filtered by task title. The immutable task id stays the
+  final segment, and existing recorded branches/worktrees are not renamed.
 - Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
   NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
   LAND / DONE columns with colour bars, agent glyphs, timers, facts and
