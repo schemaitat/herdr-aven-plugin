@@ -149,6 +149,102 @@ export function descriptionBody(description, limit = 1600) {
   return clampDescription(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), limit);
 }
 
+// LLM summaries share one contract with `aven-dispatch describe`: at most
+// three short bullet lines, produced only for long descriptions. Short text
+// keeps its existing raw presentation.
+export const SUMMARY_LABEL = "LLM SUMMARY";
+export const SUMMARY_MIN_CHARS = 100;
+export const SUMMARY_MAX_BULLETS = 3;
+export const SUMMARY_LIMIT = 600;
+export const SUMMARY_BULLET_LIMIT = 180;
+export const SUMMARY_CARD_LIMIT = 120;
+
+function normalizedDescription(description) {
+  return String(description ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
+// 32-bit FNV-1a over UTF-16 code units, matching the Rust producer. Used only
+// for the stale hint; a mismatch never hides a summary.
+export function summaryDigest(description) {
+  let hash = 0x811c9dc5;
+  const text = normalizedDescription(description);
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash ^ text.charCodeAt(index)) >>> 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+export function summaryNeeded(description) {
+  return [...normalizedDescription(description)].length > SUMMARY_MIN_CHARS;
+}
+
+function cleanBullet(line, limit) {
+  const text = String(line ?? "")
+    .replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clampDescription(text, limit);
+}
+
+// Split stored summary text into at most three plain bullet lines. This also
+// tolerates old one-paragraph summaries and Markdown emphasis.
+export function summaryLines(text, limit = SUMMARY_MAX_BULLETS, bulletLimit = SUMMARY_BULLET_LIMIT) {
+  return String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => cleanBullet(line, bulletLimit))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+export function storedSummary(metadata, description) {
+  const lines = summaryLines(metadata?.["summary.llm"]);
+  if (!lines.length) return null;
+  const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
+  const stale = Boolean(digest) && digest !== summaryDigest(description);
+  return { text: lines.join("\n"), lines, stale };
+}
+
+// A task summary is available only when the description is long enough and the
+// stored LLM summary exists. `cardSummary` bounds each line for a card surface.
+export function taskSummary(task) {
+  if (!summaryNeeded(task?.description)) return null;
+  const summary = storedSummary(task?.metadata, task?.description);
+  return summary ? { ...summary, label: SUMMARY_LABEL } : null;
+}
+
+export function cardSummary(task) {
+  const summary = taskSummary(task);
+  if (!summary) return null;
+  const lines = summaryLines(summary.text, SUMMARY_MAX_BULLETS, SUMMARY_CARD_LIMIT);
+  return { ...summary, text: lines.join(" · "), lines };
+}
+
+export const SUMMARY_GENERATING_TIMEOUT_MS = 10 * 60 * 1000;
+export const SUMMARY_ERROR_RETRY_MS = 10 * 60 * 1000;
+
+export function summaryState(metadata, now = Date.now()) {
+  const state = String(metadata?.["summary.llm.state"] ?? "").trim();
+  const at = Number(metadata?.["summary.llm.state-at"] ?? 0);
+  const age = Number.isFinite(at) && at > 0 ? now - at : null;
+  const generating = state === "generating" && (age === null || age < SUMMARY_GENERATING_TIMEOUT_MS);
+  const errorCooling = state === "error" && age !== null && age >= 0 && age < SUMMARY_ERROR_RETRY_MS;
+  return { state, at, age, generating, errorCooling };
+}
+
+// Automatic generation is eligible only for a long description without a
+// current summary. Active work and a recent failure are left alone so a
+// refresh cannot loop on the same task.
+export function autoSummaryCandidate(task, now = Date.now()) {
+  if (!summaryNeeded(task?.description)) return false;
+  const summary = storedSummary(task?.metadata, task?.description);
+  if (summary && !summary.stale) return false;
+  const state = summaryState(task?.metadata, now);
+  return !state.generating && !state.errorCooling;
+}
+
 export function mergeCoverage(results) {
   const rows = new Map();
   const errors = [];
@@ -160,11 +256,15 @@ export function mergeCoverage(results) {
 }
 
 // `aven show --full --json` wraps the task and its long text fields. Normalize
-// it to the task shape the panel uses and keep the description alongside it.
+// it to the task shape the panel uses and keep the description and metadata
+// (the LLM summary contract) alongside it.
 export function fullDetail(payload) {
   const task = payload?.task ?? payload;
   if (!task || typeof task !== "object") return task;
-  return payload?.description ? { ...task, description: String(payload.description) } : task;
+  const detail = { ...task };
+  if (payload?.description) detail.description = String(payload.description);
+  if (payload?.metadata && typeof payload.metadata === "object") detail.metadata = payload.metadata;
+  return detail;
 }
 
 function terminalHash(value) {

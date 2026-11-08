@@ -11,6 +11,15 @@ export const CREATED_FILTERS = [
   { id: "1mo", label: "1mo", days: 30 },
   { id: "1y", label: "1y", days: 365 },
 ];
+// LLM summaries share one contract with `aven-dispatch describe`: at most
+// three short bullet lines, produced only for long descriptions. Short text
+// keeps its existing presentation.
+export const SUMMARY_LABEL = "LLM SUMMARY";
+export const SUMMARY_MIN_CHARS = 100;
+export const SUMMARY_MAX_BULLETS = 3;
+export const SUMMARY_LIMIT = 600;
+export const SUMMARY_BULLET_LIMIT = 180;
+export const SUMMARY_CARD_LIMIT = 120;
 // Board order mirrors the reference layout: Aven keeps one intake column where
 // the layout has none, then the three action columns and the archive column.
 export const BOARD_COLUMNS = [
@@ -82,11 +91,14 @@ export function detailArgs(workspace, ref) {
   return ["show", ref, "--workspace", workspace, "--full", "--json"];
 }
 
-// Metadata that gates approval, delivery, or plan badges. Everything else in an
-// `aven show --full` payload stays outside the board model.
+// Metadata that gates approval, delivery, or plan badges, plus the LLM summary
+// contract the board renders. Everything else in an `aven show --full` payload
+// stays outside the board model.
 export const DETAIL_METADATA = [
   "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
   "delivery.state", "delivery.target", "delivery.obligation",
+  "summary.llm", "summary.llm.digest", "summary.llm.generated-at",
+  "summary.llm.state", "summary.llm.state-at", "summary.llm.error",
 ];
 
 // A malformed or unexpected detail payload must never become board evidence.
@@ -105,6 +117,7 @@ export function safeDetail(payload) {
         status: String(child?.status ?? ""), open: child?.open !== false,
       })) : [],
     },
+    description: String(payload?.description ?? ""),
     metadata,
   };
 }
@@ -169,7 +182,9 @@ export function detailIsCurrent(cached, workspace, row) {
 export function detailNeedsRefresh(cached, workspace, row) {
   if (!detailIsCurrent(cached, workspace, row)) return true;
   return cached.detail?.task?.status === "done"
-    || Boolean(cached.detail?.metadata?.["approval.state"]);
+    || Boolean(cached.detail?.metadata?.["approval.state"])
+    || Boolean(cached.detail?.metadata?.["summary.llm"])
+    || cached.detail?.metadata?.["summary.llm.state"] === "generating";
 }
 
 // Hydrate the details that are stale or absent, publishing each outcome as soon
@@ -225,6 +240,89 @@ function phaseProgress(children) {
   return { complete, total };
 }
 
+function normalizedDescription(description) {
+  return String(description ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
+// 32-bit FNV-1a over UTF-16 code units, matching the Rust producer.
+export function summaryDigest(description) {
+  let hash = 0x811c9dc5;
+  const text = normalizedDescription(description);
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash ^ text.charCodeAt(index)) >>> 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+export function summaryNeeded(description) {
+  return [...normalizedDescription(description)].length > SUMMARY_MIN_CHARS;
+}
+
+function clampText(text, limit) {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+function cleanBullet(line, limit) {
+  const text = String(line ?? "")
+    .replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clampText(text, limit);
+}
+
+export function summaryLines(text, limit = SUMMARY_MAX_BULLETS, bulletLimit = SUMMARY_BULLET_LIMIT) {
+  return String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => cleanBullet(line, bulletLimit))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+export function storedSummary(metadata, description) {
+  const lines = summaryLines(metadata?.["summary.llm"]);
+  if (!lines.length) return null;
+  const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
+  const stale = Boolean(digest) && digest !== summaryDigest(description);
+  return { text: lines.join("\n"), lines, stale };
+}
+
+export function taskSummary(task) {
+  if (!summaryNeeded(task?.description)) return null;
+  const summary = storedSummary(task?.metadata, task?.description);
+  return summary ? { ...summary, label: SUMMARY_LABEL } : null;
+}
+
+export function cardSummary(task) {
+  const summary = taskSummary(task);
+  if (!summary) return null;
+  const lines = summaryLines(summary.text, SUMMARY_MAX_BULLETS, SUMMARY_CARD_LIMIT);
+  return { ...summary, text: lines.join(" · "), lines };
+}
+
+export const SUMMARY_GENERATING_TIMEOUT_MS = 10 * 60 * 1000;
+export const SUMMARY_ERROR_RETRY_MS = 10 * 60 * 1000;
+
+export function summaryState(metadata, now = Date.now()) {
+  const state = String(metadata?.["summary.llm.state"] ?? "").trim();
+  const at = Number(metadata?.["summary.llm.state-at"] ?? 0);
+  const age = Number.isFinite(at) && at > 0 ? now - at : null;
+  const generating = state === "generating" && (age === null || age < SUMMARY_GENERATING_TIMEOUT_MS);
+  const errorCooling = state === "error" && age !== null && age >= 0 && age < SUMMARY_ERROR_RETRY_MS;
+  return { state, at, age, generating, errorCooling };
+}
+
+export function autoSummaryCandidate(task, now = Date.now()) {
+  if (!summaryNeeded(task?.description)) return false;
+  const summary = storedSummary(task?.metadata, task?.description);
+  if (summary && !summary.stale) return false;
+  const state = summaryState(task?.metadata, now);
+  return !state.generating && !state.errorCooling;
+}
+
 // Normalize only the fields the board renders. In particular, dispatcher
 // pending_prompt and Aven descriptions/notes never enter the view model.
 export function normalizeEpic(row, detail) {
@@ -240,6 +338,10 @@ export function normalizeEpic(row, detail) {
     .filter(Boolean);
   const status = String(hydrated && detailTask.status ? detailTask.status : (row.status ?? "unknown"));
   const approval = approvalMarker(hydrated ? metadata : {});
+  const description = hydrated && typeof detail?.description === "string" ? detail.description : "";
+  const summary = hydrated ? taskSummary({ description, metadata }) : null;
+  const card = hydrated ? cardSummary({ description, metadata }) : null;
+  const state = summaryState(metadata);
   return {
     id,
     ref,
@@ -251,6 +353,13 @@ export function normalizeEpic(row, detail) {
     available_at: String(row.available_at ?? ""),
     hydrated,
     mergedOnMain: row.mergedOnMain === true,
+    summary: summary?.text ?? "",
+    summaryCard: card?.text ?? "",
+    summaryLines: card?.lines ?? [],
+    summaryStale: Boolean(summary?.stale),
+    summaryState: state.state,
+    summaryGenerating: hydrated && state.generating,
+    summaryAuto: hydrated && autoSummaryCandidate({ description, metadata }),
     planWorkedOut: hydrated && metadata["sdd.plan-worked-out"] === "true",
     approvalState: approval.state,
     approvalId: approval.id,

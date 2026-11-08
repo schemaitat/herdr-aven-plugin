@@ -24,6 +24,7 @@
     "h": "aven-kanban.ship",
     "x": "aven-kanban.archive",
     "d": "aven-kanban.dispatch",
+    "l": "aven-kanban.summary",
     "s": "aven-kanban.plan-implement",
     "p": "aven-kanban.plan",
     "i": "aven-kanban.implement",

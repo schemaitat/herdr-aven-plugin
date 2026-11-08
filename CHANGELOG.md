@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add on-demand LLM summaries for long task descriptions. `d l` (or `z l`) in
+  Aven runs `aven-dispatch describe --llm`, which summarizes the focused task
+  and up to 20 long phase descriptions with the installed OpenCode CLI and
+  stores `summary.llm`, `summary.llm.digest`, and `summary.llm.generated-at` in
+  Aven metadata. The Aven-right sidebar and Kanban board show at most three
+  short bullet lines under an **LLM SUMMARY** label for descriptions longer than
+  100 characters and mark a changed description **stale**. A plain `describe`
+  is read-only. Summaries default to the
+  build agent's model, `github-copilot/gpt-6-luna`, with
+  `--model`/`AVEN_DISPATCH_SUMMARY_MODEL` overrides. The sidebar and Kanban also
+  enqueue a bounded background `describe --auto` for long descriptions without
+  a current summary, recording `summary.llm.state` (`generating`/`done`/`error`),
+  showing **generating…**, and exposing `AVEN_DISPATCH_SUMMARY_AUTO=0` as a kill
+  switch. Kanban cards keep the title as the primary content and expand their
+  LLM summary from a clickable **LLM SUMMARY** chip or `l`.
 - Make dispatcher branch names self-describing: new branches are
   `{project}/{task-slug}-dispatch-{task-id}` and phase branches are
   `{project}/{task-slug}-phase-NN-dispatch-{task-id}`, so the derived worktree

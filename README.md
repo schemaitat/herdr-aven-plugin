@@ -565,7 +565,11 @@ The today strip counts **Landed today** (with seven daily bars), **Needs you**,
 needs-you card and offers **Answer** and **Go to agent**. Cards show the agent
 glyph, project chip, qualified ref, timer or status, title, an **ASKS YOU** box
 for needs-you cards, phase plan/execution/delivery facts, warnings, and a 3px
-left bar in their column colour.
+left bar in their column colour. Cards whose description is longer than 100
+characters and has a stored LLM summary keep the title as the primary content
+and expose a clickable **LLM SUMMARY** chip (or `l` on the selected card) that
+expands the three summary bullets; a stale digest is marked and short or
+unsummarized descriptions are unchanged.
 
 **Project chips** filter by project and show per-project counts plus a yellow
 dot when a card there needs you. A **Created** control filters visible cards by
@@ -605,6 +609,7 @@ identity; repeated activation is deduplicated.
 | `A` | Archive all visible Done cards |
 | `h` | Ship PR for an approved Ready to land card |
 | `d` | Toggle the selected epic's Dispatch menu |
+| `l` | Expand/collapse the selected card's LLM summary |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
 | `m` | Open `/ha-merge` for an approved Ready to land epic in the main space |
 | `r` | Refresh |
@@ -708,6 +713,13 @@ exact Aven terminal launcher. Dispatcher facts stay read-only; an unknown or
 missing attempt is labelled, never guessed as running. Focus changes refresh the
 card immediately in addition to the gentle ten-second data refresh.
 
+When a description is longer than 100 characters and has a stored LLM summary,
+the task line, collapsed phase snippet, and expanded phase body show that
+summary under an **LLM SUMMARY** label instead of the raw description. A digest
+mismatch shows **stale** but never hides the summary; short descriptions and
+tasks without a summary keep the existing raw text. Summaries are generated on
+demand with `d l`/`z l` in Aven and are never written during a panel refresh.
+
 The Aven panel lists nondeleted open epics (inbox, backlog, todo, active),
 including future-available epics, from the repository's inferred project in the
 explicit local `default` workspace. It merges normal open-epic and per-project
@@ -756,11 +768,49 @@ aven project create "My app" --path "$PWD"
 | `z r` in Aven | Reset dispatch execution while preserving the focused task plan (list or detail) |
 | `z S` in an Aven list; `z x` in task detail | Plan then implement with an adjacent babysitter |
 | `z b` in Aven | Implement an existing plan with an adjacent babysitter (list or detail) |
+| `d l` or `z l` in Aven | Generate an LLM summary for the focused task and its long phases (list or detail) |
 
 The default prefix is `ctrl+b`. `z s` runs the normal SDD workflow from either
 the task list or task detail. The plan-and-implement babysitter uses `z S` in
 lists and `z x` in task detail to avoid colliding with `z s`. Press `q` to close
 Aven and return to your pane.
+
+### LLM task summaries
+
+`d l` (or the reserved-namespace `z l`) runs
+`aven-dispatch describe --llm` for the focused task. It reads the task with
+`aven show --full --json`, summarizes the description with the installed
+OpenCode CLI (`opencode run --archived --format json`), and stores plain display
+text in Aven metadata:
+
+| Metadata key | Meaning |
+| --- | --- |
+| `summary.llm` | At most three short bullet lines (one per line), kept within Aven's metadata limit. |
+| `summary.llm.digest` | 32-bit FNV-1a of the normalized source description; the UI uses it for the **stale** hint. |
+| `summary.llm.generated-at` | Unix milliseconds when the summary was written. |
+| `summary.llm.model` | The OpenCode model used for the summary. |
+| `summary.llm.state` | Background coordination: `generating`, `done`, or `error`. |
+| `summary.llm.state-at` | Unix milliseconds for the state marker. |
+| `summary.llm.error` | Bounded error text when a run fails. |
+
+Only descriptions longer than 100 characters are summarized. Each summary is
+at most three short bullet lines (about 18 words each); Markdown emphasis and
+numbering are stripped. For an epic, the
+command also summarizes up to 20 long phase descriptions. A description of 100
+characters or fewer is skipped, and a plain `aven-dispatch describe <ref>`
+(without `--llm`) only prints the stored summary and never mutates Aven. Select
+a model with `--model provider/model` or `AVEN_DISPATCH_SUMMARY_MODEL`; otherwise
+it uses `github-copilot/gpt-6-luna`, the build agent's configured model.
+
+Generation is both explicit and automatic. Pressing `d l`/`z l` always
+regenerates the focused task in a terminal. Separately, the sidebar and Kanban
+board enqueue a background `describe --auto` for a long description without a
+current summary: the selected/focused card first, one run at a time, with a
+per-task lock. The UI shows **generating…** while `summary.llm.state` is
+`generating`, retries a failed run only after ten minutes, and treats a
+`generating` marker older than ten minutes as retryable. Set
+`AVEN_DISPATCH_SUMMARY_AUTO=0` (also `false`, `off`, or `no`) to disable
+automatic generation.
 
 ### Dispatch flow
 

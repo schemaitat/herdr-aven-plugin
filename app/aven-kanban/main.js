@@ -2,9 +2,9 @@ import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, panes, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
-  enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, hydrateDetails, indexAttempts,
+  enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   isLiveEpicTerminal,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard, selectMainSpace,
@@ -94,6 +94,9 @@ export default class AvenKanban extends View {
     this.pendingMoves = 0;
     this.pendingArchive = "";
     this.pendingArchiveAll = false;
+    this.autoBusy = false;
+    this.autoRequests = new Set();
+    this.autoAttempts = new Map();
     this.mainEvidence = { head: "", entries: new Map() };
     this.questions = new Map();
     this.programs = {};
@@ -106,6 +109,7 @@ export default class AvenKanban extends View {
     const storedArchive = shared(ARCHIVE_SHARED);
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
+    this.summaryCardId = "";
     this.dispatchMenuEpicId = null;
     this.folder = String(props()?.cwd ?? "");
     this.handle = cx.focus_handle();
@@ -158,6 +162,7 @@ export default class AvenKanban extends View {
         else if (name === "archive") this.archiveSelected(cx);
         else if (name === "archive-all") this.archiveAll(cx);
         else if (name === "dispatch") this.toggleDispatch(cx);
+        else if (name === "summary") this.toggleSummary(cx);
         else if (name === "plan" || name === "plan-implement" || name === "implement") this.dispatchSelected(name, cx);
         else if (name === "merge") this.mergeSelected(cx);
         else cx.notify();
@@ -372,6 +377,7 @@ export default class AvenKanban extends View {
         if (mainEvidence.error) coverage.push(mainEvidence.error);
         this.coverageError = coverage.join("; ");
         this.publishRows(taskCx, {});
+        this.autoSummarize(taskCx);
       } catch (error) {
         this.state = {
           ...this.state, loading: false, error: message(error), stale: this.state.rows.length > 0,
@@ -408,6 +414,34 @@ export default class AvenKanban extends View {
     const columns = this.columns();
     this.selectedId = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
     this.notify(cx);
+  }
+
+  // Generate at most one missing summary at a time, selected card first. The
+  // Rust command takes a per-task lock, so a panel-triggered run cannot double
+  // the same task; this queue only bounds the board's own launches.
+  autoSummarize(cx) {
+    if (this.autoBusy || this.closed) return;
+    const selected = this.selected();
+    const cards = flattenBoard(this.columns());
+    const ordered = [selected, ...cards].filter(Boolean);
+    const card = ordered.find((candidate) => candidate.summaryAuto
+      && !this.autoRequests.has(candidate.ref)
+      && Date.now() - (this.autoAttempts.get(candidate.ref) ?? 0) >= 120000);
+    if (!card) return;
+    this.autoBusy = true;
+    this.autoRequests.add(card.ref);
+    this.autoAttempts.set(card.ref, Date.now());
+    cx.spawn(async (taskCx) => {
+      try {
+        const cwd = await this.rootFolder(this.spaceFolder());
+        await exec("aven-dispatch", ["describe", card.ref, "--llm", "--auto", "--workspace", this.workspace()], cwd ? { cwd } : undefined);
+      } catch {}
+      finally {
+        this.autoBusy = false;
+        this.autoRequests.delete(card.ref);
+        if (!this.closed) this.refresh(taskCx);
+      }
+    });
   }
 
   setFilter(id, cx) {
@@ -571,6 +605,12 @@ export default class AvenKanban extends View {
     const card = this.selected();
     if (!card || card.status === "done" || card.status === "canceled") return;
     this.dispatchMenuEpicId = this.dispatchMenuEpicId === card.id ? null : card.id;
+    this.notify(cx);
+  }
+  toggleSummary(cx) {
+    const card = this.selected();
+    if (!card || card.summaryLines.length === 0) return;
+    this.summaryCardId = this.summaryCardId === card.id ? "" : card.id;
     this.notify(cx);
   }
 
@@ -862,6 +902,8 @@ export default class AvenKanban extends View {
 
   card(card, cx) {
     const selected = card.id === this.selectedId;
+    const summaryOpen = this.summaryCardId === card.id;
+    const stop = (_event, clickCx) => clickCx.stop_propagation();
     const columnTone = TONES[BOARD_COLUMNS.find((column) => column.id === card.column)?.tone ?? "dim"] ?? C.dim;
     const whenColor = card.column === "needs_you" ? C.you : card.column === "ready" ? C.land : C.dim;
     return div().id(`aven-kanban-card-${card.id}`).w_full().flex_none().flex().flex_row().rounded(6).overflow_hidden()
@@ -876,6 +918,26 @@ export default class AvenKanban extends View {
           .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(10.5).text_color(C.dim).child(card.ref))
           .child(mono(10, whenColor, this.cardWhen(card))))
         .child(div().font_family(SANS).text_size(12.5).text_color(C.text).child(card.title))
+        .when(card.summaryLines.length > 0, (el) => el.child(h_flex().id(`aven-kanban-summary-${card.id}`)
+          .flex_none().gap(5).items_center().px(5).py(2).rounded(4).cursor_pointer()
+          .hover((style) => style.bg(C.hover))
+          .on_mouse_down("left", stop)
+          .on_click((_event, clickCx) => {
+            clickCx.stop_propagation();
+            this.summaryCardId = summaryOpen ? "" : card.id;
+            this.notify(clickCx);
+          })
+          .child(mono(9, C.accent, SUMMARY_LABEL))
+          .when(card.summaryStale, (row) => row.child(mono(9, C.dim, "stale")))
+          .when(card.summaryGenerating, (row) => row.child(mono(9, C.dim, "generating…")))
+          .child(div().text_size(9).text_color(C.dim).child(summaryOpen ? "⌃" : "⌄"))))
+        .when(summaryOpen && card.summaryLines.length > 0, (el) => el.child(v_flex().gap(1).pt(1)
+          .children(card.summaryLines.map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
+            .child(mono(9, C.accent, "•"))
+            .child(div().flex_1().min_w(0).whitespace_normal().font_family(SANS).text_size(10.5).text_color(C.soft).child(line))))))
+        .when(card.summaryLines.length === 0 && card.summaryGenerating, (el) => el.child(h_flex().gap(5).items_center().pt(1)
+          .child(mono(9, C.accent, SUMMARY_LABEL))
+          .child(mono(9, C.dim, "generating…"))))
         .when(card.column === "needs_you", (el) => el.child(v_flex().px(8).py(6).rounded(4).bg(C.youAsk)
           .child(mono(9.5, C.you, "ASKS YOU"))
           .child(div().font_family(SANS).text_size(11.5).text_color(C.soft)
@@ -1028,6 +1090,7 @@ export default class AvenKanban extends View {
         else if (key === "A") this.archiveAll(keyCx);
         else if (key === "h") this.shipSelected(keyCx);
         else if (key === "d") this.toggleDispatch(keyCx);
+        else if (key === "l") this.toggleSummary(keyCx);
         else if (key === "s") this.dispatchSelected("plan-implement", keyCx);
         else if (key === "p") this.dispatchSelected("plan", keyCx);
         else if (key === "i") this.dispatchSelected("implement", keyCx);
@@ -1048,7 +1111,7 @@ export default class AvenKanban extends View {
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, C.dim, "j/k move · ⏎ go to agent · a answer/archive · g go · h ship · m merge · d dispatch · r refresh"))
+          .child(mono(10, C.dim, "j/k move · ⏎ go to agent · a answer/archive · g go · h ship · m merge · d dispatch · l summary · r refresh"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
