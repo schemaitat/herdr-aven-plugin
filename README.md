@@ -780,8 +780,9 @@ command also summarizes up to 20 long phase descriptions. A description of 100
 characters or fewer is skipped, and a plain `aven-dispatch describe <ref>`
 (without `--llm`) only prints the stored summary and never mutates Aven. Select
 a model with `--model provider/model` or `AVEN_DISPATCH_SUMMARY_MODEL`; otherwise
-OpenCode uses its configured default. Summaries are regenerated only when you
-press `d l`/`z l`; the sidebar and Kanban board only read them.
+it uses `github-copilot/gpt-6-luna`, the build agent's configured model.
+Summaries are regenerated only when you press `d l`/`z l`; the sidebar and
+Kanban board only read them.
 
 ### Dispatch flow
 

@@ -19,6 +19,9 @@ pub(crate) const SUMMARY_MIN_CHARS: usize = 100;
 pub(crate) const SUMMARY_MAX_CHARS: usize = 1200;
 pub(crate) const SUMMARY_MAX_BYTES: usize = 3000;
 pub(crate) const SUMMARY_LIMIT: usize = 20;
+/// The build agent's configured model. OpenCode's `run` default can resolve to
+/// another provider, so summaries pin this model unless the caller overrides it.
+pub(crate) const DEFAULT_SUMMARY_MODEL: &str = "github-copilot/gpt-6-luna";
 pub(crate) const SUMMARY_METADATA: &str = "summary.llm";
 pub(crate) const SUMMARY_DIGEST_METADATA: &str = "summary.llm.digest";
 pub(crate) const SUMMARY_GENERATED_AT_METADATA: &str = "summary.llm.generated-at";
@@ -119,6 +122,14 @@ pub(crate) fn parse_run_output(stdout: &str) -> Result<String> {
         bail!("OpenCode returned no summary text");
     }
     Ok(summary)
+}
+
+pub(crate) fn summary_model(model: Option<&str>) -> String {
+    model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_owned())
 }
 
 pub(crate) fn summary_prompt(title: &str, description: &str, phases: &[String]) -> String {
@@ -362,10 +373,11 @@ pub(crate) fn run(
     let (invocation, reference) = describe_context(task)?;
     let primary = show_task(&invocation, &reference)?;
     let primary_ref = task_ref(&primary, &reference).to_owned();
+    let model = summary_model(model.as_deref());
     let mut results = Vec::new();
     if llm {
         results.push(
-            generate(&invocation, &primary, &primary_ref, model.as_deref())
+            generate(&invocation, &primary, &primary_ref, Some(&model))
                 .unwrap_or_else(|error| json!({ "ref": primary_ref, "status": "failed", "error": error.to_string() })),
         );
         let is_epic = primary
@@ -384,7 +396,7 @@ pub(crate) fn run(
                     continue;
                 };
                 let result = match show_task(&invocation, &child_ref) {
-                    Ok(payload) => generate(&invocation, &payload, &child_ref, model.as_deref()),
+                    Ok(payload) => generate(&invocation, &payload, &child_ref, Some(&model)),
                     Err(error) => Err(error),
                 };
                 results.push(result.unwrap_or_else(|error| {
@@ -429,6 +441,13 @@ mod tests {
             "a".repeat(SUMMARY_MIN_CHARS)
         )));
         assert_eq!(normalized_description("a\r\nb\rc\n"), "a\nb\nc");
+    }
+
+    #[test]
+    fn model_defaults_to_the_build_agent_model() {
+        assert_eq!(summary_model(None), DEFAULT_SUMMARY_MODEL);
+        assert_eq!(summary_model(Some("  ")), DEFAULT_SUMMARY_MODEL);
+        assert_eq!(summary_model(Some(" custom/model ")), "custom/model");
     }
 
     #[test]

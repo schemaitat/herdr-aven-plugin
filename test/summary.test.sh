@@ -14,7 +14,9 @@ fake=$work/bin
 mkdir -p "$fake"
 state=$work/state.json
 prompts=$work/prompts.log
+argslog=$work/args.log
 : > "$prompts"
+: > "$argslog"
 
 short='A short description under the threshold.'
 long=$(python3 -c 'print("Summarize this long task. " + "detail " * 20)')
@@ -96,6 +98,8 @@ import json, os, sys
 prompt = sys.argv[-1]
 with open(os.environ["SUMMARY_PROMPTS"], "a", encoding="utf-8") as handle:
     handle.write(prompt + "\n---\n")
+with open(os.environ["SUMMARY_ARGS"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\n")
 print(json.dumps({"type": "step_start", "part": {"type": "step-start"}}))
 print(json.dumps({"type": "text", "part": {"type": "text",
       "text": "The task produces a durable summary shown in the sidebar."}}))
@@ -104,7 +108,7 @@ PY
 chmod +x "$fake/opencode"
 
 run_describe() {
-  PATH="$fake:$PATH" SUMMARY_STATE="$state" SUMMARY_PROMPTS="$prompts" \
+  PATH="$fake:$PATH" SUMMARY_STATE="$state" SUMMARY_PROMPTS="$prompts" SUMMARY_ARGS="$argslog" \
     OPENCODE_BIN="$fake/opencode" "$binary" describe "$@"
 }
 
@@ -124,6 +128,15 @@ assert_contains "$out" "durable summary"
 assert_eq "$(metadata HAP-LONG summary.llm)" 'The task produces a durable summary shown in the sidebar.'
 [ -n "$(metadata HAP-LONG summary.llm.digest)" ] || fail 'missing summary digest'
 [ -n "$(metadata HAP-LONG summary.llm.generated-at)" ] || fail 'missing generated-at'
+
+# The build agent's configured model is the default; an explicit model wins.
+assert_file_contains "$argslog" '"--model"'
+assert_file_contains "$argslog" 'github-copilot/gpt-6-luna'
+assert_eq "$(metadata HAP-LONG summary.llm.model)" 'github-copilot/gpt-6-luna'
+out=$(run_describe HAP-LONG --llm --model custom/model)
+assert_contains "$out" "LLM SUMMARY HAP-LONG"
+assert_eq "$(metadata HAP-LONG summary.llm.model)" 'custom/model'
+assert_file_contains "$argslog" 'custom/model'
 
 # The digest must match the shared UTF-16 FNV-1a implementation.
 expected=$(python3 - "$long" <<'PY'

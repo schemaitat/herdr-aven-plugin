@@ -9,7 +9,9 @@
   Aven metadata. The Aven-right sidebar and Kanban board show the text under an
   **LLM SUMMARY** label for descriptions longer than 100 characters, mark a
   changed description **stale**, and never generate during a refresh. A plain
-  `describe` is read-only.
+  `describe` is read-only. Summaries default to the build agent's model,
+  `github-copilot/gpt-6-luna`, with `--model`/`AVEN_DISPATCH_SUMMARY_MODEL`
+  overrides.
 - Paint the optional **Aven right** layout in the Kanban Board palette: the
   graphite near-black canvas and chrome, lilac accent, JetBrains Mono/Geist
   type, compact pane frames and focus border. The look is scoped to that layout
