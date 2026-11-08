@@ -161,8 +161,26 @@ sleep 3
 herdr-app shot "$root/kanban-board.png" >/dev/null
 [ -s "$root/kanban-board.png" ] || fail 'board screenshot was not written'
 
-# Initial selection is the first Backlog card. Column 4 (Ready to land) selects
-# its sole approved review card, then Merge opens the main-space tab.
+# Vim navigation: jump to Working, walk right and back, then select its last
+# card. The screenshot shows the focused column and its selected card.
+herdr-app do aven-kanban.column-3 >/dev/null
+herdr-app do aven-kanban.column-next >/dev/null
+herdr-app do aven-kanban.column-previous >/dev/null
+herdr-app do aven-kanban.last >/dev/null
+sleep 1
+herdr-app shot "$root/kanban-navigation.png" >/dev/null
+[ -s "$root/kanban-navigation.png" ] || fail 'navigation screenshot was not written'
+
+# The ? reference opens and Esc closes it without closing the board.
+herdr-app do aven-kanban.help >/dev/null
+sleep 1
+herdr-app shot "$root/kanban-keys.png" >/dev/null
+[ -s "$root/kanban-keys.png" ] || fail 'key-reference screenshot was not written'
+herdr-app do aven-kanban.close >/dev/null
+sleep 1
+
+# Column 4 (Ready to land) selects its sole approved review card, then Merge
+# opens the main-space tab.
 herdr-app do aven-kanban.column-4 >/dev/null
 herdr-app do aven-kanban.merge >/dev/null
 space_id=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/space.json")
@@ -261,5 +279,6 @@ herdr-app shot "$root/kanban-archive.png" >/dev/null
 [ -s "$root/kanban-archive.png" ] || fail 'archive screenshot was not written'
 
 herdr-app status > "$root/final-status.json"
-printf 'native Kanban E2E ok\nboard: %s\nhandoff: %s\nship: %s\narchive: %s\n' \
-  "$root/kanban-board.png" "$root/kanban-handoff.png" "$root/kanban-ship.png" "$root/kanban-archive.png"
+printf 'native Kanban E2E ok\nboard: %s\nnavigation: %s\nkeys: %s\nhandoff: %s\nship: %s\narchive: %s\n' \
+  "$root/kanban-board.png" "$root/kanban-navigation.png" "$root/kanban-keys.png" \
+  "$root/kanban-handoff.png" "$root/kanban-ship.png" "$root/kanban-archive.png"

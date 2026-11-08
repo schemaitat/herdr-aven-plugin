@@ -531,15 +531,19 @@ that chord is free), with `ctrl-shift-a` followed by `k`, or with:
 herdr-app do mod.open --name aven-kanban
 ```
 
-The board is drawn in the visual language of the Board layout from
+The board fills the whole Herdr window and is drawn in the visual language of
+the Board layout from
 [jkuepker/herdr-layouts](https://github.com/jkuepker/herdr-layouts): a dark
 Graphite-style palette, a compact top bar, a today strip, a NEXT MOVE banner,
 project chips, and colour-accented, independently scrolling columns. It lists
 nondeleted root epics from the repository's inferred Aven project in the
 explicit local `default` workspace. Scheduled open epics and terminal
-done/canceled epics are included. Five flexible columns always fit the overlay
+done/canceled epics are included. Five flexible columns always fit the window
 width without horizontal scrolling and combine independent Aven and dispatcher
-facts instead of creating another task store:
+facts instead of creating another task store. The selected card has a bright
+accent border and the focused column header carries an accent rule and count
+chip; every board text colour meets WCAG AA contrast on the surface it is
+drawn on.
 
 | Column | Contents |
 | --- | --- |
@@ -585,19 +589,30 @@ existing lower-case shortcut, so dispatcher eligibility and picker behavior are
 not bypassed. Live terminals are reused only by workspace and immutable epic
 identity; repeated activation is deduplicated.
 
+Navigation follows Aven's columns view: vertical movement wraps inside the
+focused column, horizontal movement skips empty columns and keeps the row, and
+`gg`/`G` work like vim.
+
 | Board key | Action |
 | --- | --- |
-| `j` / `k` or arrows | Select next / previous card |
+| `j` / `k` or `Down` / `Up` | Next / previous card in the focused column |
+| `h` / `l` or `Left` / `Right` | Previous / next non-empty column |
+| `gg` or `Home` | First card in the focused column |
+| `G` or `End` | Last card in the focused column |
+| `Tab` / `Shift-Tab` | Next / previous column |
+| `1`–`5` | Jump to a column (the nearest non-empty one) |
 | `Enter` or `o` | Jump to a live agent's space/tab, or open the selected epic |
-| `g` | Go to the selected card's live agent |
 | `a` | Answer on a Needs you card; Archive on a Done card |
 | `A` | Archive all visible Done cards |
-| `h` | Ship PR for an approved Ready to land card |
+| `S` | Ship PR for an approved Ready to land card |
 | `d` | Toggle the selected epic's Dispatch menu |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
 | `m` | Open `/ha-merge` for an approved Ready to land epic in the main space |
+| `?` | Open the in-board keyboard reference |
 | `r` | Refresh |
-| `Esc` | Close a Dispatch menu, then the board |
+| `Esc` | Close help, a pending `g`, a Dispatch menu, then the board |
+
+The footer names the core keys and shows `g …` after a pending `g`. 
 
 **Answer** focuses the blocked agent's exact terminal (and its pane) so the
 question can be answered immediately. **Go to agent** selects the agent's space
@@ -647,12 +662,14 @@ evidence instead of asserting delivery. Failed refreshes retain clearly labeled
 stale results; partial metadata failures are not presented as complete coverage.
 
 For native verification, `just app-test-e2e` creates an isolated app home, core
-session, Aven DB, dispatcher store, and six dummy epics. It checks keyboard
-selection, asserts that Merge launches a main-space tab with the exact
+session, Aven DB, dispatcher store, and six dummy epics. It opens the board
+full-window, moves through columns with the vim commands, opens and closes the
+`?` reference, asserts that Merge launches a main-space tab with the exact
 `/ha-merge <immutable-task-id>` prompt, asserts that Ship PR launches a separate
 task-named tab with its ship prompt, and asserts that Archive and Archive all
 persist both Done IDs without editing Aven. It retains `kanban-board.png`,
-`kanban-handoff.png`, `kanban-ship.png`, and `kanban-archive.png` under
+`kanban-navigation.png`, `kanban-keys.png`, `kanban-handoff.png`,
+`kanban-ship.png`, and `kanban-archive.png` under
 `/tmp/opencode/aven-kanban-e2e.*` for visual inspection. The test needs
 herdr-app, herdr-core, Aven, and a display; it is intentionally separate from
 headless `just test` and cleans up only the app/core/resources it created.
