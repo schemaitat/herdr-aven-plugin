@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
-  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, boardStats, buildBoard, cardForEpic,
+  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard, cardForEpic,
   createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
   filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
@@ -147,6 +147,10 @@ assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE")), [{ address: "t-bu
 assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE")), [{ address: "t-builder", status: "working" }]), false);
 assert.equal(attemptNeedsYou(null), false);
 assert.deepEqual(liveAgentFor(normalizeAttempt(attempt("ONE")), [{ address: "t-builder", status: "blocked" }]), { address: "t-builder", status: "blocked" });
+const multipleAgents = [{ address: "t-builder", status: "working" }, { address: "t-coordinator", status: "blocked" }];
+assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE")), multipleAgents), true);
+assert.equal(blockedAddress([normalizeAttempt(attempt("ONE"))], multipleAgents), "t-coordinator");
+assert.equal(blockedAddress([normalizeAttempt(attempt("ONE", { terminals: { child: { address: "t-child", state: "live", status: "blocked" } } }))]), "t-child");
 assert.equal(liveAgentFor(normalizeAttempt(attempt("ONE")), [{ address: "t-coordinator", status: "blocked" }]).address, "t-coordinator", "coordinator terminals count as related agents");
 const needsCard = card("active", {}, [attempt("ONE", { terminals: blockedTerminals })]);
 assert.equal(needsCard.column, "needs_you");

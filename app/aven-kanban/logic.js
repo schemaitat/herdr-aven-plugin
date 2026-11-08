@@ -386,10 +386,18 @@ export function liveAgentFor(attempt, liveAgents = []) {
 
 export function attemptNeedsYou(attempt, liveAgents = []) {
   if (!attempt) return false;
-  const live = liveAgentFor(attempt, liveAgents);
-  if (live && String(live.status ?? "") === "blocked") return true;
-  return (attempt.terminals ?? []).some((observation) =>
-    Boolean(observation.address) && observation.state === "live" && observation.status === "blocked");
+  return Boolean(blockedAddress([attempt], liveAgents));
+}
+
+export function blockedAddress(attempts, liveAgents = []) {
+  for (const attempt of attempts ?? []) {
+    const addresses = terminalAddresses(attempt);
+    const live = (liveAgents ?? []).find((agent) => addresses.has(String(agent.address ?? "")) && agent.status === "blocked");
+    if (live) return String(live.address);
+    const observation = (attempt.terminals ?? []).find((item) => item.address && item.state === "live" && item.status === "blocked");
+    if (observation) return observation.address;
+  }
+  return "";
 }
 
 export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAgents = []) {

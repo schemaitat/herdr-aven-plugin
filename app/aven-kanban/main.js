@@ -2,7 +2,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, boardStats,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
   filterArchived, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, nextMove, openArgs, projectChips,
@@ -377,7 +377,9 @@ export default class AvenKanban extends View {
 
   relatedAgent(card) {
     const attempts = card.relatedAttempts?.length ? card.relatedAttempts : (card.attempt ? [card.attempt] : []);
-    const addresses = attempts.map((attempt) => attempt.terminal?.address).filter(Boolean);
+    const addresses = card.column === "needs_you"
+      ? [blockedAddress(attempts, this.state.liveAgents)].filter(Boolean)
+      : attempts.map((attempt) => attempt.terminal?.address).filter(Boolean);
     // Live lookups leave the JS sandbox; use the snapshot taken at the start of
     // this render instead of asking the app once per card.
     for (const address of addresses) {
