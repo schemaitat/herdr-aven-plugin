@@ -149,12 +149,15 @@ export function descriptionBody(description, limit = 1600) {
   return clampDescription(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), limit);
 }
 
-// LLM summaries share one contract with `aven-dispatch describe`. Only long
-// descriptions are summarized; short text keeps its existing raw presentation.
+// LLM summaries share one contract with `aven-dispatch describe`: at most
+// three short bullet lines, produced only for long descriptions. Short text
+// keeps its existing raw presentation.
 export const SUMMARY_LABEL = "LLM SUMMARY";
 export const SUMMARY_MIN_CHARS = 100;
-export const SUMMARY_LIMIT = 1200;
-export const SUMMARY_CARD_LIMIT = 240;
+export const SUMMARY_MAX_BULLETS = 3;
+export const SUMMARY_LIMIT = 600;
+export const SUMMARY_BULLET_LIMIT = 180;
+export const SUMMARY_CARD_LIMIT = 120;
 
 function normalizedDescription(description) {
   return String(description ?? "").replace(/\r\n?/g, "\n").trim();
@@ -176,24 +179,47 @@ export function summaryNeeded(description) {
   return [...normalizedDescription(description)].length > SUMMARY_MIN_CHARS;
 }
 
-export function storedSummary(metadata, description, limit = SUMMARY_LIMIT) {
-  const text = String(metadata?.["summary.llm"] ?? "").trim();
-  if (!text) return null;
+function cleanBullet(line, limit) {
+  const text = String(line ?? "")
+    .replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clampDescription(text, limit);
+}
+
+// Split stored summary text into at most three plain bullet lines. This also
+// tolerates old one-paragraph summaries and Markdown emphasis.
+export function summaryLines(text, limit = SUMMARY_MAX_BULLETS, bulletLimit = SUMMARY_BULLET_LIMIT) {
+  return String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => cleanBullet(line, bulletLimit))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+export function storedSummary(metadata, description) {
+  const lines = summaryLines(metadata?.["summary.llm"]);
+  if (!lines.length) return null;
   const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
   const stale = Boolean(digest) && digest !== summaryDigest(description);
-  return { text: clampDescription(text, limit), stale };
+  return { text: lines.join("\n"), lines, stale };
 }
 
 // A task summary is available only when the description is long enough and the
-// stored LLM summary exists. `cardSummary` bounds the text for a card surface.
-export function taskSummary(task, limit = SUMMARY_LIMIT) {
+// stored LLM summary exists. `cardSummary` bounds each line for a card surface.
+export function taskSummary(task) {
   if (!summaryNeeded(task?.description)) return null;
-  const summary = storedSummary(task?.metadata, task?.description, limit);
+  const summary = storedSummary(task?.metadata, task?.description);
   return summary ? { ...summary, label: SUMMARY_LABEL } : null;
 }
 
 export function cardSummary(task) {
-  return taskSummary(task, SUMMARY_CARD_LIMIT);
+  const summary = taskSummary(task);
+  if (!summary) return null;
+  const lines = summaryLines(summary.text, SUMMARY_MAX_BULLETS, SUMMARY_CARD_LIMIT);
+  return { ...summary, text: lines.join(" · "), lines };
 }
 
 export function mergeCoverage(results) {

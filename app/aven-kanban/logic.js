@@ -11,12 +11,15 @@ export const CREATED_FILTERS = [
   { id: "1mo", label: "1mo", days: 30 },
   { id: "1y", label: "1y", days: 365 },
 ];
-// LLM summaries share one contract with `aven-dispatch describe`. Only long
-// descriptions are summarized; short text keeps its existing presentation.
+// LLM summaries share one contract with `aven-dispatch describe`: at most
+// three short bullet lines, produced only for long descriptions. Short text
+// keeps its existing presentation.
 export const SUMMARY_LABEL = "LLM SUMMARY";
 export const SUMMARY_MIN_CHARS = 100;
-export const SUMMARY_LIMIT = 1200;
-export const SUMMARY_CARD_LIMIT = 240;
+export const SUMMARY_MAX_BULLETS = 3;
+export const SUMMARY_LIMIT = 600;
+export const SUMMARY_BULLET_LIMIT = 180;
+export const SUMMARY_CARD_LIMIT = 120;
 // Board order mirrors the reference layout: Aven keeps one intake column where
 // the layout has none, then the three action columns and the archive column.
 export const BOARD_COLUMNS = [
@@ -176,22 +179,43 @@ function clampText(text, limit) {
   return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
 }
 
-export function storedSummary(metadata, description, limit = SUMMARY_LIMIT) {
-  const text = String(metadata?.["summary.llm"] ?? "").trim();
-  if (!text) return null;
-  const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
-  const stale = Boolean(digest) && digest !== summaryDigest(description);
-  return { text: clampText(text, limit), stale };
+function cleanBullet(line, limit) {
+  const text = String(line ?? "")
+    .replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clampText(text, limit);
 }
 
-export function taskSummary(task, limit = SUMMARY_LIMIT) {
+export function summaryLines(text, limit = SUMMARY_MAX_BULLETS, bulletLimit = SUMMARY_BULLET_LIMIT) {
+  return String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => cleanBullet(line, bulletLimit))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+export function storedSummary(metadata, description) {
+  const lines = summaryLines(metadata?.["summary.llm"]);
+  if (!lines.length) return null;
+  const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
+  const stale = Boolean(digest) && digest !== summaryDigest(description);
+  return { text: lines.join("\n"), lines, stale };
+}
+
+export function taskSummary(task) {
   if (!summaryNeeded(task?.description)) return null;
-  const summary = storedSummary(task?.metadata, task?.description, limit);
+  const summary = storedSummary(task?.metadata, task?.description);
   return summary ? { ...summary, label: SUMMARY_LABEL } : null;
 }
 
 export function cardSummary(task) {
-  return taskSummary(task, SUMMARY_CARD_LIMIT);
+  const summary = taskSummary(task);
+  if (!summary) return null;
+  const lines = summaryLines(summary.text, SUMMARY_MAX_BULLETS, SUMMARY_CARD_LIMIT);
+  return { ...summary, text: lines.join(" · "), lines };
 }
 
 // Normalize only the fields the board renders. In particular, dispatcher
@@ -225,6 +249,7 @@ export function normalizeEpic(row, detail) {
     mergedOnMain: row.mergedOnMain === true,
     summary: summary?.text ?? "",
     summaryCard: card?.text ?? "",
+    summaryLines: card?.lines ?? [],
     summaryStale: Boolean(summary?.stale),
     planWorkedOut: hydrated && metadata["sdd.plan-worked-out"] === "true",
     approvalState: approval.state,

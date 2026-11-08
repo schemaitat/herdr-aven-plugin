@@ -45,24 +45,29 @@ assert.equal(summaryNeeded(`  ${"a".repeat(100)}  `), false, "the threshold trim
 const longDescription = "a".repeat(101);
 assert.deepEqual(
   storedSummary({ "summary.llm": "Short text", "summary.llm.digest": summaryDigest(longDescription) }, longDescription),
-  { text: "Short text", stale: false },
+  { text: "Short text", lines: ["Short text"], stale: false },
 );
 assert.deepEqual(
   storedSummary({ "summary.llm": "Short text", "summary.llm.digest": "deadbeef" }, longDescription),
-  { text: "Short text", stale: true },
+  { text: "Short text", lines: ["Short text"], stale: true },
   "a digest mismatch is stale, not hidden",
 );
 assert.equal(storedSummary({}, longDescription), null);
 assert.deepEqual(
+  storedSummary({ "summary.llm": "- one\n- two\n- three\n- four" }, longDescription),
+  { text: "one\ntwo\nthree", lines: ["one", "two", "three"], stale: false },
+  "stored summaries keep at most three plain bullet lines",
+);
+assert.deepEqual(
   taskSummary({ description: longDescription, metadata: { "summary.llm": "LLM result", "summary.llm.digest": summaryDigest(longDescription) } }),
-  { text: "LLM result", stale: false, label: "LLM SUMMARY" },
+  { text: "LLM result", lines: ["LLM result"], stale: false, label: "LLM SUMMARY" },
 );
 assert.equal(taskSummary({ description: "short", metadata: { "summary.llm": "x" } }), null, "short descriptions keep raw text");
 assert.equal(taskSummary({ description: longDescription, metadata: {} }), null, "a missing summary keeps raw text");
 assert.equal(
-  cardSummary({ description: longDescription, metadata: { "summary.llm": "x".repeat(500), "summary.llm.digest": summaryDigest(longDescription) } }).text.length,
+  cardSummary({ description: longDescription, metadata: { "summary.llm": "x".repeat(500), "summary.llm.digest": summaryDigest(longDescription) } }).lines[0].length,
   SUMMARY_CARD_LIMIT,
-  "card summaries are bounded",
+  "card summary lines are bounded",
 );
 assert.deepEqual(DISPATCH_ACTIONS.map(({ label }) => label), ["z d", "z s", "z p", "z i", "z r", "z x", "z b"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"], "buttons send lowercase task-detail bindings through hc");

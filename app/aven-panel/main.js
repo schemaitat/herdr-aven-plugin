@@ -350,12 +350,12 @@ export default class AvenPanel extends View {
     const open = this.openPhaseRef === phase.ref;
     const detail = this.phaseDetails.get(phase.ref);
     const summary = detail?.summary ?? null;
-    const snippet = descriptionSnippet(summary?.text ?? detail?.description ?? "", 120);
+    const snippet = summary ? (summary.lines[0] ?? "") : descriptionSnippet(detail?.description ?? "", 120);
     const body = detail?.loading
       ? "Loading description…"
       : detail?.error
         ? detail.error
-        : summary?.text || descriptionBody(detail?.description ?? "") || "No description.";
+        : descriptionBody(detail?.description ?? "") || "No description.";
     return v_flex().id(`aven-panel-phase-${phase.ref}`).gap(2).rounded(4)
       .when(phase.worktree, (el) => el.bg(t.selected).border_l(2).border_color(t.accent))
       .child(h_flex().id(`aven-panel-phase-head-${phase.ref}`).min_h(20).px(4).gap(6).items_center().cursor_pointer()
@@ -370,12 +370,15 @@ export default class AvenPanel extends View {
         .when(Boolean(marker), (el) => el.child(div().flex_none().px(4).py(1).rounded(3).bg(marker.color)
           .text_color(t.background).text_size(8.5).font_semibold().child(marker.label)))
         .child(div().flex_none().text_size(9).text_color(t.dim).child(open ? "⌃" : "⌄")))
-      .when(open, (el) => el.child(v_flex().id(`aven-panel-phase-body-${phase.ref}`).mx(4).mb(3).px(6).py(5).rounded(4)
+      .when(open, (el) => el.child(v_flex().id(`aven-panel-phase-body-${phase.ref}`).w_full().min_w(0).mx(4).mb(3).px(6).py(5).rounded(4)
         .bg(t.background).gap(3)
         .when(Boolean(summary), (row) => row.child(h_flex().gap(5).items_center()
           .child(div().text_size(8.5).font_semibold().text_color(t.accent).child(SUMMARY_LABEL))
           .when(Boolean(summary?.stale), (staleRow) => staleRow.child(div().text_size(8.5).text_color(t.blocked).child("stale")))))
-        .child(div().text_size(10).text_color(detail?.error ? t.blocked : t.muted).child(body))));
+        .when(Boolean(summary), (row) => row.children((summary?.lines ?? []).map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
+          .child(div().flex_none().text_size(10).text_color(t.accent).child("•"))
+          .child(div().flex_1().min_w(0).whitespace_normal().text_size(10).text_color(t.muted).child(line)))))
+        .when(!summary, (row) => row.child(div().w_full().min_w(0).whitespace_normal().text_size(10).text_color(detail?.error ? t.blocked : t.muted).child(body)))));
   }
 
   smallButton(t, id, text, onClick) {
@@ -400,7 +403,7 @@ export default class AvenPanel extends View {
     const stage = lifecycleStage({ status: task?.status, attempt });
     const agent = [attempt?.agent, String(attempt?.model ?? "").split("/").pop()].filter(Boolean).join(" · ");
     const detailSummary = taskSummary(task);
-    const taskDescription = descriptionSnippet(detailSummary?.text ?? task?.description ?? "", 160);
+    const taskDescription = descriptionSnippet(task?.description ?? "", 160);
     return v_flex().mx(8).my(7).p(8).gap(5).rounded(6).bg(t.raised)
       .child(h_flex().gap(6).items_center()
         .child(div().text_size(10).font_semibold().text_color(t.dim).child("WORKTREE"))
@@ -428,11 +431,14 @@ export default class AvenPanel extends View {
         .child(div().id("aven-panel-task").flex_1().min_w(0).truncate().text_size(11).font_semibold().text_color(t.foreground).child(task.ref))
         .child(this.statusChip(t, task.status)))
       .child(div().text_size(10.5).text_color(t.muted).truncate().child(task.title))
-      .when(Boolean(taskDescription), (el) => el.child(v_flex().gap(1)
-        .when(Boolean(detailSummary), (row) => row.child(h_flex().gap(5).items_center()
+      .when(Boolean(detailSummary), (el) => el.child(v_flex().gap(1).pt(1)
+        .child(h_flex().gap(5).items_center()
           .child(div().text_size(8.5).font_semibold().text_color(t.accent).child(SUMMARY_LABEL))
-          .when(Boolean(detailSummary?.stale), (staleRow) => staleRow.child(div().text_size(8.5).text_color(t.blocked).child("stale")))))
-        .child(div().text_size(10).text_color(t.dim).child(taskDescription))))
+          .when(Boolean(detailSummary?.stale), (staleRow) => staleRow.child(div().text_size(8.5).text_color(t.blocked).child("stale"))))
+        .children((detailSummary?.lines ?? []).map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
+          .child(div().flex_none().text_size(10).text_color(t.accent).child("•"))
+          .child(div().flex_1().min_w(0).whitespace_normal().text_size(10).text_color(t.dim).child(line))))))
+      .when(!detailSummary && Boolean(taskDescription), (el) => el.child(div().w_full().min_w(0).whitespace_normal().text_size(10).text_color(t.dim).child(taskDescription)))
       .child(h_flex().gap(6).items_center()
         .child(div().size(6).rounded(3).flex_none().bg(this.dispatchTone(t, attempt?.state)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(dispatchLabel(attempt?.state)))

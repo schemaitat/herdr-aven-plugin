@@ -120,27 +120,32 @@ const summaryRow = rawEpic("SUM", "todo", {});
 const summaryDetail = {
   task: { ...summaryRow },
   description: longText,
-  metadata: { "summary.llm": "A durable summary.", "summary.llm.digest": summaryDigest(longText) },
+  metadata: {
+    "summary.llm": "- First point.\n- Second point.\n- Third point.\n- Fourth point.",
+    "summary.llm.digest": summaryDigest(longText),
+  },
 };
 const summarized = normalizeEpic(summaryRow, summaryDetail);
-assert.equal(summarized.summary, "A durable summary.");
-assert.equal(summarized.summaryCard, "A durable summary.");
+const summaryText = "First point.\nSecond point.\nThird point.";
+assert.equal(summarized.summary, summaryText);
+assert.deepEqual(summarized.summaryLines, ["First point.", "Second point.", "Third point."]);
+assert.equal(summarized.summaryCard, "First point. · Second point. · Third point.");
 assert.equal(summarized.summaryStale, false);
 const staleSummary = normalizeEpic(summaryRow, {
   ...summaryDetail,
   metadata: { ...summaryDetail.metadata, "summary.llm.digest": "deadbeef" },
 });
 assert.equal(staleSummary.summaryStale, true);
-assert.equal(staleSummary.summary, "A durable summary.", "a stale summary is still shown");
+assert.equal(staleSummary.summary, summaryText, "a stale summary is still shown");
 assert.equal(normalizeEpic(summaryRow, { ...summaryDetail, description: "short" }).summary, "", "short descriptions never surface a summary");
 assert.equal(normalizeEpic(summaryRow).summary, "", "unhydrated cards have no summary");
 assert.equal(
-  cardSummary({ description: longText, metadata: { "summary.llm": "x".repeat(500), "summary.llm.digest": summaryDigest(longText) } }).text.length,
+  cardSummary({ description: longText, metadata: { "summary.llm": "x".repeat(500), "summary.llm.digest": summaryDigest(longText) } }).lines[0].length,
   SUMMARY_CARD_LIMIT,
-  "card summaries are bounded",
+  "card summary lines are bounded",
 );
 const summaryCard = cardForEpic(summarized, selectAttempt([], "SUM"));
-assert.equal(summaryCard.summaryCard, "A durable summary.");
+assert.equal(summaryCard.summaryCard, "First point. · Second point. · Third point.");
 assert.equal(summaryCard.column, "backlog");
 assert.equal(
   detailNeedsRefresh({ workspace: "default", updatedAt: "t1", detail: { task: { status: "active" }, metadata: { "summary.llm": "x" } } }, "default", { updated_at: "t1" }),

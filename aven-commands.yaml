@@ -165,11 +165,11 @@
   on_success: quit
 
 # Generate an on-demand LLM summary for a long task description and its phase
-# children. The summary is stored in Aven metadata (summary.llm) and shown as
-# LLM SUMMARY in the app sidebar and Kanban board. The reserved z l binding is
-# provided alongside the requested d l sequence. The dispatcher defaults to the
-# build agent's model, github-copilot/gpt-6-luna; AVEN_DISPATCH_SUMMARY_MODEL
-# overrides it.
+# children. The summary is at most three short bullet lines, stored in Aven
+# metadata (summary.llm), and shown as LLM SUMMARY in the app sidebar and Kanban
+# board. The reserved z l binding is provided alongside the requested d l
+# sequence. The dispatcher defaults to the build agent's model,
+# github-copilot/gpt-6-luna; AVEN_DISPATCH_SUMMARY_MODEL overrides it.
 - name: describe-llm
   aliases: [aven-describe-llm]
   description: Generate an LLM summary for the focused task and its phases

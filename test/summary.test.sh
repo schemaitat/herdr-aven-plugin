@@ -102,7 +102,7 @@ with open(os.environ["SUMMARY_ARGS"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\n")
 print(json.dumps({"type": "step_start", "part": {"type": "step-start"}}))
 print(json.dumps({"type": "text", "part": {"type": "text",
-      "text": "The task produces a durable summary shown in the sidebar."}}))
+      "text": "- First durable point.\n- Second durable point.\n- Third durable point.\n- Fourth point."}}))
 print(json.dumps({"type": "step_finish"}))
 PY
 chmod +x "$fake/opencode"
@@ -124,8 +124,10 @@ PY
 # A long description is summarized, stored, and printed under the LLM label.
 out=$(run_describe HAP-LONG --llm)
 assert_contains "$out" "LLM SUMMARY HAP-LONG"
-assert_contains "$out" "durable summary"
-assert_eq "$(metadata HAP-LONG summary.llm)" 'The task produces a durable summary shown in the sidebar.'
+assert_contains "$out" "- First durable point."
+assert_not_contains "$out" "Fourth point"
+expected_bullets=$(printf '%s\n%s\n%s' '- First durable point.' '- Second durable point.' '- Third durable point.')
+assert_eq "$(metadata HAP-LONG summary.llm)" "$expected_bullets" 'only three bullet lines are stored'
 [ -n "$(metadata HAP-LONG summary.llm.digest)" ] || fail 'missing summary digest'
 [ -n "$(metadata HAP-LONG summary.llm.generated-at)" ] || fail 'missing generated-at'
 
@@ -167,7 +169,7 @@ assert_eq "$(cat "$state")" "$before" 'a short description is not mutated'
 before=$(cat "$state")
 out=$(run_describe HAP-LONG)
 assert_contains "$out" "LLM SUMMARY HAP-LONG"
-assert_contains "$out" "durable summary"
+assert_contains "$out" "durable point"
 assert_eq "$(cat "$state")" "$before" 'a plain describe never mutates Aven'
 
 # A long description without a summary reports that it is missing.

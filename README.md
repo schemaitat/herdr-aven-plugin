@@ -770,12 +770,14 @@ text in Aven metadata:
 
 | Metadata key | Meaning |
 | --- | --- |
-| `summary.llm` | The summary text, bounded to 1200 characters and kept within Aven's metadata limit. |
+| `summary.llm` | At most three short bullet lines (one per line), kept within Aven's metadata limit. |
 | `summary.llm.digest` | 32-bit FNV-1a of the normalized source description; the UI uses it for the **stale** hint. |
 | `summary.llm.generated-at` | Unix milliseconds when the summary was written. |
 | `summary.llm.model` | The OpenCode model when it was supplied explicitly. |
 
-Only descriptions longer than 100 characters are summarized. For an epic, the
+Only descriptions longer than 100 characters are summarized. Each summary is
+at most three short bullet lines (about 18 words each); Markdown emphasis and
+numbering are stripped. For an epic, the
 command also summarizes up to 20 long phase descriptions. A description of 100
 characters or fewer is skipped, and a plain `aven-dispatch describe <ref>`
 (without `--llm`) only prints the stored summary and never mutates Aven. Select
