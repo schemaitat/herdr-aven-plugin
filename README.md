@@ -587,8 +587,12 @@ address matches a recorded role terminal corroborates activity; conversely, an
 attempt whose recorded role terminals have all stopped (`finished`/`removed`)
 or whose lifecycle observation is `stopped-*` no longer pulses even when the
 read-only dispatcher summary still exposes an unreconciled pending checkpoint.
-Done and canceled epics never pulse: a genuinely live attempt stays visible as
-a terminal/execution contradiction warning instead.
+Done and canceled epics never pulse. They move to Ready to land with a
+terminal/execution contradiction warning only when a live herdr agent still
+matches a recorded role terminal or the attempt carries a durable lifecycle
+contradiction. A stored `running` attempt with a dispatch-time `live` terminal
+observation is stale evidence, not active execution, because the read-only
+summary never reconciles it.
 
 For terminal done/canceled cards, the board performs a bounded read-only check
 of the exact attempt branch/worktree commit against the current local `main`;
