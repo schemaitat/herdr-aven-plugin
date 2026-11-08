@@ -10,7 +10,11 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 pub(crate) fn phase_branch(root_branch: &str, position: usize) -> String {
-    format!("{root_branch}-phase-{position:02}")
+    let phase = format!("phase-{position:02}");
+    match root_branch.rsplit_once("-dispatch-") {
+        Some((prefix, dispatch)) => format!("{prefix}-{phase}-dispatch-{dispatch}"),
+        None => format!("{root_branch}-{phase}"),
+    }
 }
 pub(crate) fn epic_phases(task: &Value) -> Result<Vec<EpicPhase>> {
     let children = task
@@ -266,6 +270,29 @@ mod tests {
     use super::*;
     use crate::model::{PhaseAttempt, TerminalRef};
     use serde_json::json;
+
+    #[test]
+    fn phase_branch_inserts_the_phase_before_the_dispatch_id() {
+        assert_eq!(
+            phase_branch("app/quoted-task-dispatch-abc123", 1),
+            "app/quoted-task-phase-01-dispatch-abc123"
+        );
+        assert_eq!(
+            phase_branch("app/quoted-task-dispatch-abc123", 12),
+            "app/quoted-task-phase-12-dispatch-abc123"
+        );
+    }
+    #[test]
+    fn phase_branch_keeps_a_legacy_root_usable() {
+        assert_eq!(
+            phase_branch("app/dispatch-legacy", 2),
+            "app/dispatch-legacy-phase-02"
+        );
+        assert_eq!(
+            phase_branch("app/legacy-branch", 3),
+            "app/legacy-branch-phase-03"
+        );
+    }
 
     #[test]
     fn phase_prompt_is_scoped_to_its_worker_worktree() {

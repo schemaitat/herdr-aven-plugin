@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make dispatcher branch names self-describing: new branches are
+  `{project}/{task-slug}-dispatch-{task-id}` and phase branches are
+  `{project}/{task-slug}-phase-NN-dispatch-{task-id}`, so the derived worktree
+  directory can be filtered by task title. The immutable task id stays the
+  final segment, and existing recorded branches/worktrees are not renamed.
 - Keep the native Kanban E2E from polluting the real Aven config: the test now
   sets `AVEN_CONFIG_DIR` alongside its isolated database, so
   `aven project create --path` can no longer map the checkout to the disposable

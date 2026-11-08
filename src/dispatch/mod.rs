@@ -793,11 +793,37 @@ pub(crate) fn select_mode(
     Ok(ExecutionMode::SingleSession)
 }
 
-// Worktree phase provisioning and first-phase admission.
-pub(crate) fn branch(project: &str, task_id: &str) -> String {
+// Descriptive branch identity for new dispatch attempts.
+const BRANCH_SLUG_LIMIT: usize = 48;
+
+/// Turn a task title into a bounded, lowercase, hyphen-separated branch slug.
+///
+/// The slug is cosmetic: branch identity still ends with the immutable task id.
+pub(crate) fn branch_slug(title: &str) -> String {
+    let mut slug = String::new();
+    for character in title.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = slug.chars().take(BRANCH_SLUG_LIMIT).collect::<String>();
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "task".into()
+    } else {
+        slug.to_owned()
+    }
+}
+
+pub(crate) fn branch(project: &str, task_id: &str, title: &str) -> String {
     format!(
-        "{}/dispatch-{}",
+        "{}/{}-dispatch-{}",
         if project.is_empty() { "task" } else { project },
+        branch_slug(title),
         task_id.to_ascii_lowercase()
     )
 }
@@ -958,7 +984,11 @@ fn dispatch_one(
         selected.task.id.clone(),
         selected.reference().to_owned(),
         workflow,
-        branch(&selected.project.key, &selected.task.id),
+        branch(
+            &selected.project.key,
+            &selected.task.id,
+            &selected.task.title,
+        ),
         agent,
         model,
         execution_mode,
@@ -1157,7 +1187,7 @@ mod tests {
 
 #[cfg(test)]
 mod moved_owner_tests {
-    use crate::dispatch::{branch, bundled_skill};
+    use crate::dispatch::{branch, branch_slug, bundled_skill};
     use std::fs;
 
     #[test]
@@ -1176,7 +1206,24 @@ mod moved_owner_tests {
         assert!(bundled_skill(Some("aven/../sdd".into()), None).is_err());
     }
     #[test]
-    fn branch_uses_immutable_id() {
-        assert_eq!(branch("APP", "ABC123"), "APP/dispatch-abc123");
+    fn branch_uses_task_slug_before_immutable_id() {
+        assert_eq!(
+            branch("APP", "ABC123", "quoted \"task\""),
+            "APP/quoted-task-dispatch-abc123"
+        );
+        assert_eq!(
+            branch("", "ABC123", "Worktree & branch"),
+            "task/worktree-branch-dispatch-abc123"
+        );
+    }
+    #[test]
+    fn branch_slug_is_bounded_and_falls_back() {
+        assert_eq!(branch_slug("  "), "task");
+        assert_eq!(branch_slug("---"), "task");
+        assert_eq!(branch_slug("日本語"), "task");
+        assert_eq!(branch_slug("A__b  c--d"), "a-b-c-d");
+        let long = branch_slug(&"x".repeat(80));
+        assert_eq!(long.len(), 48);
+        assert!(!long.ends_with('-'));
     }
 }
