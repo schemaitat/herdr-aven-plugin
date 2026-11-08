@@ -155,6 +155,34 @@ assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD",
 assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD", { state: "completed" })]).agentActive, false);
 assert.equal(cardForEpic(childEpic, selectAttempt([], "ROOT"), [attempt("CHILD", { state: "running" })], [{ address: "t-builder", status: "working" }]).agentActive, true, "live working agents corroborate activity");
 
+// A read-only summary can expose a checkpoint that was never reduced after its
+// terminals stopped. Recorded terminals and stopped observations are evidence.
+const finishedTerminals = { builder: { address: "t-builder", state: "finished", status: "" } };
+const liveTerminals = { builder: { address: "t-builder", state: "live", status: "working" } };
+assert.deepEqual(normalizeAttempt(attempt("ONE", { terminals: finishedTerminals })).terminals,
+  [{ role: "builder", address: "t-builder", state: "finished", status: "" }]);
+assert.equal(normalizeAttempt(attempt("ONE", { lifecycle: { observation: "stopped-success", contradiction: "" } })).observation, "stopped-success");
+assert.equal(card("active", {}, [attempt("ONE", { state: "running", terminals: finishedTerminals })]).agentActive, false,
+  "a running checkpoint whose role terminals all stopped is stale");
+assert.equal(card("active", {}, [attempt("ONE", { state: "running", terminals: liveTerminals })]).agentActive, true,
+  "a live role terminal keeps the activity signal");
+assert.equal(card("active", {}, [attempt("ONE", { state: "running", lifecycle: { observation: "stopped-success", contradiction: "" } })]).agentActive, false,
+  "a stopped lifecycle observation never pulses");
+const staleDone = card("done", {}, [attempt("ONE", { state: "terminal-pending", terminals: finishedTerminals })], { mergedOnMain: true });
+assert.equal(staleDone.column, "done");
+assert.equal(staleDone.agentActive, false, "done work whose terminals stopped must not pulse working");
+assert.match(staleDone.warnings.join(" "), /closeout not recorded/);
+assert.doesNotMatch(staleDone.warnings.join(" "), /conflicts with active execution/,
+  "an unreconciled pending checkpoint is not active execution");
+const liveDone = card("done", {}, [attempt("ONE", { state: "terminal-pending", terminals: liveTerminals })], { mergedOnMain: true });
+assert.equal(liveDone.agentActive, false, "terminal epics are inert for the working pulse");
+assert.match(liveDone.warnings.join(" "), /conflicts with active execution/,
+  "genuine activity on terminal work stays a visible contradiction");
+const stopped = attempt("ONE", { state: "completed", terminals: finishedTerminals });
+assert.equal(cardForEpic(normalizeEpic(rawEpic("ONE", "active"), detail(rawEpic("ONE", "active"), {})),
+  selectAttempt([stopped], "ONE"), [stopped], [{ address: "t-builder", status: "working" }]).agentActive, true,
+  "a live working agent is current evidence even after the stored state stopped");
+
 // Attempt identity and ordering never use branch, focus, ref, or worktree.
 const selected = selectAttempt([
   attempt("OTHER", { state: "needs-review", created_at: 9999 }),

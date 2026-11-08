@@ -40,6 +40,8 @@ const WORKING_EXECUTION_STATES = new Set([
   "babysitter-session-pending", "babysitter-prompt-pending",
 ]);
 const REVIEW_EXECUTION_STATES = new Set(["needs-review", "completed"]);
+const STOPPED_OBSERVATIONS = new Set(["stopped-success", "stopped-failure", "stopped-interrupted"]);
+const STOPPED_TERMINAL_STATES = new Set(["finished", "removed"]);
 const PENDING_DELIVERY_STATES = new Set(["pending", "committed"]);
 const RECORDED_DELIVERY_STATES = new Set(["merged", "not-applicable", "superseded", "waived"]);
 
@@ -161,6 +163,23 @@ function terminal(value) {
   };
 }
 
+function terminalObservation(role, value) {
+  return {
+    role: String(role ?? ""),
+    address: String(value?.address ?? ""),
+    state: String(value?.state ?? ""),
+    status: String(value?.status ?? ""),
+  };
+}
+
+// Attempt payloads record role terminals as an object keyed by role; tolerate an
+// already-normalized list so the read model stays idempotent.
+function terminalObservations(value) {
+  if (Array.isArray(value)) return value.map((observation, index) => terminalObservation(observation?.role ?? index, observation));
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).map(([role, observation]) => terminalObservation(role, observation));
+}
+
 export function normalizeAttempt(attempt) {
   return {
     taskId: String(attempt?.task_id ?? attempt?.taskId ?? ""),
@@ -173,7 +192,9 @@ export function normalizeAttempt(attempt) {
     executionMode: String(attempt?.execution_mode ?? attempt?.executionMode ?? "single-session"),
     worktree: String(attempt?.worktree ?? ""),
     branch: String(attempt?.branch ?? ""),
+    observation: String(attempt?.lifecycle?.observation ?? attempt?.observation ?? ""),
     contradiction: String(attempt?.lifecycle?.contradiction ?? attempt?.contradiction ?? ""),
+    terminals: terminalObservations(attempt?.terminals ?? attempt?.terminal_observations),
     terminal: terminal(attempt?.terminal),
     coordinatorTerminal: terminal(attempt?.coordinator_terminal ?? attempt?.coordinatorTerminal),
   };
@@ -266,17 +287,43 @@ function executionState(attempt) {
   return "unknown";
 }
 
+function terminalAddresses(attempt) {
+  return new Set([
+    attempt.terminal?.address,
+    attempt.coordinatorTerminal?.address,
+    ...(attempt.terminals ?? []).map((observation) => observation.address),
+  ].map((address) => String(address ?? "")).filter(Boolean));
+}
+
+// A read-only summary can expose a checkpoint that was never reduced after its
+// terminals stopped. A stopped lifecycle observation or a fully stopped set of
+// recorded role terminals is durable evidence that nothing is working; an
+// attempt without terminal observations keeps the previous state-based signal.
+function attemptStopped(attempt) {
+  if (STOPPED_OBSERVATIONS.has(attempt.observation)) return true;
+  const observed = (attempt.terminals ?? []).filter((observation) => observation.address);
+  return observed.length > 0 && observed.every((observation) => STOPPED_TERMINAL_STATES.has(observation.state));
+}
+
+export function attemptWorking(attempt, liveAgents = []) {
+  if (!attempt) return false;
+  const addresses = terminalAddresses(attempt);
+  if (addresses.size && liveAgents.some((live) => live.status === "working" && addresses.has(String(live.address ?? "")))) return true;
+  return WORKING_EXECUTION_STATES.has(attempt.state) && !attemptStopped(attempt);
+}
+
 export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAgents = []) {
   const attempt = attemptSelection?.attempt ?? null;
   const execution = executionState(attempt);
-  const attempts = relatedAttempts.length ? relatedAttempts : (attempt ? [attempt] : []);
+  const attempts = (relatedAttempts.length ? relatedAttempts : (attempt ? [attempt] : [])).map(normalizeAttempt);
+  const terminalStatus = TERMINAL_STATUSES.has(epic.status);
+  const working = attempts.some((candidate) => attemptWorking(candidate, liveAgents));
   const warnings = [];
   if (attemptSelection?.ambiguous) warnings.push("Multiple current dispatcher attempts; dispatch actions paused.");
   if (attempt?.contradiction) warnings.push(attempt.contradiction.replaceAll("_", " "));
   if (!epic.hydrated && epic.status === "todo") warnings.push("Plan metadata is not loaded yet.");
-  if (TERMINAL_STATUSES.has(epic.status) && execution === "active") warnings.push("Terminal Aven status conflicts with active execution.");
+  if (terminalStatus && execution === "active" && working) warnings.push("Terminal Aven status conflicts with active execution.");
 
-  const terminalStatus = TERMINAL_STATUSES.has(epic.status);
   const deliveredByMain = terminalStatus && epic.mergedOnMain === true;
   if (deliveredByMain && !RECORDED_DELIVERY_STATES.has(epic.deliveryState)) {
     warnings.push("On main; closeout not recorded.");
@@ -293,10 +340,10 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   else if (epic.status === "todo" && epic.planWorkedOut) column = "planned";
   else column = "backlog";
 
-  const agentActive = attempts.some((candidate) =>
-    WORKING_EXECUTION_STATES.has(candidate.state)
-    || (candidate.terminal?.address && liveAgents.some((live) =>
-      live.address === candidate.terminal.address && live.status === "working")));
+  // Aven acceptance is authoritative: terminal work is inert for dispatch, so a
+  // done/canceled card never claims activity. Genuine activity stays visible as
+  // the contradiction warning above instead.
+  const agentActive = !terminalStatus && working;
   const approved = epic.approved === true;
   const readyToMerge = column === "review" && approved && epic.status !== "canceled";
   return {
