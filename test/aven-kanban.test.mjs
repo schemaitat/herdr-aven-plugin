@@ -42,8 +42,8 @@ const card = (status = "todo", metadata = {}, attempts = [], extra = {}, liveAge
   return cardForEpic(epic, selectAttempt(attempts, epic.id), attempts, liveAgents);
 };
 
-assert.deepEqual(epicArgs("default"), ["list", "--workspace", "default", "--epics", "--limit", String(LIMIT), "--json"]);
-assert.deepEqual(upcomingArgs("default"), ["list", "--workspace", "default", "--upcoming", "--limit", String(LIMIT), "--json"]);
+assert.deepEqual(epicArgs("default"), ["list", "--workspace", "default", "--all-projects", "--epics", "--limit", String(LIMIT), "--json"]);
+assert.deepEqual(upcomingArgs("default"), ["list", "--workspace", "default", "--all-projects", "--upcoming", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(detailArgs("default", "HAP-ONE"), ["show", "HAP-ONE", "--workspace", "default", "--full", "--json"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"]);
 assert.deepEqual(BOARD_COLUMNS.map(({ id }) => id), ["backlog", "needs_you", "working", "ready", "done"]);

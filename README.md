@@ -538,14 +538,14 @@ the Board layout from
 [jkuepker/herdr-layouts](https://github.com/jkuepker/herdr-layouts): a dark
 Graphite-style palette, a compact top bar, a today strip, a NEXT MOVE banner,
 project chips, and colour-accented, independently scrolling columns. It lists
-nondeleted root epics from the repository's inferred Aven project in the
-explicit local `default` workspace. Scheduled open epics and terminal
-done/canceled epics are included. Five flexible columns always fit the window
-width without horizontal scrolling and combine independent Aven and dispatcher
-facts instead of creating another task store. The selected card has a bright
-accent border and the focused column header carries an accent rule and count
-chip; every board text colour meets WCAG AA contrast on the surface it is
-drawn on.
+nondeleted root epics from every Aven project in the explicit local `default`
+workspace, with the project chips narrowing that set. Scheduled open epics and
+terminal done/canceled epics are included. Five flexible columns always fit the
+window width without horizontal scrolling and combine independent Aven and
+dispatcher facts instead of creating another task store. The selected card has
+a bright accent border and the focused column header carries an accent rule and
+count chip; every board text colour meets WCAG AA contrast on the surface it is
+drawn on:
 
 | Column | Contents |
 | --- | --- |
@@ -578,7 +578,8 @@ expands the three summary bullets; a stale digest is marked and short or
 unsummarized descriptions are unchanged.
 
 **Project chips** filter by project and show per-project counts plus a yellow
-dot when a card there needs you. A **Created** control filters visible cards by
+dot when a card there needs you; the **all** chip clears the filter and shows
+every project in the workspace. A **Created** control filters visible cards by
 `created_at` with `All`, `1w`, `2w`, `1mo`, and `1y` windows (fixed
 7/14/30/365-day lookbacks). Both choices persist across overlay openings, and a
 hidden card cannot stay selected. Cards whose root epic or any child task has a

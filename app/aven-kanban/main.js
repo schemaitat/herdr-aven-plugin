@@ -1152,7 +1152,7 @@ export default class AvenKanban extends View {
           .when(this.state.loading, (el) => el.child(div().p(16).font_family(SANS).text_size(12).text_color(C.dim).child("Loading epics…")))
           .when(!this.state.loading && columns.every((column) => column.cards.length === 0), (el) => el.child(div().p(16)
             .font_family(SANS).text_size(12).text_color(C.dim)
-            .child(allStats.total ? "No epics match this filter." : "No epics in this project.")))
+            .child(allStats.total ? "No epics match this filter." : "No epics in this workspace.")))
           .when(!this.state.loading && columns.some((column) => column.cards.length > 0),
             (el) => el.children(columns.map((column) => this.column(column, cx, column.id === focusedColumn))))))
       .when(this.helpOpen, (el) => el.child(this.helpPanel(cx)));
