@@ -3,9 +3,12 @@
 #
 # Owned files only: mods/aven-tasks, mods/aven-panel, mods/aven-kanban,
 # mods/aven-panel-tabs, and layouts/aven-right.json. Keys are merged into
-# the person's keys.json only when the chord is free; an existing binding is
-# never replaced. Shipped mods and the app's generated guide/types are never
-# edited. The mods are optional: headless dispatch does not require herdr-app.
+# the person's keys.json only when the chord is free; a binding to another
+# action is never replaced. The plugin's own mod sections are reconciled: a
+# shipped action that moved or was removed is updated or dropped so an
+# upgrade cannot leave a stale board key behind. Shipped mods and the app's
+# generated guide/types are never edited. The mods are optional: headless
+# dispatch does not require herdr-app.
 #
 # Usage: scripts/install-app-mod.sh [--no-keys]
 # Report lines:
@@ -110,8 +113,28 @@ if os.path.exists(target_path):
 changed = False
 for section, bindings in source.items():
     current = target.setdefault(section, {})
+    # A mod section belongs to this plugin, so bindings to this mod's own
+    # commands are authoritative. A key the person bound to another action
+    # stays theirs.
+    prefix = section.split(":", 1)[1] + "." if section.startswith("mod:") else ""
+
+    def owned(action):
+        return bool(prefix) and isinstance(action, str) and action.startswith(prefix)
+
+    for key in list(current):
+        action = current[key]
+        if key not in bindings and owned(action):
+            del current[key]
+            changed = True
+            print(f"removed stale: {key} -> {action}")
+
     for key, action in bindings.items():
         existing = current.get(key)
+        if existing is not None and existing != action and owned(existing):
+            current[key] = action
+            changed = True
+            print(f"updated: {key} -> {action} (was {existing})")
+            continue
         if existing is not None:
             print(f"kept: {key} -> {existing}")
             continue
