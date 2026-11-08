@@ -1255,6 +1255,11 @@ just ui-check  # Dashboard TypeScript
 just ui-test   # Dashboard unit tests
 ```
 
+The shell/integration suites and the independent approval scenarios run in
+parallel by default, bounded by the logical CPU count. Set `TEST_JOBS=1` or
+`APPROVAL_TEST_JOBS=1` to force serial execution when diagnosing a failure.
+The `web/` UI tier is separate and only needed for UI work.
+
 The E2E fixture uses `test/hc_fixture.py` as `HC_BIN`; its `hc exec` runs real
 Git, so worktree operations are exercised through the same boundary as
 production. OpenCode and Aven are stubbed: no real agent runs, no tokens are

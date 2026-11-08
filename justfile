@@ -26,6 +26,7 @@ test-approval:
 install-app-mod:
     sh scripts/install-app-mod.sh
 
+# TEST_JOBS and APPROVAL_TEST_JOBS bound the parallel pools (default: CPU count).
 test:
     cargo test --workspace
     cargo build --workspace
