@@ -18,6 +18,9 @@ const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
 const ARCHIVE_SHARED = "aven-kanban.archived";
+// Shared readiness marker: `{ seq, pending }` lets other mods (and the native
+// E2E) distinguish a provisional frame from the authoritative one.
+const ENRICHMENT_SHARED = "aven-kanban.enrichment";
 
 // The reference Board palette. The overlay keeps its own look instead of
 // depending on the app theme, as the layout does.
@@ -84,6 +87,7 @@ export default class AvenKanban extends View {
     this.sources = null;
     this.mainMerged = new Set();
     this.coverageError = "";
+    this.enrichmentSeq = Number(shared(ENRICHMENT_SHARED)?.seq) || 0;
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
     this.mainEvidence = { head: "", entries: new Map() };
@@ -234,7 +238,15 @@ export default class AvenKanban extends View {
       coverageError: this.coverageError,
       enriching: flags.enriching === true, evidencePending: flags.evidencePending === true,
     };
+    this.publishEnrichment();
     this.retainSelection(cx);
+  }
+
+  publishEnrichment() {
+    setShared(ENRICHMENT_SHARED, {
+      seq: this.enrichmentSeq,
+      pending: enrichmentPending(this.state),
+    });
   }
 
   // Read-only delivery evidence for terminal cards. Exact attempt commits are
@@ -284,6 +296,8 @@ export default class AvenKanban extends View {
   refresh(cx) {
     if (this.refreshing || this.closed) return;
     this.refreshing = true;
+    this.enrichmentSeq += 1;
+    setShared(ENRICHMENT_SHARED, { seq: this.enrichmentSeq, pending: true });
     this.state = { ...this.state, loading: !this.state.rows.length, error: "" };
     this.notify(cx);
     cx.spawn(async (taskCx) => {
@@ -326,6 +340,7 @@ export default class AvenKanban extends View {
           ...this.state, loading: false, error: message(error), stale: this.state.rows.length > 0,
           enriching: false, evidencePending: false,
         };
+        this.publishEnrichment();
         this.notify(taskCx);
       } finally {
         this.refreshing = false;
