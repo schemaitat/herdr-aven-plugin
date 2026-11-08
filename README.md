@@ -684,9 +684,11 @@ When the focused space is a dispatched worktree, the Aven panel shows a compact
 worktree card above the epic list: root epic and status, phase progress, the
 full phase list in order with the active phase marked ACTIVE and the selected
 phase worktree marked WORKTREE when it differs from the active phase, the
-current task and Aven status, the persisted dispatch
+current task and Aven status with a one-line description, the persisted dispatch
 state with agent/model and execution mode, and one lifecycle stage (Backlog,
-Planned, In progress, Review, Done, Canceled). A phase worktree resolves through
+Planned, In progress, Review, Done, Canceled). Each phase shows a small
+description snippet; clicking the phase opens its cleaned full description as
+an accordion (one phase open at a time). A phase worktree resolves through
 its attempt's phase entry, so the card names the phase task rather than the
 root. The card also exposes Open task/Open phase buttons, which reuse the same
 exact Aven terminal launcher. Dispatcher facts stay read-only; an unknown or

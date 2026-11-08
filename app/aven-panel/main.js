@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
-import { DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
+import { DISPATCH_ACTIONS, LIMIT, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const FOCUS_POLL_MS = 1000;
@@ -23,6 +23,9 @@ export default class AvenPanel extends View {
     this.refreshing = false;
     this.closed = false;
     this.pendingLaunches = new Set();
+    this.phaseDetails = new Map();
+    this.phaseReads = new Set();
+    this.openPhaseRef = "";
     this.scope = "all";
     this.dispatchMenuEpicId = null;
     this.focusedSpace = focused()?.space ?? "";
@@ -71,6 +74,58 @@ export default class AvenPanel extends View {
 
   notify(cx) { if (!this.closed) { try { cx.notify(); } catch {} } }
 
+  async readPhaseDescription(ref) {
+    if (this.phaseReads.has(ref)) return;
+    this.phaseReads.add(ref);
+    const previous = this.phaseDetails.get(ref);
+    this.phaseDetails.set(ref, { loading: true, description: previous?.description ?? "", error: "" });
+    try {
+      const result = await exec("aven", ["show", ref, "--workspace", this.workspace(), "--full", "--json"]);
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not read ${ref}`);
+      const payload = JSON.parse(result.stdout);
+      const detail = fullDetail(payload);
+      if (detail?.ref && detail.ref !== ref) throw new Error(`identity mismatch for ${ref}`);
+      this.phaseDetails.set(ref, { loading: false, description: String(detail?.description ?? ""), error: "" });
+    } catch (error) {
+      this.phaseDetails.set(ref, { loading: false, description: "", error: String(error?.message ?? error) });
+    } finally {
+      this.phaseReads.delete(ref);
+    }
+  }
+
+  // Descriptions are cached for the session and read with the same bounded
+  // concurrency as the rest of the panel. Pruning follows the current root so
+  // a different worktree starts from an empty, relevant cache.
+  async hydratePhases(phases, cx) {
+    const refs = new Set(phases.map((phase) => phase.ref));
+    for (const ref of [...this.phaseDetails.keys()]) if (!refs.has(ref)) this.phaseDetails.delete(ref);
+    if (this.openPhaseRef && !refs.has(this.openPhaseRef)) this.openPhaseRef = "";
+    const missing = phases.filter((phase) => !this.phaseDetails.has(phase.ref) && !this.phaseReads.has(phase.ref));
+    if (!missing.length) return;
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, missing.length) }, async () => {
+      for (;;) {
+        const phase = missing[next];
+        next += 1;
+        if (!phase) return;
+        await this.readPhaseDescription(phase.ref);
+      }
+    }));
+    this.notify(cx);
+  }
+
+  togglePhase(ref, cx) {
+    this.openPhaseRef = this.openPhaseRef === ref ? "" : ref;
+    this.notify(cx);
+    if (!this.openPhaseRef) return;
+    const detail = this.phaseDetails.get(ref);
+    if (this.phaseReads.has(ref) || (detail && !detail.error)) return;
+    cx.spawn(async (taskCx) => {
+      await this.readPhaseDescription(ref);
+      this.notify(taskCx);
+    });
+  }
+
   refresh(cx) {
     if (this.refreshing || this.closed) return;
     this.refreshing = true;
@@ -100,9 +155,10 @@ export default class AvenPanel extends View {
           const targets = dispatchTargets(attempts, worktree);
           const target = targets.length === 1 ? targets[0] : null;
           const readTask = async (ref) => {
-            const result = await exec("aven", ["show", ref, "--json"], cwdOption);
+            const result = await exec("aven", ["show", ref, "--workspace", workspace, "--full", "--json"], cwdOption);
             if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not read ${ref}`);
-            return JSON.parse(result.stdout);
+            const payload = JSON.parse(result.stdout);
+            return fullDetail(payload);
           };
           let task, root;
           if (target?.taskRef) {
@@ -118,6 +174,7 @@ export default class AvenPanel extends View {
           context = resolveSpaceContext({ space: contextSpace, attempts, task, root, rows, target });
         } catch { context = { kind: "unavailable", name: String(space?.name ?? ""), folder: String(spaceCwd), message: "Dispatcher context is unavailable; showing project epics." }; }
         this.state = { loading: false, rows, context, coverageError: "", error: "", stale: false };
+        if (context?.kind === "dispatch") await this.hydratePhases(context.root?.epic_children ?? [], taskCx);
       } catch (error) {
         const message = String(error?.message ?? error);
         this.state = { ...this.state, loading: false, error: message, stale: this.state.rows.length > 0 };
@@ -269,20 +326,36 @@ export default class AvenPanel extends View {
       .text_size(9.5).child(String(project ?? "").trim() || "unassigned");
   }
 
-  phaseRow(t, phase) {
+  phaseRow(t, phase, cx) {
     const tone = this.stageTone(t, lifecycleStage({ status: phase.status }));
     const marker = phase.active
       ? { label: "ACTIVE", color: t.working }
       : phase.worktree
         ? { label: "WORKTREE", color: t.accent }
         : null;
-    return h_flex().id(`aven-panel-phase-${phase.ref}`).h(20).px(4).gap(6).items_center().rounded(4)
+    const open = this.openPhaseRef === phase.ref;
+    const detail = this.phaseDetails.get(phase.ref);
+    const snippet = descriptionSnippet(detail?.description ?? "", 120);
+    const body = detail?.loading
+      ? "Loading description…"
+      : detail?.error
+        ? detail.error
+        : descriptionBody(detail?.description ?? "") || "No description.";
+    return v_flex().id(`aven-panel-phase-${phase.ref}`).gap(2).rounded(4)
       .when(phase.worktree, (el) => el.bg(t.selected).border_l(2).border_color(t.accent))
-      .child(div().flex_none().w(9).text_size(10).text_color(tone).child(PHASE_GLYPH[phase.status] ?? "○"))
-      .child(div().flex_none().w(14).text_size(9.5).text_color(t.dim).child(`${phase.position}.`))
-      .child(div().flex_1().min_w(0).truncate().text_size(10).text_color(phase.worktree ? t.foreground : t.muted).child(`${phase.ref} · ${phase.title}`))
-      .when(Boolean(marker), (el) => el.child(div().flex_none().px(4).py(1).rounded(3).bg(marker.color)
-        .text_color(t.background).text_size(8.5).font_semibold().child(marker.label)));
+      .child(h_flex().id(`aven-panel-phase-head-${phase.ref}`).min_h(20).px(4).gap(6).items_center().cursor_pointer()
+        .hover((style) => style.bg(t.hover))
+        .on_click((_event, clickCx) => { clickCx.stop_propagation(); this.togglePhase(phase.ref, clickCx ?? cx); })
+        .child(div().flex_none().w(9).text_size(10).text_color(tone).child(PHASE_GLYPH[phase.status] ?? "○"))
+        .child(div().flex_none().w(14).text_size(9.5).text_color(t.dim).child(`${phase.position}.`))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(10).text_color(phase.worktree ? t.foreground : t.muted).child(`${phase.ref} · ${phase.title}`))
+          .when(Boolean(snippet), (el) => el.child(div().truncate().text_size(9).text_color(t.dim).child(snippet))))
+        .when(Boolean(marker), (el) => el.child(div().flex_none().px(4).py(1).rounded(3).bg(marker.color)
+          .text_color(t.background).text_size(8.5).font_semibold().child(marker.label)))
+        .child(div().flex_none().text_size(9).text_color(t.dim).child(open ? "⌃" : "⌄")))
+      .when(open, (el) => el.child(div().id(`aven-panel-phase-body-${phase.ref}`).mx(4).mb(3).px(6).py(5).rounded(4)
+        .bg(t.background).text_size(10).text_color(detail?.error ? t.blocked : t.muted).child(body)));
   }
 
   smallButton(t, id, text, onClick) {
@@ -306,6 +379,7 @@ export default class AvenPanel extends View {
     const progress = phaseProgress(root.epic_children);
     const stage = lifecycleStage({ status: task?.status, attempt });
     const agent = [attempt?.agent, String(attempt?.model ?? "").split("/").pop()].filter(Boolean).join(" · ");
+    const taskDescription = descriptionSnippet(task?.description ?? "", 160);
     return v_flex().mx(8).my(7).p(8).gap(5).rounded(6).bg(t.raised)
       .child(h_flex().gap(6).items_center()
         .child(div().text_size(10).font_semibold().text_color(t.dim).child("WORKTREE"))
@@ -326,13 +400,14 @@ export default class AvenPanel extends View {
           .child(div().text_size(9.5).font_semibold().text_color(t.dim).child("PHASES"))
           .child(div().flex_1())
           .child(div().text_size(9.5).text_color(t.dim).child(`${progress.complete}/${progress.total}`)))
-        .children(overview.phases.map((entry) => this.phaseRow(t, entry)))))
+        .children(overview.phases.map((entry) => this.phaseRow(t, entry, cx)))))
       .when(overview.phases.length > 0, (el) => el.child(div().h(1).flex_none().bg(t.border)))
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().w(38).text_size(10).text_color(t.dim).child("TASK"))
         .child(div().id("aven-panel-task").flex_1().min_w(0).truncate().text_size(11).font_semibold().text_color(t.foreground).child(task.ref))
         .child(this.statusChip(t, task.status)))
       .child(div().text_size(10.5).text_color(t.muted).truncate().child(task.title))
+      .when(Boolean(taskDescription), (el) => el.child(div().text_size(10).text_color(t.dim).child(taskDescription)))
       .child(h_flex().gap(6).items_center()
         .child(div().size(6).rounded(3).flex_none().bg(this.dispatchTone(t, attempt?.state)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(dispatchLabel(attempt?.state)))

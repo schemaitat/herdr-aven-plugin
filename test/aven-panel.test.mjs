@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs,
+  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs,
   isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseOverview, phaseProgress, projectArgs,
   projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
@@ -17,6 +17,16 @@ assert.deepEqual(projectTone("  herdr-aven-plugin  "), projectTone("herdr-aven-p
 assert.deepEqual(projectTone("herdr-aven-plugin"), projectTone("herdr-aven-plugin"), "project colour is deterministic");
 assert.notEqual(projectTone("herdr-aven-plugin").fg, projectTone("rofm-argo-apps").fg, "representative projects get distinct colours");
 assert.notEqual(projectTone("lakehouse-client").fg, projectTone("unitycatalog").fg, "more than two projects stay distinguishable");
+assert.equal(descriptionSnippet("# Goal\n\nBring **the** board look with `code` and [a link](https://x).\n\nAnother paragraph."), "Bring the board look with code and a link.", "the collapsed description is one cleaned paragraph");
+assert.equal(descriptionSnippet(""), "", "an empty description has no snippet");
+assert.equal(descriptionSnippet("x".repeat(30), 10), "xxxxxxxxx…", "the snippet is bounded");
+assert.equal(descriptionBody("# Goal\n\nBring **the** board look.\n\n- second item"), "Goal\n\nBring the board look.\n\n• second item", "the accordion body keeps structure and strips Markdown markers");
+assert.equal(descriptionBody(""), "", "an empty body stays empty");
+const wrapped = fullDetail({ task: { ref: "HAP-ONE", is_epic: true }, description: "# Goal\n\nBody text" });
+assert.equal(wrapped.ref, "HAP-ONE", "full detail unwraps the task");
+assert.equal(wrapped.is_epic, true, "full detail keeps task fields");
+assert.equal(wrapped.description, "# Goal\n\nBody text", "full detail keeps the description");
+assert.equal(fullDetail({ ref: "HAP-TWO" }).ref, "HAP-TWO", "a flat task remains unchanged");
 assert.deepEqual(DISPATCH_ACTIONS.map(({ label }) => label), ["z d", "z s", "z p", "z i", "z r", "z x", "z b"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"], "buttons send lowercase task-detail bindings through hc");
 assert.ok(DISPATCH_ACTIONS.every(({ description }) => description.length > 0), "each dispatcher shortcut has a menu description");

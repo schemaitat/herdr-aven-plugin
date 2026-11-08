@@ -104,6 +104,51 @@ export function projectTone(name) {
   return PROJECT_TONES[hash % PROJECT_TONES.length] ?? DEFAULT_PROJECT_TONE;
 }
 
+// Sidebar descriptions are display text, not Markdown input. Keep the first
+// meaningful paragraph for a collapsed row and a lightly cleaned multi-line
+// body for the accordion, both bounded so a long description never takes over
+// the card.
+function cleanDescriptionLine(line) {
+  return String(line ?? "")
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/, "")
+    .replace(/^\s*>\s?/, "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function clampDescription(text, limit) {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+export function descriptionSnippet(description, limit = 160) {
+  const lines = String(description ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const parts = [];
+  for (const line of lines) {
+    if (/^\s*#{1,6}\s+/.test(line)) continue;
+    const text = cleanDescriptionLine(line);
+    if (!text) {
+      if (parts.length) break;
+      continue;
+    }
+    parts.push(text);
+  }
+  return clampDescription(parts.join(" ").trim(), limit);
+}
+
+export function descriptionBody(description, limit = 1600) {
+  const lines = String(description ?? "").replace(/\r\n?/g, "\n").split("\n").map((line) => {
+    if (/^\s*#{1,6}\s+/.test(line)) return cleanDescriptionLine(line);
+    if (/^\s*(?:[-*+]|\d+\.)\s+/.test(line)) return `• ${cleanDescriptionLine(line)}`;
+    return cleanDescriptionLine(line);
+  });
+  return clampDescription(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), limit);
+}
+
 export function mergeCoverage(results) {
   const rows = new Map();
   const errors = [];
@@ -112,6 +157,14 @@ export function mergeCoverage(results) {
     for (const row of result.rows ?? []) if (!rows.has(row.id)) rows.set(row.id, row);
   }
   return { rows: sortEpics([...rows.values()]), coverageError: errors.join("; ") };
+}
+
+// `aven show --full --json` wraps the task and its long text fields. Normalize
+// it to the task shape the panel uses and keep the description alongside it.
+export function fullDetail(payload) {
+  const task = payload?.task ?? payload;
+  if (!task || typeof task !== "object") return task;
+  return payload?.description ? { ...task, description: String(payload.description) } : task;
 }
 
 function terminalHash(value) {
