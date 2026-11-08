@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
-  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs,
-  isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseOverview, phaseProgress, projectArgs,
-  projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
+  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, SUMMARY_CARD_LIMIT, SUMMARY_LABEL, canonicalId, cardSummary,
+  descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs,
+  inferredUpcomingArgs, isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs,
+  phaseOverview, phaseProgress, projectArgs, projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel,
+  storedSummary, summaryDigest, summaryNeeded, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
@@ -27,6 +29,41 @@ assert.equal(wrapped.ref, "HAP-ONE", "full detail unwraps the task");
 assert.equal(wrapped.is_epic, true, "full detail keeps task fields");
 assert.equal(wrapped.description, "# Goal\n\nBody text", "full detail keeps the description");
 assert.equal(fullDetail({ ref: "HAP-TWO" }).ref, "HAP-TWO", "a flat task remains unchanged");
+const withMetadata = fullDetail({ task: { ref: "HAP-ONE" }, description: "Body", metadata: { "summary.llm": "Stored" } });
+assert.equal(withMetadata.metadata["summary.llm"], "Stored", "full detail keeps the summary metadata");
+
+// LLM summary contract: threshold, shared digest, stale hint and UI fallbacks.
+assert.equal(SUMMARY_LABEL, "LLM SUMMARY");
+assert.equal(summaryDigest(""), "811c9dc5");
+assert.equal(summaryDigest("hello"), "4f9f2cab");
+assert.equal(summaryDigest("Bring **the** board look."), "9b4c6f23");
+assert.equal(summaryDigest("héllo ☃"), "f57826aa");
+assert.equal(summaryDigest(`\r\n${"a".repeat(101)}\r\n`), "8868c4a8", "normalization matches the Rust producer");
+assert.equal(summaryNeeded("a".repeat(100)), false, "exactly 100 characters is short");
+assert.equal(summaryNeeded("a".repeat(101)), true, "101 characters needs a summary");
+assert.equal(summaryNeeded(`  ${"a".repeat(100)}  `), false, "the threshold trims surrounding whitespace");
+const longDescription = "a".repeat(101);
+assert.deepEqual(
+  storedSummary({ "summary.llm": "Short text", "summary.llm.digest": summaryDigest(longDescription) }, longDescription),
+  { text: "Short text", stale: false },
+);
+assert.deepEqual(
+  storedSummary({ "summary.llm": "Short text", "summary.llm.digest": "deadbeef" }, longDescription),
+  { text: "Short text", stale: true },
+  "a digest mismatch is stale, not hidden",
+);
+assert.equal(storedSummary({}, longDescription), null);
+assert.deepEqual(
+  taskSummary({ description: longDescription, metadata: { "summary.llm": "LLM result", "summary.llm.digest": summaryDigest(longDescription) } }),
+  { text: "LLM result", stale: false, label: "LLM SUMMARY" },
+);
+assert.equal(taskSummary({ description: "short", metadata: { "summary.llm": "x" } }), null, "short descriptions keep raw text");
+assert.equal(taskSummary({ description: longDescription, metadata: {} }), null, "a missing summary keeps raw text");
+assert.equal(
+  cardSummary({ description: longDescription, metadata: { "summary.llm": "x".repeat(500), "summary.llm.digest": summaryDigest(longDescription) } }).text.length,
+  SUMMARY_CARD_LIMIT,
+  "card summaries are bounded",
+);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ label }) => label), ["z d", "z s", "z p", "z i", "z r", "z x", "z b"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"], "buttons send lowercase task-detail bindings through hc");
 assert.ok(DISPATCH_ACTIONS.every(({ description }) => description.length > 0), "each dispatcher shortcut has a menu description");

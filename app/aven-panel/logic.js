@@ -149,6 +149,53 @@ export function descriptionBody(description, limit = 1600) {
   return clampDescription(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), limit);
 }
 
+// LLM summaries share one contract with `aven-dispatch describe`. Only long
+// descriptions are summarized; short text keeps its existing raw presentation.
+export const SUMMARY_LABEL = "LLM SUMMARY";
+export const SUMMARY_MIN_CHARS = 100;
+export const SUMMARY_LIMIT = 1200;
+export const SUMMARY_CARD_LIMIT = 240;
+
+function normalizedDescription(description) {
+  return String(description ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
+// 32-bit FNV-1a over UTF-16 code units, matching the Rust producer. Used only
+// for the stale hint; a mismatch never hides a summary.
+export function summaryDigest(description) {
+  let hash = 0x811c9dc5;
+  const text = normalizedDescription(description);
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash ^ text.charCodeAt(index)) >>> 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+export function summaryNeeded(description) {
+  return [...normalizedDescription(description)].length > SUMMARY_MIN_CHARS;
+}
+
+export function storedSummary(metadata, description, limit = SUMMARY_LIMIT) {
+  const text = String(metadata?.["summary.llm"] ?? "").trim();
+  if (!text) return null;
+  const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
+  const stale = Boolean(digest) && digest !== summaryDigest(description);
+  return { text: clampDescription(text, limit), stale };
+}
+
+// A task summary is available only when the description is long enough and the
+// stored LLM summary exists. `cardSummary` bounds the text for a card surface.
+export function taskSummary(task, limit = SUMMARY_LIMIT) {
+  if (!summaryNeeded(task?.description)) return null;
+  const summary = storedSummary(task?.metadata, task?.description, limit);
+  return summary ? { ...summary, label: SUMMARY_LABEL } : null;
+}
+
+export function cardSummary(task) {
+  return taskSummary(task, SUMMARY_CARD_LIMIT);
+}
+
 export function mergeCoverage(results) {
   const rows = new Map();
   const errors = [];
@@ -160,11 +207,15 @@ export function mergeCoverage(results) {
 }
 
 // `aven show --full --json` wraps the task and its long text fields. Normalize
-// it to the task shape the panel uses and keep the description alongside it.
+// it to the task shape the panel uses and keep the description and metadata
+// (the LLM summary contract) alongside it.
 export function fullDetail(payload) {
   const task = payload?.task ?? payload;
   if (!task || typeof task !== "object") return task;
-  return payload?.description ? { ...task, description: String(payload.description) } : task;
+  const detail = { ...task };
+  if (payload?.description) detail.description = String(payload.description);
+  if (payload?.metadata && typeof payload.metadata === "object") detail.metadata = payload.metadata;
+  return detail;
 }
 
 function terminalHash(value) {
