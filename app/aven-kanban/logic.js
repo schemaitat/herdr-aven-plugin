@@ -30,6 +30,46 @@ export const DISPATCH_ACTIONS = [
   { id: "implement-babysitter", detailKey: "b", terminalKey: "b", label: "z b", description: "Implement with babysitter" },
 ];
 
+// The reference Board palette. Kept here with the read model so contrast is
+// testable without loading GPUI. Every text token is checked against the
+// surfaces it is drawn on by test/aven-kanban.test.mjs.
+export const BOARD_COLORS = {
+  top: "#101012", side: "#0f0f11", main: "#121214", card: "#1a1a1d", raised: "#242328", hover: "#1f1f23",
+  line: "#1e1e20", line2: "#2a2a30", text: "#e4e4e7", soft: "#c8c8cc", muted: "#a6a5ab", dim: "#8f8e95",
+  accent: "#b4a0db", accentDim: "#8672b8",
+  you: "#ffb406", youBg: "#1f1a10", youCard: "#1b1912", youAsk: "#241f12", youLine: "#4a3a12",
+  work: "#8f7fd1", land: "#53cf91", landBg: "#12201a", landLine: "#1d3a2c", done: "#6fb3f2", red: "#e0707f",
+};
+
+// Foreground/background pairs that carry text at 9-22px, plus the selection
+// and focus borders. WCAG AA: 4.5:1 for text, 3:1 for UI component boundaries.
+export const TEXT_CONTRAST_PAIRS = [
+  ["text", "main"], ["soft", "main"], ["muted", "main"], ["dim", "main"],
+  ["text", "card"], ["soft", "card"], ["muted", "card"], ["dim", "card"],
+  ["text", "top"], ["dim", "top"], ["muted", "raised"], ["dim", "raised"],
+  ["accent", "top"], ["you", "youCard"], ["you", "youBg"], ["work", "card"],
+  ["land", "card"], ["done", "card"], ["red", "card"], ["dim", "youAsk"],
+];
+export const BORDER_CONTRAST_PAIRS = [
+  ["accentDim", "card"], ["accentDim", "main"],
+];
+
+function channel(value) {
+  const normalized = value / 255;
+  return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+export function contrastRatio(foreground, background) {
+  const parse = (hex) => {
+    const value = String(hex ?? "").replace("#", "");
+    if (!/^[0-9a-fA-F]{6}$/.test(value)) throw new Error(`contrast needs #rrggbb colors, got ${hex}`);
+    return [0, 2, 4].map((offset) => channel(parseInt(value.slice(offset, offset + 2), 16)));
+  };
+  const luminance = ([red, green, blue]) => 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const [light, dark] = [luminance(parse(foreground)), luminance(parse(background))].sort((left, right) => right - left);
+  return (light + 0.05) / (dark + 0.05);
+}
+
 const TERMINAL_STATUSES = new Set(["done", "canceled"]);
 const ACTIVE_EXECUTION_STATES = new Set([
   "running", "waiting", "starting", "queued", "failed", "interrupted",
@@ -550,12 +590,85 @@ export function flattenBoard(columns) {
   return (columns ?? []).flatMap((column) => column.cards ?? []);
 }
 
+// Locate the selected card by column and row. Column-aware navigation copies
+// Aven's columns view instead of treating the five lanes as one list.
+function locateSelection(columns, selectedId) {
+  const list = columns ?? [];
+  for (let column = 0; column < list.length; column += 1) {
+    const cards = list[column]?.cards ?? [];
+    const row = cards.findIndex((card) => card.id === selectedId);
+    if (row >= 0) return { column, row, cards };
+  }
+  return null;
+}
+
+function firstNonEmpty(columns, last) {
+  const list = columns ?? [];
+  const order = last
+    ? Array.from({ length: list.length }, (_, index) => list.length - 1 - index)
+    : Array.from({ length: list.length }, (_, index) => index);
+  for (const index of order) {
+    const cards = list[index]?.cards ?? [];
+    if (cards.length) return { column: index, card: last ? cards.at(-1) : cards[0] };
+  }
+  return null;
+}
+
+// Vertical movement wraps inside the current column. With no selection it
+// starts at the first non-empty column's first card.
 export function moveSelection(columns, selectedId, delta) {
-  const cards = flattenBoard(columns);
-  if (!cards.length) return "";
-  const index = cards.findIndex((card) => card.id === selectedId);
-  if (index < 0) return cards[0].id;
-  return cards[(index + delta + cards.length) % cards.length].id;
+  if (!flattenBoard(columns).length) return "";
+  const located = locateSelection(columns, selectedId);
+  if (!located) return firstNonEmpty(columns, delta < 0)?.card?.id ?? "";
+  if (!located.cards.length || delta === 0) return selectedId;
+  const step = delta < 0 ? -1 : 1;
+  const distance = Math.min(Math.abs(delta), located.cards.length);
+  const next = ((located.row + step * distance) % located.cards.length + located.cards.length) % located.cards.length;
+  return located.cards[next].id;
+}
+
+// Horizontal movement skips empty columns, keeps the row where possible, and
+// clamps to the target column's last card. At the board edge the selection
+// stays put, as in Aven.
+export function moveHorizontal(columns, selectedId, delta) {
+  if (delta === 0) return selectedId;
+  const list = columns ?? [];
+  const direction = delta < 0 ? -1 : 1;
+  const located = locateSelection(list, selectedId);
+  if (!located) return (direction < 0 ? firstNonEmpty(list, true) : firstNonEmpty(list, false))?.card?.id ?? "";
+  for (let column = located.column + direction; column >= 0 && column < list.length; column += direction) {
+    const cards = list[column]?.cards ?? [];
+    if (cards.length) return cards[Math.min(located.row, cards.length - 1)].id;
+  }
+  return selectedId;
+}
+
+// First/last card in the focused column; global first/last when nothing is
+// selected. This is Aven's gg/G and Home/End behaviour.
+export function moveEdge(columns, selectedId, last) {
+  const located = locateSelection(columns, selectedId);
+  if (located) return located.cards.length ? located.cards[last ? located.cards.length - 1 : 0].id : "";
+  return firstNonEmpty(columns, last)?.card?.id ?? "";
+}
+
+// Number keys jump to a column. An empty target falls back to the nearest
+// non-empty column (lower index wins ties), matching Aven's nearest-lane move.
+export function jumpToColumn(columns, selectedId, index) {
+  const list = columns ?? [];
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) return selectedId ?? "";
+  const candidates = list
+    .map((column, columnIndex) => ({ columnIndex, cards: column?.cards ?? [] }))
+    .filter((entry) => entry.cards.length)
+    .sort((left, right) => Math.abs(left.columnIndex - index) - Math.abs(right.columnIndex - index) || left.columnIndex - right.columnIndex);
+  const target = candidates[0];
+  if (!target) return "";
+  const row = locateSelection(list, selectedId)?.row ?? 0;
+  return target.cards[Math.min(row, target.cards.length - 1)].id;
+}
+
+// Tab and Shift-Tab move one column at a time; they share the h/l semantics.
+export function moveColumn(columns, selectedId, delta) {
+  return moveHorizontal(columns, selectedId, delta);
 }
 
 export function selectedCard(columns, selectedId) {

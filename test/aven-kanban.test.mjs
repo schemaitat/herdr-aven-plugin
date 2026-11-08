@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
+  ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, BORDER_CONTRAST_PAIRS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT,
+  MERGE_PROMPT, TEXT_CONTRAST_PAIRS,
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard, cardForEpic,
-  createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
-  filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion,
+  contrastRatio, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
+  filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
-  mergeTabName, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs, projectChips, selectAttempt,
+  mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs, projectChips, selectAttempt,
   selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -335,10 +336,63 @@ assert.equal(board.find(({ id }) => id === "ready").cards[0].id, "B");
 const ordered = flattenBoard(board).map(({ id }) => id);
 const first = moveSelection(board, "", 1);
 assert.equal(first, ordered[0]);
-assert.equal(moveSelection(board, first, 1), ordered[1]);
-assert.equal(moveSelection(board, ordered.at(-1), 1), ordered[0], "next wraps");
-assert.equal(moveSelection(board, ordered[0], -1), ordered.at(-1), "previous wraps");
+assert.equal(moveSelection(board, first, 1), ordered[1], "vertical order stays inside the backlog column");
 assert.equal(moveSelection([], "", 1), "");
+
+// Vim navigation copies Aven's columns view: wrap inside a column, skip empty
+// columns horizontally, clamp the row, and keep the board edge.
+const navColumns = [
+  { id: "backlog", cards: [{ id: "a1" }, { id: "a2" }, { id: "a3" }] },
+  { id: "needs_you", cards: [] },
+  { id: "working", cards: [{ id: "c1" }, { id: "c2" }] },
+  { id: "ready", cards: [] },
+  { id: "done", cards: [{ id: "e1" }] },
+];
+assert.equal(moveSelection(navColumns, "a1", 1), "a2");
+assert.equal(moveSelection(navColumns, "a3", 1), "a1", "next wraps inside the column");
+assert.equal(moveSelection(navColumns, "a1", -1), "a3", "previous wraps inside the column");
+assert.equal(moveSelection(navColumns, "", 1), "a1");
+assert.equal(moveSelection(navColumns, "", -1), "e1", "unselected previous starts at the global last");
+assert.equal(moveSelection(navColumns, "missing", 1), "a1");
+assert.equal(moveSelection(navColumns, "a1", 0), "a1");
+
+assert.equal(moveHorizontal(navColumns, "a1", 1), "c1", "empty columns are skipped");
+assert.equal(moveHorizontal(navColumns, "a2", 1), "c2", "the row is preserved");
+assert.equal(moveHorizontal(navColumns, "a3", 1), "c2", "the row clamps to the target column");
+assert.equal(moveHorizontal(navColumns, "c2", 1), "e1");
+assert.equal(moveHorizontal(navColumns, "e1", 1), "e1", "the board edge keeps the selection");
+assert.equal(moveHorizontal(navColumns, "a1", -1), "a1");
+assert.equal(moveHorizontal(navColumns, "c1", -1), "a1", "previous skips empty columns");
+assert.equal(moveHorizontal(navColumns, "", 1), "a1");
+assert.equal(moveHorizontal(navColumns, "", -1), "e1");
+assert.equal(moveColumn(navColumns, "a2", 1), "c2", "Tab shares horizontal movement");
+
+assert.equal(moveEdge(navColumns, "a2", false), "a1");
+assert.equal(moveEdge(navColumns, "a2", true), "a3");
+assert.equal(moveEdge(navColumns, "c1", true), "c2");
+assert.equal(moveEdge(navColumns, "", false), "a1");
+assert.equal(moveEdge(navColumns, "", true), "e1");
+assert.equal(moveEdge([], "", false), "");
+
+assert.equal(jumpToColumn(navColumns, "a2", 2), "c2", "the row survives a column jump");
+assert.equal(jumpToColumn(navColumns, "a2", 1), "a2", "an empty target uses the nearest non-empty lane");
+assert.equal(jumpToColumn(navColumns, "a2", 3), "c2", "ties and empty targets prefer the nearest lane");
+assert.equal(jumpToColumn(navColumns, "a2", 4), "e1");
+assert.equal(jumpToColumn(navColumns, "a2", 9), "a2", "an out-of-range column keeps the selection");
+assert.equal(jumpToColumn([], "", 0), "");
+
+// Contrast is part of the read model so the palette cannot regress silently.
+assert.equal(contrastRatio("#000000", "#ffffff").toFixed(0), "21");
+assert.throws(() => contrastRatio("red", "#ffffff"), /rrggbb/);
+for (const [foreground, background] of TEXT_CONTRAST_PAIRS) {
+  const ratio = contrastRatio(BOARD_COLORS[foreground], BOARD_COLORS[background]);
+  assert.ok(ratio >= 4.5, `${foreground} on ${background} is ${ratio.toFixed(2)}:1; text needs 4.5:1`);
+}
+for (const [foreground, background] of BORDER_CONTRAST_PAIRS) {
+  const ratio = contrastRatio(BOARD_COLORS[foreground], BOARD_COLORS[background]);
+  assert.ok(ratio >= 3, `${foreground} on ${background} is ${ratio.toFixed(2)}:1; a control border needs 3:1`);
+}
+
 assert.equal(selectedCard(board, "B").column, "ready");
 assert.equal(selectedCard(board, "missing"), null);
 const childBoard = buildBoard({ rows: [childEpic], attemptIndex: indexAttempts([attempt("CHILD", { state: "running" })]) });
