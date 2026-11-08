@@ -105,6 +105,7 @@ done_ref=$(add_epic "Dummy delivered epic" done --metadata delivery.state=merged
 main_done_ref=$(add_epic "Dummy main-delivered epic" done)
 review_id=$(aven show "$review_ref" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).id))')
 main_done_id=$(aven show "$main_done_ref" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).id))')
+done_id=$(aven show "$done_ref" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).id))')
 printf 'dummy epics: %s %s %s %s %s %s\n' "$backlog_ref" "$planned_ref" "$progress_ref" "$review_ref" "$done_ref" "$main_done_ref"
 
 # Start an owned terminal in the unique core session. The merge action may peek
@@ -197,5 +198,75 @@ done
 sleep 1
 herdr-app shot "$root/kanban-handoff.png" >/dev/null
 [ -s "$root/kanban-handoff.png" ] || fail 'handoff screenshot was not written'
+
+# Ship PR is a separate handoff: the board opens a task-named tab with an
+# explicit ship prompt and never runs Git itself.
+herdr-app do mod.open --name aven-kanban >/dev/null
+sleep 2
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.ship >/dev/null
+ship_address=
+count=0
+while [ -z "$ship_address" ] && [ "$count" -lt 200 ]; do
+  if herdr-app ls > "$root/ls-ship.json" 2>/dev/null; then
+    ship_address=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); const tab = (space?.tabs || []).find((entry) => entry.name === name); const terminal = tab?.terminals?.[0]?.terminal; if (terminal) process.stdout.write(terminal);' "$root/ls-ship.json" "$space_id" "ship $review_ref")
+  fi
+  [ -n "$ship_address" ] && break
+  sleep 0.1
+  count=$((count + 1))
+done
+[ -n "$ship_address" ] || fail 'Ship PR did not open the main-space ship tab'
+count=0
+ship_seen=no
+while [ "$ship_seen" = no ] && [ "$count" -lt 100 ]; do
+  if hc read "$ship_address" 2>/dev/null | grep -Fq -- "$review_id"; then ship_seen=yes; break; fi
+  sleep 0.1
+  count=$((count + 1))
+done
+[ "$ship_seen" = yes ] || fail 'ship tab did not receive the ship prompt'
+hc read "$ship_address" 2>/dev/null | grep -Fq -- 'pull request' || fail 'ship prompt did not ask for a pull request'
+sleep 1
+herdr-app shot "$root/kanban-ship.png" >/dev/null
+[ -s "$root/kanban-ship.png" ] || fail 'ship screenshot was not written'
+
+# Archive is local presentation state keyed by workspace and immutable id; it
+# never edits Aven. Select the first DONE card, archive it, then archive all.
+herdr-app do mod.open --name aven-kanban >/dev/null
+sleep 2
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.archive >/dev/null
+count=0
+archived_ok=no
+while [ "$archived_ok" = no ] && [ "$count" -lt 100 ]; do
+  if node -e 'const fs = require("node:fs"); const [file, one, two, mode] = process.argv.slice(1); const shared = JSON.parse(fs.readFileSync(file, "utf8")); const archive = shared["aven-kanban.archived"] || []; const keys = ["default\u0000" + one, "default\u0000" + two]; const ok = mode === "all" ? keys.every((key) => archive.includes(key)) : archive.length >= 1 && keys.some((key) => archive.includes(key)); process.exit(ok ? 0 : 1);' "$app_home/shared.json" "$done_id" "$main_done_id" one; then
+    archived_ok=yes
+  fi
+  [ "$archived_ok" = yes ] && break
+  sleep 0.1
+  count=$((count + 1))
+done
+[ "$archived_ok" = yes ] || fail 'Archive did not persist the first DONE card'
+herdr-app do aven-kanban.archive-all >/dev/null
+count=0
+archived_all=no
+while [ "$archived_all" = no ] && [ "$count" -lt 100 ]; do
+  if node -e 'const fs = require("node:fs"); const [file, one, two, mode] = process.argv.slice(1); const shared = JSON.parse(fs.readFileSync(file, "utf8")); const archive = shared["aven-kanban.archived"] || []; const keys = ["default\u0000" + one, "default\u0000" + two]; const ok = mode === "all" ? keys.every((key) => archive.includes(key)) : archive.length >= 1 && keys.some((key) => archive.includes(key)); process.exit(ok ? 0 : 1);' "$app_home/shared.json" "$done_id" "$main_done_id" all; then
+    archived_all=yes
+  fi
+  [ "$archived_all" = yes ] && break
+  sleep 0.1
+  count=$((count + 1))
+done
+[ "$archived_all" = yes ] || fail 'Archive all did not persist every DONE card'
+sleep 1
+herdr-app shot "$root/kanban-archive.png" >/dev/null
+[ -s "$root/kanban-archive.png" ] || fail 'archive screenshot was not written'
+
 herdr-app status > "$root/final-status.json"
-printf 'native Kanban E2E ok\nboard: %s\nhandoff: %s\n' "$root/kanban-board.png" "$root/kanban-handoff.png"
+printf 'native Kanban E2E ok\nboard: %s\nhandoff: %s\nship: %s\narchive: %s\n' \
+  "$root/kanban-board.png" "$root/kanban-handoff.png" "$root/kanban-ship.png" "$root/kanban-archive.png"
