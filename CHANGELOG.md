@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix the Kanban **Merge** and **Ship PR** handoff choosing the wrong app space:
+  the selector now uses the live terminal of a space's first tab to find the
+  repository's primary checkout instead of the space's configured `folder`,
+  which is only where its new terminals start. A `$HOME`-foldered main space is
+  found again, and another project's space carrying a stale checkout folder can
+  no longer capture the handoff.
 - Paint the optional **Aven right** layout in the Kanban Board palette: the
   graphite near-black canvas and chrome, lilac accent, JetBrains Mono/Geist
   type, compact pane frames and focus border. The look is scoped to that layout

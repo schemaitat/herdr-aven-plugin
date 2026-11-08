@@ -326,15 +326,41 @@ function normalizedPath(value) {
   return String(value ?? "").replace(/\/+$/, "");
 }
 
+function insideFolder(value, folder) {
+  const path = normalizedPath(value);
+  return Boolean(path) && Boolean(folder) && (path === folder || path.startsWith(`${folder}/`));
+}
+
+// A space's `folder` is only where new terminals start, so it can point at
+// `$HOME` (or a stale checkout) while the space still shows the repository.
+// Herdr takes a space's repository from the terminal its first tab shows; read
+// that live pane folder instead of trusting `folder`.
+function firstPaneFolder(space, panes) {
+  const tabs = Array.isArray(space?.tabs) ? [...space.tabs] : [];
+  tabs.sort((left, right) => (left?.index ?? 0) - (right?.index ?? 0));
+  for (const tab of tabs) {
+    const pane = (panes ?? []).find((candidate) =>
+      candidate?.tab === tab?.id && typeof candidate?.cwd === "string" && candidate.cwd);
+    if (pane) return String(pane.cwd);
+  }
+  return "";
+}
+
 // Integration belongs in the primary checkout, not in whichever worktree space
-// the board was opened from. Prefer an already-visible space for that folder;
-// if none exists, fall back to the active space and run the tab there.
-export function selectMainSpace(spaces, root, activeSpaceId = "") {
+// the board was opened from. Prefer the visible space whose first tab actually
+// lives there; `space.folder` is only a fallback when no live pane data exists.
+// If no space matches, fall back to the active space and run the tab there.
+export function selectMainSpace(spaces, root, activeSpaceId = "", panes = []) {
   const list = spaces ?? [];
   const folder = normalizedPath(root);
-  const candidates = folder
-    ? list.filter((space) => normalizedPath(space?.folder) === folder)
+  const live = folder
+    ? list.filter((space) => insideFolder(firstPaneFolder(space, panes), folder))
     : [];
+  const candidates = live.length
+    ? live
+    : folder
+      ? list.filter((space) => normalizedPath(space?.folder) === folder)
+      : [];
   const active = candidates.find((space) => space?.id === activeSpaceId);
   if (active) return active;
   const repository = folder.split("/").filter(Boolean).pop() ?? "";

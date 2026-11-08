@@ -1,6 +1,6 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals } from "herdr";
+import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, panes, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
@@ -627,7 +627,7 @@ export default class AvenKanban extends View {
           throw new Error(`${epic.ref} has no complete durable approval (${issue}); rerun /approve.`);
         }
         const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
-        const target = selectMainSpace(spaces(), root, activeSpaceId);
+        const target = selectMainSpace(spaces(), root, activeSpaceId, panes());
         if (!target?.id) throw new Error("no main app space is available");
         const name = kind === "ship" ? shipTabName(epic) : mergeTabName(epic);
         const existing = (target.tabs ?? []).find((tab) => tab.name === name);

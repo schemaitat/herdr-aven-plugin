@@ -619,10 +619,12 @@ and not merge, force-push, rewrite history, or change Aven acceptance. Both
 re-read the exact durable approval before opening a tab. OpenCode is launched
 with its `--prompt` flag because Herdr appends the first message as a positional
 argument and a bare OpenCode positional is a project directory; other selected
-agents keep their existing first-message behavior. The main space is the
-visible space whose folder is the repository's primary checkout (the parent of
-the Git common directory); if none exists, the active space is used and the tab
-still starts in that primary checkout. Clicking again reuses the task-named tab.
+agents keep their existing first-message behavior. The main space is the visible
+space whose first tab's terminal lives in the repository's primary checkout (the
+parent of the Git common directory), because a space's configured folder is only
+where its new terminals start and can point at `$HOME` or a stale checkout; if
+no space matches, the active space is used and the tab still starts in that
+primary checkout. Clicking again reuses the task-named tab.
 Merge is a handoff to the existing
 [finish workflow](#finish-a-dispatched-worktree), not a one-click Git mutation:
 `/ha-merge` requires a durable `/approve` result and clean worktrees. Its
