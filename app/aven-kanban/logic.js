@@ -11,6 +11,12 @@ export const CREATED_FILTERS = [
   { id: "1mo", label: "1mo", days: 30 },
   { id: "1y", label: "1y", days: 365 },
 ];
+// LLM summaries share one contract with `aven-dispatch describe`. Only long
+// descriptions are summarized; short text keeps its existing presentation.
+export const SUMMARY_LABEL = "LLM SUMMARY";
+export const SUMMARY_MIN_CHARS = 100;
+export const SUMMARY_LIMIT = 1200;
+export const SUMMARY_CARD_LIMIT = 240;
 // Board order mirrors the reference layout: Aven keeps one intake column where
 // the layout has none, then the three action columns and the archive column.
 export const BOARD_COLUMNS = [
@@ -123,7 +129,8 @@ export function detailIsCurrent(cached, workspace, row) {
 export function detailNeedsRefresh(cached, workspace, row) {
   if (!detailIsCurrent(cached, workspace, row)) return true;
   return cached.detail?.task?.status === "done"
-    || Boolean(cached.detail?.metadata?.["approval.state"]);
+    || Boolean(cached.detail?.metadata?.["approval.state"])
+    || Boolean(cached.detail?.metadata?.["summary.llm"]);
 }
 
 // Fresh-read gate for the merge handoff. Returns a human-readable list of the
@@ -145,6 +152,48 @@ function phaseProgress(children) {
   return { complete, total };
 }
 
+function normalizedDescription(description) {
+  return String(description ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
+// 32-bit FNV-1a over UTF-16 code units, matching the Rust producer.
+export function summaryDigest(description) {
+  let hash = 0x811c9dc5;
+  const text = normalizedDescription(description);
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash ^ text.charCodeAt(index)) >>> 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+export function summaryNeeded(description) {
+  return [...normalizedDescription(description)].length > SUMMARY_MIN_CHARS;
+}
+
+function clampText(text, limit) {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+export function storedSummary(metadata, description, limit = SUMMARY_LIMIT) {
+  const text = String(metadata?.["summary.llm"] ?? "").trim();
+  if (!text) return null;
+  const digest = String(metadata?.["summary.llm.digest"] ?? "").trim();
+  const stale = Boolean(digest) && digest !== summaryDigest(description);
+  return { text: clampText(text, limit), stale };
+}
+
+export function taskSummary(task, limit = SUMMARY_LIMIT) {
+  if (!summaryNeeded(task?.description)) return null;
+  const summary = storedSummary(task?.metadata, task?.description, limit);
+  return summary ? { ...summary, label: SUMMARY_LABEL } : null;
+}
+
+export function cardSummary(task) {
+  return taskSummary(task, SUMMARY_CARD_LIMIT);
+}
+
 // Normalize only the fields the board renders. In particular, dispatcher
 // pending_prompt and Aven descriptions/notes never enter the view model.
 export function normalizeEpic(row, detail) {
@@ -160,6 +209,9 @@ export function normalizeEpic(row, detail) {
     .filter(Boolean);
   const status = String(hydrated && detailTask.status ? detailTask.status : (row.status ?? "unknown"));
   const approval = approvalMarker(hydrated ? metadata : {});
+  const description = hydrated && typeof detail?.description === "string" ? detail.description : "";
+  const summary = hydrated ? taskSummary({ description, metadata }) : null;
+  const card = hydrated ? cardSummary({ description, metadata }) : null;
   return {
     id,
     ref,
@@ -171,6 +223,9 @@ export function normalizeEpic(row, detail) {
     available_at: String(row.available_at ?? ""),
     hydrated,
     mergedOnMain: row.mergedOnMain === true,
+    summary: summary?.text ?? "",
+    summaryCard: card?.text ?? "",
+    summaryStale: Boolean(summary?.stale),
     planWorkedOut: hydrated && metadata["sdd.plan-worked-out"] === "true",
     approvalState: approval.state,
     approvalId: approval.id,

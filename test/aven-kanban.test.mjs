@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_LABEL,
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard, cardForEpic,
-  createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
+  cardSummary, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
   filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs, projectChips, selectAttempt,
-  selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  selectedCard, selectMainSpace, shipPrompt, shipTabName, summaryDigest, summaryNeeded, taskSummary, terminalName,
+  upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
@@ -105,6 +106,47 @@ const withPhases = rawEpic("PHASES", "active", { epic_children: [
 ] });
 assert.deepEqual(normalizeEpic(withPhases).phases, { complete: 2, total: 3 });
 assert.deepEqual(normalizeEpic(withPhases).taskIds, ["PHASES", "A", "B", "C"]);
+
+// LLM summaries use the same contract as the sidebar: long descriptions only,
+// a shared digest for staleness, and a bounded card presentation.
+const longText = "a".repeat(101);
+assert.equal(SUMMARY_LABEL, "LLM SUMMARY");
+assert.equal(summaryDigest("hello"), "4f9f2cab");
+assert.equal(summaryDigest("héllo ☃"), "f57826aa");
+assert.equal(summaryNeeded("a".repeat(100)), false);
+assert.equal(summaryNeeded("a".repeat(101)), true);
+assert.equal(taskSummary({ description: "short", metadata: { "summary.llm": "x" } }), null, "the shared helper keeps short text raw");
+const summaryRow = rawEpic("SUM", "todo", {});
+const summaryDetail = {
+  task: { ...summaryRow },
+  description: longText,
+  metadata: { "summary.llm": "A durable summary.", "summary.llm.digest": summaryDigest(longText) },
+};
+const summarized = normalizeEpic(summaryRow, summaryDetail);
+assert.equal(summarized.summary, "A durable summary.");
+assert.equal(summarized.summaryCard, "A durable summary.");
+assert.equal(summarized.summaryStale, false);
+const staleSummary = normalizeEpic(summaryRow, {
+  ...summaryDetail,
+  metadata: { ...summaryDetail.metadata, "summary.llm.digest": "deadbeef" },
+});
+assert.equal(staleSummary.summaryStale, true);
+assert.equal(staleSummary.summary, "A durable summary.", "a stale summary is still shown");
+assert.equal(normalizeEpic(summaryRow, { ...summaryDetail, description: "short" }).summary, "", "short descriptions never surface a summary");
+assert.equal(normalizeEpic(summaryRow).summary, "", "unhydrated cards have no summary");
+assert.equal(
+  cardSummary({ description: longText, metadata: { "summary.llm": "x".repeat(500), "summary.llm.digest": summaryDigest(longText) } }).text.length,
+  SUMMARY_CARD_LIMIT,
+  "card summaries are bounded",
+);
+const summaryCard = cardForEpic(summarized, selectAttempt([], "SUM"));
+assert.equal(summaryCard.summaryCard, "A durable summary.");
+assert.equal(summaryCard.column, "backlog");
+assert.equal(
+  detailNeedsRefresh({ workspace: "default", updatedAt: "t1", detail: { task: { status: "active" }, metadata: { "summary.llm": "x" } } }, "default", { updated_at: "t1" }),
+  true,
+  "summary metadata is re-read even when the second-granular timestamp matches",
+);
 
 // Every lifecycle column and the independent acceptance/execution/delivery facts.
 assert.equal(card("inbox").column, "backlog");

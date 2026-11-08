@@ -2,7 +2,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
   filterArchived, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, nextMove, openArgs, projectChips,
@@ -19,6 +19,7 @@ const ARCHIVE_SHARED = "aven-kanban.archived";
 const DETAIL_METADATA = [
   "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
   "delivery.state", "delivery.target", "delivery.obligation",
+  "summary.llm", "summary.llm.digest", "summary.llm.generated-at",
 ];
 
 // The reference Board palette. The overlay keeps its own look instead of
@@ -76,6 +77,7 @@ function safeDetail(payload) {
         status: String(child?.status ?? ""), open: child?.open !== false,
       })) : [],
     },
+    description: String(payload?.description ?? ""),
     metadata,
   };
 }
@@ -782,6 +784,11 @@ export default class AvenKanban extends View {
           .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(10.5).text_color(C.dim).child(card.ref))
           .child(mono(10, whenColor, this.cardWhen(card))))
         .child(div().font_family(SANS).text_size(12.5).text_color(C.text).child(card.title))
+        .when(Boolean(card.summaryCard), (el) => el.child(v_flex().gap(1).pt(1)
+          .child(h_flex().gap(5).items_center()
+            .child(mono(9, C.accent, SUMMARY_LABEL))
+            .when(card.summaryStale, (row) => row.child(mono(9, C.dim, "stale"))))
+          .child(div().font_family(SANS).text_size(10.5).text_color(C.soft).child(card.summaryCard))))
         .when(card.column === "needs_you", (el) => el.child(v_flex().px(8).py(6).rounded(4).bg(C.youAsk)
           .child(mono(9.5, C.you, "ASKS YOU"))
           .child(div().font_family(SANS).text_size(11.5).text_color(C.soft)

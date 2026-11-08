@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add on-demand LLM summaries for long task descriptions. `d l` (or `z l`) in
+  Aven runs `aven-dispatch describe --llm`, which summarizes the focused task
+  and up to 20 long phase descriptions with the installed OpenCode CLI and
+  stores `summary.llm`, `summary.llm.digest`, and `summary.llm.generated-at` in
+  Aven metadata. The Aven-right sidebar and Kanban board show the text under an
+  **LLM SUMMARY** label for descriptions longer than 100 characters, mark a
+  changed description **stale**, and never generate during a refresh. A plain
+  `describe` is read-only.
 - Paint the optional **Aven right** layout in the Kanban Board palette: the
   graphite near-black canvas and chrome, lilac accent, JetBrains Mono/Geist
   type, compact pane frames and focus border. The look is scoped to that layout
