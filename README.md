@@ -549,6 +549,15 @@ facts instead of creating another task store:
 | **Ready to land** | Needs-review/completed execution awaiting approval or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
 | **Done** | Delivered or legacy accepted done epics, terminal work whose exact attempt result is verified on local main, and canceled epics. |
 
+Startup paints the board as soon as the bounded epic, scheduled-epic, and
+dispatcher list reads finish. Epic details and the read-only local-main
+ancestry check then enrich the same cards in the background through a
+four-worker limit; a note above the columns says when metadata or delivery
+evidence is still loading. **Merge** and **Ship PR** still re-read the exact
+approval before opening a handoff, and **Archive** stays closed until the board
+and card are fully classified, so a provisional column can never hide work that
+enrichment would reclassify.
+
 The today strip counts **Landed today** (with seven daily bars), **Needs you**,
 **Working**, **Ready to land**, and **Open**. **Next move** quotes the oldest
 needs-you card and offers **Answer** and **Go to agent**. Cards show the agent

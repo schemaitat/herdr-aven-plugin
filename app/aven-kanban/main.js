@@ -3,23 +3,21 @@ import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
-  buildBoard, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
-  filterArchived, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, markMergedOnMain,
-  mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, nextMove, openArgs, projectChips,
-  selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
+  enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, hydrateDetails, indexAttempts, isLiveEpicTerminal,
+  landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
+  mergeTabName, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard, selectMainSpace,
+  shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const QUESTION_MS = 5000;
-const METADATA_WORKERS = 4;
+const READ_WORKERS = 4;
+const EVIDENCE_WORKERS = 4;
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
 const ARCHIVE_SHARED = "aven-kanban.archived";
-const DETAIL_METADATA = [
-  "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
-  "delivery.state", "delivery.target", "delivery.obligation",
-];
 
 // The reference Board palette. The overlay keeps its own look instead of
 // depending on the app theme, as the layout does.
@@ -47,37 +45,6 @@ function parseList(result, label) {
   const value = parse(result, label);
   if (!Array.isArray(value)) throw new Error(`${label}: expected a JSON list`);
   return value;
-}
-async function mapLimit(items, worker) {
-  const results = new Array(items.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(METADATA_WORKERS, items.length) }, async () => {
-    for (;;) {
-      const index = next;
-      next += 1;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index]);
-    }
-  }));
-  return results;
-}
-function safeDetail(payload) {
-  const task = payload?.task ?? {};
-  const metadata = {};
-  for (const key of DETAIL_METADATA) {
-    if (typeof payload?.metadata?.[key] === "string") metadata[key] = payload.metadata[key];
-  }
-  return {
-    task: {
-      id: String(task.id ?? ""), ref: String(task.ref ?? ""), title: String(task.title ?? ""),
-      status: String(task.status ?? ""), is_epic: task.is_epic === true,
-      epic_children: Array.isArray(task.epic_children) ? task.epic_children.map((child) => ({
-        id: String(child?.id ?? ""), ref: String(child?.ref ?? ""), title: String(child?.title ?? ""),
-        status: String(child?.status ?? ""), open: child?.open !== false,
-      })) : [],
-    },
-    metadata,
-  };
 }
 const firstLine = (value) => ((value ?? "").split("\n").map((line) => line.trim()).find(Boolean) ?? "").slice(0, 160);
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -109,8 +76,14 @@ export default class AvenKanban extends View {
     this.refreshing = false;
     this.asking = false;
     this.now = Date.now();
-    this.state = { loading: true, rows: [], attempts: [], liveAgents: [], error: "", coverageError: "", stale: false };
+    this.state = {
+      loading: true, rows: [], attempts: [], liveAgents: [], error: "", coverageError: "", stale: false,
+      enriching: false, evidencePending: false,
+    };
     this.details = new Map();
+    this.sources = null;
+    this.mainMerged = new Set();
+    this.coverageError = "";
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
     this.mainEvidence = { head: "", entries: new Map() };
@@ -198,10 +171,85 @@ export default class AvenKanban extends View {
     } catch { return folder; }
   }
 
+  liveAgentsSnapshot() {
+    return (agents() ?? []).map((agent) => ({
+      address: String(agent?.address ?? ""),
+      status: String(agent?.status ?? ""),
+      space: String(agent?.space ?? ""),
+      tab: String(agent?.tab ?? ""),
+      app: String(agent?.app ?? ""),
+      program: agent?.program ?? null,
+    }));
+  }
+
+  // The bounded list reads are the only prerequisite for first paint. Details
+  // and Git evidence enrich the same rows afterwards.
+  async readSources() {
+    const workspace = this.workspace();
+    const cwd = await this.rootFolder(this.spaceFolder());
+    const [availableResult, upcomingResult, attemptsResult] = await Promise.all([
+      exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
+      exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
+      exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
+    ]);
+    const available = parseList(availableResult, "Epics");
+    const upcoming = parseList(upcomingResult, "Upcoming epics");
+    assertBoardCoverage({ available: available.length, upcoming: upcoming.length });
+    const rawAttempts = parseList(attemptsResult, "Dispatcher attempts");
+    assertBoardCoverage({ attempts: rawAttempts.length });
+    const baseRows = mergeEpicRows({ available, upcoming });
+    assertBoardCoverage({ epics: baseRows.length });
+    const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
+    for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
+    const attemptIndex = indexAttempts(rawAttempts);
+    return { workspace, cwd, available, upcoming, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
+  }
+
+  mergedRows() {
+    const sources = this.sources;
+    if (!sources) return [];
+    const details = {};
+    for (const row of sources.baseRows) {
+      const cached = this.details.get(detailCacheKey(sources.workspace, row.id));
+      if (detailIsCurrent(cached, sources.workspace, row)) details[row.id] = cached.detail;
+    }
+    return markMergedOnMain(
+      mergeEpicRows({ available: sources.available, upcoming: sources.upcoming, details }),
+      this.mainMerged,
+    );
+  }
+
+  publishRows(cx, flags = {}) {
+    if (!this.sources || this.closed) return;
+    const rows = this.mergedRows();
+    // A project filter that no longer matches any epic is cleared rather than
+    // presenting an unexplained empty board.
+    if (this.projectFilter && !rows.some((row) => row.project === this.projectFilter)) {
+      this.projectFilter = "";
+      setShared("aven-kanban.project-filter", "");
+    }
+    this.state = {
+      loading: false, rows, attempts: this.sources.attempts, attemptIndex: this.sources.attemptIndex,
+      liveAgents: this.liveAgentsSnapshot(), error: "", stale: false,
+      coverageError: this.coverageError,
+      enriching: flags.enriching === true, evidencePending: flags.evidencePending === true,
+    };
+    this.retainSelection(cx);
+  }
+
   // Read-only delivery evidence for terminal cards. Exact attempt commits are
   // checked against one resolved local main head; this never mutates Aven or Git.
+  // The checks run in the same small bounded pool as metadata reads, and each
+  // commit's ancestry is cached for the current main head.
   async evidenceFromMain(cwd, rows, attemptIndex) {
     if (!cwd) return { merged: new Set(), error: "Local main is unavailable; delivery ancestry was not checked." };
+    const terminal = [];
+    for (const row of rows) {
+      if (row.status !== "done" && row.status !== "canceled") continue;
+      const attempt = selectAttempt(attemptIndex.get(row.id) ?? [], row.id).attempt;
+      if (attempt) terminal.push({ row, attempt });
+    }
+    if (!terminal.length) return { merged: new Set(), error: "" };
     const headResult = await exec("git", ["-C", cwd, "rev-parse", "--verify", "main"]);
     if (headResult.code !== 0) {
       const detail = String(headResult.stderr ?? "").trim();
@@ -210,10 +258,7 @@ export default class AvenKanban extends View {
     const head = headResult.stdout.trim();
     if (this.mainEvidence.head !== head) this.mainEvidence = { head, entries: new Map() };
     const merged = new Set();
-    for (const row of rows) {
-      if (row.status !== "done" && row.status !== "canceled") continue;
-      const attempt = selectAttempt(attemptIndex.get(row.id) ?? [], row.id).attempt;
-      if (!attempt) continue;
+    await mapLimit(terminal, EVIDENCE_WORKERS, async ({ row, attempt }) => {
       const commits = new Set();
       if (attempt.branch) {
         const branch = await exec("git", ["-C", cwd, "rev-parse", "--verify", `${attempt.branch}^{commit}`]);
@@ -232,7 +277,7 @@ export default class AvenKanban extends View {
         }
         if (contained) { merged.add(row.id); break; }
       }
-    }
+    });
     return { merged, error: "" };
   }
 
@@ -243,72 +288,44 @@ export default class AvenKanban extends View {
     this.notify(cx);
     cx.spawn(async (taskCx) => {
       try {
-        const workspace = this.workspace();
-        const cwd = await this.rootFolder(this.spaceFolder());
-        const [availableResult, upcomingResult, attemptsResult] = await Promise.all([
-          exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
-          exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
-          exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
-        ]);
-        const available = parseList(availableResult, "Epics");
-        const upcoming = parseList(upcomingResult, "Upcoming epics");
-        assertBoardCoverage({ available: available.length, upcoming: upcoming.length });
-        const rawAttempts = parseList(attemptsResult, "Dispatcher attempts");
-        assertBoardCoverage({ attempts: rawAttempts.length });
-        const baseRows = mergeEpicRows({ available, upcoming });
-        assertBoardCoverage({ epics: baseRows.length });
-        const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
-        for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
-        const needed = baseRows.filter((row) =>
-          detailNeedsRefresh(this.details.get(detailCacheKey(workspace, row.id)), workspace, row));
-        const failures = [];
-        await mapLimit(needed, async (row) => {
-          const key = detailCacheKey(workspace, row.id);
-          try {
-            const result = await exec("aven", detailArgs(workspace, row.ref), cwd ? { cwd } : undefined);
-            const detail = safeDetail(parse(result, `Epic ${row.ref}`));
-            if (detail.task.id !== row.id || !detail.task.is_epic) throw new Error("identity mismatch");
-            this.details.set(key, { workspace, updatedAt: row.updated_at, detail });
-          } catch (error) {
+        const sources = await this.readSources();
+        this.sources = sources;
+        this.mainMerged = new Set();
+        this.coverageError = "";
+        const needed = sources.baseRows.filter((row) =>
+          detailNeedsRefresh(this.details.get(detailCacheKey(sources.workspace, row.id)), sources.workspace, row)).length;
+        // Publish provisional cards now; enrichment continues below.
+        this.publishRows(taskCx, { enriching: needed > 0 });
+        const hydration = await hydrateDetails({
+          rows: sources.baseRows,
+          workspace: sources.workspace,
+          limit: READ_WORKERS,
+          cached: (row) => this.details.get(detailCacheKey(sources.workspace, row.id)),
+          read: async (row) => parse(
+            await exec("aven", detailArgs(sources.workspace, row.ref), sources.cwd ? { cwd: sources.cwd } : undefined),
+            `Epic ${row.ref}`,
+          ),
+          publish: (row, snapshot) => {
+            const key = detailCacheKey(sources.workspace, row.id);
             // A failed read must not leave an older approval marker usable.
-            this.details.delete(key);
-            failures.push(`${row.ref}: ${message(error)}`);
-          }
+            if (snapshot) this.details.set(key, snapshot);
+            else this.details.delete(key);
+            this.publishRows(taskCx, { enriching: true });
+          },
         });
-        const details = {};
-        for (const row of baseRows) {
-          const cached = this.details.get(detailCacheKey(workspace, row.id));
-          if (detailIsCurrent(cached, workspace, row)) details[row.id] = cached.detail;
-        }
-        const baseWithDetails = mergeEpicRows({ available, upcoming, details });
-        const attemptIndex = indexAttempts(rawAttempts);
-        const attempts = [...attemptIndex.values()].flat();
-        const mainEvidence = await this.evidenceFromMain(cwd, baseWithDetails, attemptIndex);
-        const rows = markMergedOnMain(baseWithDetails, mainEvidence.merged);
-        const liveAgents = (agents() ?? []).map((agent) => ({
-          address: String(agent?.address ?? ""),
-          status: String(agent?.status ?? ""),
-          space: String(agent?.space ?? ""),
-          tab: String(agent?.tab ?? ""),
-          app: String(agent?.app ?? ""),
-          program: agent?.program ?? null,
-        }));
+        this.publishRows(taskCx, { evidencePending: true });
+        const mainEvidence = await this.evidenceFromMain(sources.cwd, this.mergedRows(), sources.attemptIndex);
+        this.mainMerged = mainEvidence.merged;
         const coverage = [];
-        if (failures.length) coverage.push(`${failures.length} epic metadata read(s) failed: ${failures.slice(0, 3).join("; ")}`);
+        if (hydration.failures.length) coverage.push(`${hydration.failures.length} epic metadata read(s) failed: ${hydration.failures.slice(0, 3).join("; ")}`);
         if (mainEvidence.error) coverage.push(mainEvidence.error);
-        // A project filter that no longer matches any epic is cleared rather
-        // than presenting an unexplained empty board.
-        if (this.projectFilter && !rows.some((row) => row.project === this.projectFilter)) {
-          this.projectFilter = "";
-          setShared("aven-kanban.project-filter", "");
-        }
-        this.state = {
-          loading: false, rows, attempts, attemptIndex, liveAgents, error: "", stale: false,
-          coverageError: coverage.join("; "),
-        };
-        this.retainSelection(taskCx);
+        this.coverageError = coverage.join("; ");
+        this.publishRows(taskCx, {});
       } catch (error) {
-        this.state = { ...this.state, loading: false, error: message(error), stale: this.state.rows.length > 0 };
+        this.state = {
+          ...this.state, loading: false, error: message(error), stale: this.state.rows.length > 0,
+          enriching: false, evidencePending: false,
+        };
         this.notify(taskCx);
       } finally {
         this.refreshing = false;
@@ -657,15 +674,19 @@ export default class AvenKanban extends View {
   ship(epic, cx) { this.handoff(epic, "ship", cx); }
 
   archive(card, cx) {
-    if (card?.column !== "done") return;
+    // Archive keys are immutable IDs, so a provisional or unhydrated card must
+    // never be archived under a classification that enrichment may change.
+    if (!cardArchiveable(card, this.state)) return;
     this.archived.add(archiveKey(this.workspace(), card.id));
     setShared(ARCHIVE_SHARED, [...this.archived]);
     this.questions.delete(card.id);
     this.retainSelection(cx);
   }
   archiveAll(cx) {
+    if (enrichmentPending(this.state)) return;
     const done = this.columns().find((column) => column.id === "done")?.cards ?? [];
     for (const card of done) {
+      if (!cardArchiveable(card, this.state)) continue;
       this.archived.add(archiveKey(this.workspace(), card.id));
       this.questions.delete(card.id);
     }
@@ -745,7 +766,8 @@ export default class AvenKanban extends View {
     }
     if (card.column === "done") {
       return h_flex().flex_wrap().gap(6)
-        .child(this.btn(`aven-kanban-archive-${card.id}`, "Archive", "plain", (clickCx) => this.archive(card, clickCx)));
+        .when(cardArchiveable(card, this.state), (el) => el.child(
+          this.btn(`aven-kanban-archive-${card.id}`, "Archive", "plain", (clickCx) => this.archive(card, clickCx))));
     }
     const actions = [];
     if (card.mergeable) {
@@ -814,7 +836,7 @@ export default class AvenKanban extends View {
         .child(mono(11, C.dim, column.title))
         .child(div().px(5).rounded(8).bg(C.raised).font_family(MONO).text_size(10).text_color(C.muted).child(String(column.cards.length)))
         .child(div().flex_1())
-        .when(column.id === "done" && column.cards.length > 0, (el) => el.child(
+        .when(column.id === "done" && column.cards.some((card) => cardArchiveable(card, this.state)), (el) => el.child(
           this.btn("aven-kanban-archive-all", "Archive all", "plain", (clickCx) => this.archiveAll(clickCx)))))
       .child(v_flex().id(`aven-kanban-list-${column.id}`).w_full().flex_1().min_h(0).gap(8).overflow_y_scrollbar()
         .children(column.cards.map((card) => this.card(card, cx)))
@@ -949,6 +971,8 @@ export default class AvenKanban extends View {
         .children(next ? [this.banner(next, cx)] : [])
         .when(Boolean(this.state.error), (el) => el.child(mono(10, C.red, `Aven: ${this.state.error}`)))
         .when(Boolean(this.state.coverageError), (el) => el.child(mono(10, C.red, `Incomplete metadata: ${this.state.coverageError}`)))
+        .when(this.state.enriching, (el) => el.child(mono(9.5, C.dim, "Cards are visible now; loading epic metadata and plan badges…")))
+        .when(this.state.evidencePending, (el) => el.child(mono(9.5, C.dim, "Checking local main for delivered work…")))
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
