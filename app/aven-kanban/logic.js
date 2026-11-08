@@ -51,7 +51,7 @@ export const TEXT_CONTRAST_PAIRS = [
   ["land", "card"], ["done", "card"], ["red", "card"], ["dim", "youAsk"],
 ];
 export const BORDER_CONTRAST_PAIRS = [
-  ["accentDim", "card"], ["accentDim", "main"],
+  ["accent", "card"], ["accentDim", "card"], ["accentDim", "main"],
 ];
 
 function channel(value) {

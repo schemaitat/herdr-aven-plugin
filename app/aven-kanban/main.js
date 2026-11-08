@@ -2,11 +2,11 @@ import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
+  ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, archiveKey, assertBoardCoverage, blockedAddress, boardStats,
   buildBoard, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
-  filterArchived, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, markMergedOnMain,
-  mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveSelection, nextMove, openArgs, projectChips,
-  selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  filterArchived, filterRowsByCreated, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, markMergedOnMain,
+  mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs, mergeTabName, moveColumn, moveEdge, moveSelection,
+  nextMove, openArgs, projectChips, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -21,15 +21,10 @@ const DETAIL_METADATA = [
   "delivery.state", "delivery.target", "delivery.obligation",
 ];
 
-// The reference Board palette. The overlay keeps its own look instead of
-// depending on the app theme, as the layout does.
-const C = {
-  top: "#101012", side: "#0f0f11", main: "#121214", card: "#1a1a1d", raised: "#242328", hover: "#1f1f23",
-  line: "#1e1e20", line2: "#2a2a30", text: "#e4e4e7", soft: "#c8c8cc", muted: "#8a898e", dim: "#56555b",
-  accent: "#b4a0db", accentDim: "#625187",
-  you: "#ffb406", youBg: "#1f1a10", youCard: "#1b1912", youAsk: "#241f12", youLine: "#4a3a12",
-  work: "#8f7fd1", land: "#53cf91", landBg: "#12201a", landLine: "#1d3a2c", done: "#6fb3f2", red: "#e0707f",
-};
+// The reference Board palette lives in the read model so its WCAG contrast is
+// unit-tested. The overlay keeps its own look instead of depending on the app
+// theme, as the layout does.
+const C = BOARD_COLORS;
 const TONES = { dim: C.dim, attention: C.you, working: C.work, land: C.land, done: C.done };
 const MONO = "JetBrains Mono";
 const SANS = "Geist";
@@ -126,6 +121,8 @@ export default class AvenKanban extends View {
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
     this.dispatchMenuEpicId = null;
+    this.pendingFirst = false;
+    this.helpOpen = false;
     this.folder = String(props()?.cwd ?? "");
     this.handle = cx.focus_handle();
     this.handle.focus();
@@ -164,23 +161,78 @@ export default class AvenKanban extends View {
       for (;;) {
         const command = await nextCommand();
         if (this.closed) return;
-        const name = String(command).split(".").pop();
-        if (name === "close") this.close();
-        else if (name === "refresh") this.refresh(cx);
-        else if (name === "next") this.select(1, cx);
-        else if (name === "previous") this.select(-1, cx);
-        else if (name === "open") this.openSelected(cx);
-        else if (name === "go") this.goSelected(cx);
-        else if (name === "answer") this.answerSelected(cx);
-        else if (name === "ship") this.shipSelected(cx);
-        else if (name === "archive") this.archiveSelected(cx);
-        else if (name === "archive-all") this.archiveAll(cx);
-        else if (name === "dispatch") this.toggleDispatch(cx);
-        else if (name === "plan" || name === "plan-implement" || name === "implement") this.dispatchSelected(name, cx);
-        else if (name === "merge") this.mergeSelected(cx);
-        else cx.notify();
+        this.command(String(command).split(".").pop(), cx);
       }
     });
+  }
+
+  // One dispatcher for both keys.json actions and the focused on_key_down
+  // fallback, so the two paths can never drift apart.
+  command(name, cx) {
+    if (this.closed) return;
+    // Esc inspects the pending prefix itself; every other command consumes it.
+    if (name !== "first-prefix" && name !== "close") this.pendingFirst = false;
+    if (name === "close") this.escape(cx);
+    else if (name === "help") this.toggleHelp(cx);
+    else if (name === "refresh") this.refresh(cx);
+    else if (name === "next") this.select(1, cx);
+    else if (name === "previous") this.select(-1, cx);
+    else if (name === "column-next") this.selectColumn(1, cx);
+    else if (name === "column-previous") this.selectColumn(-1, cx);
+    else if (name === "first-prefix") this.firstPrefix(cx);
+    else if (name === "first") this.selectEdge(false, cx);
+    else if (name === "last") this.selectEdge(true, cx);
+    else if (/^column-[1-5]$/.test(name)) this.jumpColumn(Number(name.slice(-1)) - 1, cx);
+    else if (name === "open") this.openSelected(cx);
+    else if (name === "go") this.goSelected(cx);
+    else if (name === "answer") this.answerSelected(cx);
+    else if (name === "ship") this.shipSelected(cx);
+    else if (name === "archive") this.archiveSelected(cx);
+    else if (name === "archive-all") this.archiveAll(cx);
+    else if (name === "dispatch") this.toggleDispatch(cx);
+    else if (name === "plan" || name === "plan-implement" || name === "implement") this.dispatchSelected(name, cx);
+    else if (name === "merge") this.mergeSelected(cx);
+    else cx.notify();
+  }
+
+  escape(cx) {
+    if (this.helpOpen) { this.helpOpen = false; this.pendingFirst = false; this.notify(cx); }
+    else if (this.pendingFirst) { this.pendingFirst = false; this.notify(cx); }
+    else if (this.dispatchMenuEpicId) { this.dispatchMenuEpicId = null; this.notify(cx); }
+    else this.close();
+  }
+
+  toggleHelp(cx) {
+    this.helpOpen = !this.helpOpen;
+    this.notify(cx);
+  }
+
+  firstPrefix(cx) {
+    if (this.pendingFirst) {
+      this.pendingFirst = false;
+      this.selectEdge(false, cx);
+      return;
+    }
+    this.pendingFirst = true;
+    this.notify(cx);
+  }
+
+  selectColumn(delta, cx) {
+    this.selectedId = moveColumn(this.columns(), this.selectedId, delta);
+    this.dispatchMenuEpicId = null;
+    this.notify(cx);
+  }
+
+  selectEdge(last, cx) {
+    this.selectedId = moveEdge(this.columns(), this.selectedId, last);
+    this.dispatchMenuEpicId = null;
+    this.notify(cx);
+  }
+
+  jumpColumn(index, cx) {
+    this.selectedId = jumpToColumn(this.columns(), this.selectedId, index);
+    this.dispatchMenuEpicId = null;
+    this.notify(cx);
   }
 
   async rootFolder(folder) {
@@ -353,12 +405,14 @@ export default class AvenKanban extends View {
   }
 
   select(delta, cx) {
+    this.pendingFirst = false;
     this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
     this.dispatchMenuEpicId = null;
     this.notify(cx);
   }
 
   selectCard(card, cx) {
+    this.pendingFirst = false;
     this.selectedId = card.id;
     this.dispatchMenuEpicId = null;
     this.notify(cx);
@@ -771,7 +825,7 @@ export default class AvenKanban extends View {
     const columnTone = TONES[BOARD_COLUMNS.find((column) => column.id === card.column)?.tone ?? "dim"] ?? C.dim;
     const whenColor = card.column === "needs_you" ? C.you : card.column === "ready" ? C.land : C.dim;
     return div().id(`aven-kanban-card-${card.id}`).w_full().flex_none().flex().flex_row().rounded(6).overflow_hidden()
-      .bg(card.column === "needs_you" ? C.youCard : C.card).border(1).border_color(selected ? C.accentDim : C.line)
+      .bg(card.column === "needs_you" ? C.youCard : C.card).border(1).border_color(selected ? C.accent : C.line)
       .cursor_pointer().hover((style) => style.bg(C.hover))
       .on_click((_event, clickCx) => this.selectCard(card, clickCx ?? cx))
       .child(div().w(3).flex_none().bg(columnTone))
@@ -797,7 +851,7 @@ export default class AvenKanban extends View {
         .when(this.dispatchMenuEpicId === card.id, (el) => el.child(this.dispatchMenu(card, cx))));
   }
 
-  column(column, cx) {
+  column(column, cx, focused = false) {
     const columnTone = TONES[column.tone] ?? C.dim;
     const empty = {
       backlog: "No unstarted epics.",
@@ -807,12 +861,14 @@ export default class AvenKanban extends View {
       done: "All archived. Nice.",
     }[column.id] ?? "No epics.";
     return v_flex().id(`aven-kanban-column-${column.id}`).flex_1().min_w(0).min_h(0).gap(8)
-      .child(h_flex().w_full().h(22).flex_none().gap(7).items_center()
+      .child(h_flex().w_full().h(24).flex_none().gap(7).items_center().border_b(1)
+        .border_color(focused ? C.accent : C.line)
         .child(column.id === "needs_you"
           ? div().w(7).h(7).rounded(4).bg(columnTone).loop("opacity", { from: 0.35, to: 1, period: 1200 })
           : div().w(7).h(7).rounded(4).bg(columnTone))
-        .child(mono(11, C.dim, column.title))
-        .child(div().px(5).rounded(8).bg(C.raised).font_family(MONO).text_size(10).text_color(C.muted).child(String(column.cards.length)))
+        .child(mono(11, focused ? C.text : C.muted, column.title))
+        .child(div().px(5).rounded(8).bg(focused ? C.accentDim : C.raised)
+          .font_family(MONO).text_size(10).text_color(focused ? C.text : C.muted).child(String(column.cards.length)))
         .child(div().flex_1())
         .when(column.id === "done" && column.cards.length > 0, (el) => el.child(
           this.btn("aven-kanban-archive-all", "Archive all", "plain", (clickCx) => this.archiveAll(clickCx)))))
@@ -842,6 +898,7 @@ export default class AvenKanban extends View {
       .child(div().w(1).h(16).mx(4).bg(C.line2))
       .child(mono(10, C.dim, `${plural(stats.total, "epic")}`))
       .child(div().flex_1())
+      .child(this.btn("aven-kanban-help-toggle", "? Keys", "plain", (clickCx) => this.toggleHelp(clickCx)))
       .child(this.btn("aven-kanban-refresh", this.refreshing ? "Refreshing…" : "Refresh", "plain", (clickCx) => this.refresh(clickCx)))
       .child(mono(10, C.dim, "Esc"));
   }
@@ -914,32 +971,24 @@ export default class AvenKanban extends View {
     const stats = boardStats(columns);
     const allStats = boardStats(board);
     const next = nextMove(columns);
-    return v_flex().id("aven-kanban").size_full().min_h(0).bg(C.main).text_color(C.text)
+    const focusedColumn = this.selected()?.column ?? "";
+    const keyCommands = {
+      escape: "close", j: "next", down: "next", k: "previous", up: "previous",
+      h: "column-previous", left: "column-previous", l: "column-next", right: "column-next",
+      tab: "column-next", "shift-tab": "column-previous",
+      g: "first-prefix", G: "last", home: "first", end: "last",
+      1: "column-1", 2: "column-2", 3: "column-3", 4: "column-4", 5: "column-5",
+      enter: "open", o: "open", a: "answer", A: "archive-all", S: "ship", x: "archive",
+      d: "dispatch", s: "plan-implement", p: "plan", i: "implement", m: "merge", r: "refresh",
+      "?": "help", "shift-/": "help",
+    };
+    return v_flex().id("aven-kanban").relative().size_full().min_h(0).bg(C.main).text_color(C.text)
       .track_focus(this.handle)
       .on_size_change((_size, sizeCx) => { if (!this.closed) { this.handle.focus(); this.notify(sizeCx); } })
       .on_key_down((event, keyCx) => {
-        const key = event.key;
-        const card = this.selected();
-        if (key === "escape") {
-          if (this.dispatchMenuEpicId) { this.dispatchMenuEpicId = null; this.notify(keyCx); }
-          else this.close();
-        } else if (key === "j" || key === "down") this.select(1, keyCx);
-        else if (key === "k" || key === "up") this.select(-1, keyCx);
-        else if (key === "enter" || key === "o") this.openSelected(keyCx);
-        else if (key === "g") this.goSelected(keyCx);
-        else if (key === "a") {
-          if (card?.column === "needs_you") this.answer(card);
-          else if (card?.column === "done") this.archive(card, keyCx);
-        }
-        else if (key === "A") this.archiveAll(keyCx);
-        else if (key === "h") this.shipSelected(keyCx);
-        else if (key === "d") this.toggleDispatch(keyCx);
-        else if (key === "s") this.dispatchSelected("plan-implement", keyCx);
-        else if (key === "p") this.dispatchSelected("plan", keyCx);
-        else if (key === "i") this.dispatchSelected("implement", keyCx);
-        else if (key === "m") this.mergeSelected(keyCx);
-        else if (key === "r") this.refresh(keyCx);
-        else return;
+        const name = keyCommands[event.key];
+        if (!name) return;
+        this.command(name, keyCx);
         keyCx.stop_propagation();
         keyCx.notify();
       })
@@ -952,7 +1001,9 @@ export default class AvenKanban extends View {
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, C.dim, "j/k move · ⏎ go to agent · a answer/archive · g go · h ship · m merge · d dispatch · r refresh"))
+          .child(mono(10, this.pendingFirst ? C.you : C.dim, this.pendingFirst
+            ? "g …  press g for the first card in this column"
+            : "j/k card · h/l column · gg/G first/last · 1–5 column · ⏎ open · a answer · S ship · m merge · d dispatch · ? keys"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
@@ -961,6 +1012,41 @@ export default class AvenKanban extends View {
             .font_family(SANS).text_size(12).text_color(C.dim)
             .child(allStats.total ? "No epics match this filter." : "No epics in this project.")))
           .when(!this.state.loading && columns.some((column) => column.cards.length > 0),
-            (el) => el.children(columns.map((column) => this.column(column, cx))))));
+            (el) => el.children(columns.map((column) => this.column(column, cx, column.id === focusedColumn))))))
+      .when(this.helpOpen, (el) => el.child(this.helpPanel(cx)));
+  }
+
+  helpPanel(cx) {
+    const groups = [
+      ["Navigation", [
+        ["j / k  ↓ / ↑", "next / previous card in the focused column"],
+        ["h / l  ← / →", "previous / next non-empty column"],
+        ["g g  Home", "first card in the focused column"],
+        ["G  End", "last card in the focused column"],
+        ["Tab / Shift-Tab", "next / previous column"],
+        ["1 – 5", "jump to a column"],
+      ]],
+      ["Actions", [
+        ["Enter / o", "open the epic or go to its live agent"],
+        ["a", "answer a Needs you card / archive a Done card"],
+        ["A", "archive all visible Done cards"],
+        ["S", "ship a PR for an approved card"],
+        ["m", "merge an approved card"],
+        ["d", "toggle Dispatch"],
+        ["s / p / i", "plan-and-implement / plan / implement"],
+        ["r", "refresh"],
+        ["Esc", "close help, pending g, Dispatch, then the board"],
+      ]],
+    ];
+    return v_flex().id("aven-kanban-help").absolute().top(50).right(16).w(520).p(16).gap(10).rounded(8)
+      .bg(C.card).border(1).border_color(C.accentDim)
+      .child(h_flex().w_full().items_center()
+        .child(div().flex_1().font_family(SANS).text_size(14).font_semibold().text_color(C.text).child("Keyboard"))
+        .child(this.btn("aven-kanban-help-close", "Close  ?", "plain", (clickCx) => this.toggleHelp(clickCx))))
+      .children(groups.map(([title, rows]) => v_flex().gap(4)
+        .child(mono(10, C.muted, title.toUpperCase()))
+        .children(rows.map(([keys, description]) => h_flex().gap(10).items_start()
+          .child(div().w(140).flex_none().child(mono(10.5, C.accent, keys)))
+          .child(div().flex_1().min_w(0).font_family(SANS).text_size(11.5).text_color(C.soft).child(description))))));
   }
 }

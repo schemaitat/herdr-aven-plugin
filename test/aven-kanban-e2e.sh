@@ -161,11 +161,9 @@ sleep 3
 herdr-app shot "$root/kanban-board.png" >/dev/null
 [ -s "$root/kanban-board.png" ] || fail 'board screenshot was not written'
 
-# Initial selection is the first Backlog card. Three next commands select the
-# sole Review card across the five one-card columns.
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
+# Initial selection is the first Backlog card. Column 4 (Ready to land) selects
+# its sole approved review card, then Merge opens the main-space tab.
+herdr-app do aven-kanban.column-4 >/dev/null
 herdr-app do aven-kanban.merge >/dev/null
 space_id=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/space.json")
 address=
@@ -203,9 +201,7 @@ herdr-app shot "$root/kanban-handoff.png" >/dev/null
 # explicit ship prompt and never runs Git itself.
 herdr-app do mod.open --name aven-kanban >/dev/null
 sleep 2
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.column-4 >/dev/null
 herdr-app do aven-kanban.ship >/dev/null
 ship_address=
 count=0
@@ -235,10 +231,7 @@ herdr-app shot "$root/kanban-ship.png" >/dev/null
 # never edits Aven. Select the first DONE card, archive it, then archive all.
 herdr-app do mod.open --name aven-kanban >/dev/null
 sleep 2
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
-herdr-app do aven-kanban.next >/dev/null
+herdr-app do aven-kanban.column-5 >/dev/null
 herdr-app do aven-kanban.archive >/dev/null
 count=0
 archived_ok=no
