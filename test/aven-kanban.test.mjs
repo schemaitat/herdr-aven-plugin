@@ -323,6 +323,32 @@ assert.equal(selectMainSpace(knownSpaces, "/repo", "missing").id, "main");
 assert.equal(selectMainSpace([{ id: "worktree", folder: "/repo/worktree", name: "task space" }], "/repo", "worktree").id, "worktree", "falls back to the active space");
 assert.equal(selectMainSpace([], "/repo", "worktree"), null);
 
+// A space's `folder` is only where its new terminals start: the real main
+// space can point at $HOME while another project's space carries a stale
+// folder equal to the checkout. The first tab's live terminal decides.
+const liveSpaces = [
+  { id: "worktree", folder: "/worktrees/task", name: "task space", tabs: [{ id: "wt-tab", index: 1 }] },
+  { id: "main", folder: "/home/me", name: "repo", tabs: [{ id: "main-tab-2", index: 2 }, { id: "main-tab-1", index: 1 }] },
+  { id: "other-main", folder: "/repo/other", name: "other", tabs: [{ id: "other-tab", index: 1 }] },
+  { id: "decoy", folder: "/repo", name: "next project", tabs: [{ id: "decoy-tab", index: 1 }] },
+];
+const livePanes = [
+  { tab: "main-tab-2", cwd: "/repo/docs" },
+  { tab: "wt-tab", cwd: "/worktrees/task" },
+  { tab: "decoy-tab", cwd: "/other-repo" },
+  { tab: "main-tab-1", cwd: "/repo" },
+  { tab: "other-tab", cwd: "/repo/sub" },
+];
+assert.equal(selectMainSpace(liveSpaces, "/repo", "worktree", livePanes).id, "main",
+  "the first tab's live folder wins over a decoy space.folder");
+assert.equal(selectMainSpace(liveSpaces, "/repo", "main", livePanes).id, "main",
+  "a board opened in the primary-checkout space stays there");
+assert.equal(selectMainSpace(liveSpaces, "/repo", "other-main", livePanes).id, "other-main",
+  "the active matching space still wins");
+assert.equal(selectMainSpace(liveSpaces, "/repo", "missing", livePanes).id, "main");
+assert.equal(selectMainSpace(liveSpaces, "/elsewhere", "worktree", livePanes).id, "worktree",
+  "an unrelated checkout still falls back to the active space");
+
 // Board order, per-refresh immutable-ID indexing, keyboard selection, and exact terminal identity.
 const attemptIndex = indexAttempts([attempt("B", { state: "needs-review" }), attempt("OTHER")]);
 assert.deepEqual([...attemptIndex.keys()].sort(), ["B", "OTHER"]);

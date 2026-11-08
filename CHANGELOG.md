@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix the Kanban **Merge** and **Ship PR** handoff choosing the wrong app space:
+  the selector now uses the live terminal of a space's first tab to find the
+  repository's primary checkout instead of the space's configured `folder`,
+  which is only where its new terminals start. A `$HOME`-foldered main space is
+  found again, and another project's space carrying a stale checkout folder can
+  no longer capture the handoff.
 - Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
   NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
   LAND / DONE columns with colour bars, agent glyphs, timers, facts and
