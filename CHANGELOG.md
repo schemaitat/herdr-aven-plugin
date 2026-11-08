@@ -10,6 +10,9 @@
   Board chip palette and project-name hash. Epic rows show a project-colour
   left bar and chip; the colour is presentation-only and matches the Kanban
   project chips.
+- Show the focused root epic's full phase plan in the Aven worktree card, mark
+  the currently active phase, and mark the selected phase worktree when it is
+  different so a reviewer can see both the plan and their checkout at once.
 - Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
   NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
   LAND / DONE columns with colour bars, agent glyphs, timers, facts and

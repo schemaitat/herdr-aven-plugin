@@ -682,8 +682,9 @@ with a `#625187` focus border. The look is scoped to `aven-right`; the shipped
 
 When the focused space is a dispatched worktree, the Aven panel shows a compact
 worktree card above the epic list: root epic and status, phase progress, the
-focused phase and its position (or the active/next phase when the checkout is
-the root worktree), the current task and Aven status, the persisted dispatch
+full phase list in order with the active phase marked ACTIVE and the selected
+phase worktree marked WORKTREE when it differs from the active phase, the
+current task and Aven status, the persisted dispatch
 state with agent/model and execution mode, and one lifecycle stage (Backlog,
 Planned, In progress, Review, Done, Canceled). A phase worktree resolves through
 its attempt's phase entry, so the card names the phase task rather than the

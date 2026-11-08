@@ -257,6 +257,25 @@ export function focusedPhase(root, task) {
   return { phase: null, position: 0, total: children.length, current: false };
 }
 
+// The whole phase plan for the focused root epic. "active" follows Aven's
+// acceptance state (the first active child); "worktree" follows the exact task
+// ref of the selected checkout, so a root worktree never names a phase.
+export function phaseOverview(root, task) {
+  const children = Array.isArray(root?.epic_children) ? root.epic_children : [];
+  const activeRef = children.find((child) => String(child?.status ?? "") === "active")?.ref ?? "";
+  const worktreeRef = children.find((child) => child?.ref === task?.ref)?.ref ?? "";
+  return {
+    activeRef,
+    worktreeRef,
+    phases: children.map((phase, index) => ({
+      ...phase,
+      position: index + 1,
+      active: Boolean(activeRef) && phase.ref === activeRef,
+      worktree: Boolean(worktreeRef) && phase.ref === worktreeRef,
+    })),
+  };
+}
+
 // Dispatcher data is only authoritative when it names this exact worktree.
 export function resolveSpaceContext({ space, attempts = [], task, root, rows = [], target }) {
   const folder = normalizeFolder(space?.folder);

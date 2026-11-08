@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs,
-  isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseProgress, projectArgs,
+  isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseOverview, phaseProgress, projectArgs,
   projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
@@ -59,6 +59,20 @@ assert.equal(rootTarget[0].taskRef, root.ref, "the root worktree resolves to the
 assert.deepEqual(dispatchTargets([{ worktree: "/other" }], "/root"), [], "an unrelated worktree does not resolve");
 assert.equal(focusedPhase(rootWithPhases, { ref: "HAP-P2" }).position, 2, "a phase worktree reports its position");
 assert.equal(focusedPhase(rootWithPhases, { ref: root.ref }).phase.ref, "HAP-P2", "a root worktree focuses the active phase");
+const samePhase = phaseOverview(rootWithPhases, { ref: "HAP-P2" });
+assert.deepEqual(samePhase.phases.map(({ ref }) => ref), ["HAP-P1", "HAP-P2"], "the card lists every phase in order");
+assert.equal(samePhase.activeRef, "HAP-P2");
+assert.equal(samePhase.worktreeRef, "HAP-P2");
+assert.deepEqual(samePhase.phases.map(({ active, worktree }) => [active, worktree]), [[false, false], [true, true]], "the active phase worktree is marked once");
+const laterPhases = [...phases, { id: "p3", ref: "HAP-P3", title: "third", status: "todo", open: true }];
+const laterPhase = phaseOverview({ ...rootWithPhases, epic_children: laterPhases }, { ref: "HAP-P3" });
+assert.equal(laterPhase.activeRef, "HAP-P2");
+assert.equal(laterPhase.worktreeRef, "HAP-P3");
+assert.deepEqual(laterPhase.phases.map(({ active, worktree }) => [active, worktree]), [[false, false], [true, false], [false, true]], "a non-active phase worktree is marked separately from the active phase");
+const rootPlan = phaseOverview(rootWithPhases, { ref: root.ref });
+assert.equal(rootPlan.worktreeRef, "", "a root worktree does not name a phase");
+assert.deepEqual(rootPlan.phases.map(({ active, worktree }) => [active, worktree]), [[false, false], [true, false]], "a root worktree still marks the active phase");
+assert.deepEqual(phaseOverview({ epic_children: [] }, { ref: "HAP-X" }).phases, [], "no phases renders no rows");
 assert.equal(lifecycleStage({ status: "todo", attempt: { state: "needs-review" } }), "Review", "review execution overrides open acceptance");
 assert.equal(lifecycleStage({ status: "active", attempt: { state: "running" } }), "In progress");
 assert.equal(lifecycleStage({ status: "todo" }), "Planned");

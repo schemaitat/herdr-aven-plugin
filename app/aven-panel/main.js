@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
-import { DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
+import { DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const FOCUS_POLL_MS = 1000;
@@ -269,6 +269,22 @@ export default class AvenPanel extends View {
       .text_size(9.5).child(String(project ?? "").trim() || "unassigned");
   }
 
+  phaseRow(t, phase) {
+    const tone = this.stageTone(t, lifecycleStage({ status: phase.status }));
+    const marker = phase.active
+      ? { label: "ACTIVE", color: t.working }
+      : phase.worktree
+        ? { label: "WORKTREE", color: t.accent }
+        : null;
+    return h_flex().id(`aven-panel-phase-${phase.ref}`).h(20).px(4).gap(6).items_center().rounded(4)
+      .when(phase.worktree, (el) => el.bg(t.selected).border_l(2).border_color(t.accent))
+      .child(div().flex_none().w(9).text_size(10).text_color(tone).child(PHASE_GLYPH[phase.status] ?? "○"))
+      .child(div().flex_none().w(14).text_size(9.5).text_color(t.dim).child(`${phase.position}.`))
+      .child(div().flex_1().min_w(0).truncate().text_size(10).text_color(phase.worktree ? t.foreground : t.muted).child(`${phase.ref} · ${phase.title}`))
+      .when(Boolean(marker), (el) => el.child(div().flex_none().px(4).py(1).rounded(3).bg(marker.color)
+        .text_color(t.background).text_size(8.5).font_semibold().child(marker.label)));
+  }
+
   smallButton(t, id, text, onClick) {
     return div().id(id).px(7).py(4).rounded(5).cursor_pointer().text_size(10).bg(t.selected).text_color(t.foreground)
       .hover((style) => style.bg(t.hover)).on_click((_event, clickCx) => onClick(clickCx)).child(text);
@@ -285,7 +301,8 @@ export default class AvenPanel extends View {
         .child(div().text_size(10.5).text_color(t.muted).child(context.message));
     }
     const { root, task, attempt } = context;
-    const { phase, position, total } = focusedPhase(root, task);
+    const { phase } = focusedPhase(root, task);
+    const overview = phaseOverview(root, task);
     const progress = phaseProgress(root.epic_children);
     const stage = lifecycleStage({ status: task?.status, attempt });
     const agent = [attempt?.agent, String(attempt?.model ?? "").split("/").pop()].filter(Boolean).join(" · ");
@@ -304,11 +321,13 @@ export default class AvenPanel extends View {
           .child(div().h_full().w(`${Math.round((progress.complete / progress.total) * 100)}%`).rounded(2).bg(t.accent)))
         .child(div().flex_none().text_size(10).text_color(t.dim).child(`${progress.complete}/${progress.total} phases`))))
       .child(div().h(1).flex_none().bg(t.border))
-      .when(Boolean(phase), (el) => el.child(h_flex().gap(6).items_center()
-        .child(div().flex_none().w(38).text_size(10).text_color(t.dim).child(total ? `PHASE ${position}/${total}` : "PHASE"))
-        .child(div().flex_none().text_color(this.stageTone(t, lifecycleStage({ status: phase.status }))).child(PHASE_GLYPH[phase.status] ?? "○"))
-        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(`${phase.ref} · ${phase.title}`))
-        .when(!context.phase, (row) => row.child(div().flex_none().text_size(9.5).text_color(t.dim).child("next")))))
+      .when(overview.phases.length > 0, (el) => el.child(v_flex().id("aven-panel-phases").gap(1)
+        .child(h_flex().gap(6).items_center().px(4)
+          .child(div().text_size(9.5).font_semibold().text_color(t.dim).child("PHASES"))
+          .child(div().flex_1())
+          .child(div().text_size(9.5).text_color(t.dim).child(`${progress.complete}/${progress.total}`)))
+        .children(overview.phases.map((entry) => this.phaseRow(t, entry)))))
+      .when(overview.phases.length > 0, (el) => el.child(div().h(1).flex_none().bg(t.border)))
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().w(38).text_size(10).text_color(t.dim).child("TASK"))
         .child(div().id("aven-panel-task").flex_1().min_w(0).truncate().text_size(11).font_semibold().text_color(t.foreground).child(task.ref))
