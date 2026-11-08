@@ -11,12 +11,14 @@ export const CREATED_FILTERS = [
   { id: "1mo", label: "1mo", days: 30 },
   { id: "1y", label: "1y", days: 365 },
 ];
+// Board order mirrors the reference layout: Aven keeps one intake column where
+// the layout has none, then the three action columns and the archive column.
 export const BOARD_COLUMNS = [
-  { id: "backlog", title: "Backlog" },
-  { id: "planned", title: "Planned out" },
-  { id: "progress", title: "In progress" },
-  { id: "review", title: "Review" },
-  { id: "done", title: "Done" },
+  { id: "backlog", title: "BACKLOG", tone: "dim" },
+  { id: "needs_you", title: "NEEDS YOU", tone: "attention" },
+  { id: "working", title: "WORKING", tone: "working" },
+  { id: "ready", title: "READY TO LAND", tone: "land" },
+  { id: "done", title: "DONE", tone: "done" },
 ];
 export const DISPATCH_ACTIONS = [
   { id: "dispatch", detailKey: "d", terminalKey: "d", label: "z d", description: "Dispatch task" },
@@ -290,6 +292,18 @@ export function mergeTabName(epic) {
   return `merge ${epic.ref}`;
 }
 
+// Ship PR is a separate agent handoff, like Merge: the board never pushes or
+// opens a pull request itself.
+export function shipPrompt(epic) {
+  if (!epic?.id) throw new Error("No approved task identity is available.");
+  return `Ship the approved result for Aven task ${epic.id} as a pull request. Work from the primary checkout. Push only the approved task branch, open a pull request following the repository conventions, and do not merge, force-push, rewrite history, or change Aven acceptance. Report the pull request URL.`;
+}
+
+export function shipTabName(epic) {
+  if (!epic?.ref) throw new Error("No approved task reference is available.");
+  return `ship ${epic.ref}`;
+}
+
 // Herdr appends a tab's first message to the agent argv as its last token.
 // OpenCode treats a bare positional argument as a project directory, so give
 // it the supported --prompt flag for that trailing message instead.
@@ -362,12 +376,30 @@ export function attemptWorking(attempt, liveAgents = []) {
   return WORKING_EXECUTION_STATES.has(attempt.state) && !attemptStopped(attempt);
 }
 
+// NEEDS YOU is a presentation fact: a live agent (or a live terminal
+// observation) reports that it is blocked. It never changes Aven.
+export function liveAgentFor(attempt, liveAgents = []) {
+  const addresses = terminalAddresses(attempt);
+  if (!addresses.size) return null;
+  return (liveAgents ?? []).find((live) => addresses.has(String(live.address ?? ""))) ?? null;
+}
+
+export function attemptNeedsYou(attempt, liveAgents = []) {
+  if (!attempt) return false;
+  const live = liveAgentFor(attempt, liveAgents);
+  if (live && String(live.status ?? "") === "blocked") return true;
+  return (attempt.terminals ?? []).some((observation) =>
+    Boolean(observation.address) && observation.state === "live" && observation.status === "blocked");
+}
+
 export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAgents = []) {
   const attempt = attemptSelection?.attempt ?? null;
   const execution = executionState(attempt);
   const attempts = (relatedAttempts.length ? relatedAttempts : (attempt ? [attempt] : [])).map(normalizeAttempt);
   const terminalStatus = TERMINAL_STATUSES.has(epic.status);
   const working = attempts.some((candidate) => attemptWorking(candidate, liveAgents));
+  const needsYou = !terminalStatus && !attemptSelection?.ambiguous
+    && attempts.some((candidate) => attemptNeedsYou(candidate, liveAgents));
   const warnings = [];
   if (attemptSelection?.ambiguous) warnings.push("Multiple current dispatcher attempts; dispatch actions paused.");
   if (attempt?.contradiction) warnings.push(attempt.contradiction.replaceAll("_", " "));
@@ -382,13 +414,12 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
 
   let column;
   if (deliveredByMain) column = "done";
-  else if (PENDING_DELIVERY_STATES.has(epic.deliveryState)) column = "review";
-  else if (terminalStatus && execution === "active") column = "review";
+  else if (PENDING_DELIVERY_STATES.has(epic.deliveryState)) column = "ready";
+  else if (terminalStatus && execution === "active") column = "ready";
   else if (epic.status === "canceled") column = "done";
-  else if (epic.status === "done") column = execution === "review" && attempt?.state === "needs-review" ? "review" : "done";
-  else if (execution === "review") column = "review";
-  else if (epic.status === "active" || execution === "active") column = "progress";
-  else if (epic.status === "todo" && epic.planWorkedOut) column = "planned";
+  else if (epic.status === "done") column = execution === "review" && attempt?.state === "needs-review" ? "ready" : "done";
+  else if (execution === "review") column = "ready";
+  else if (epic.status === "active" || execution === "active") column = needsYou ? "needs_you" : "working";
   else column = "backlog";
 
   // Aven acceptance is authoritative: terminal work is inert for dispatch, so a
@@ -396,10 +427,11 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   // the contradiction warning above instead.
   const agentActive = !terminalStatus && working;
   const approved = epic.approved === true;
-  const readyToMerge = column === "review" && approved && epic.status === "done";
+  const readyToMerge = column === "ready" && approved && epic.status === "done";
   return {
     ...epic,
     column,
+    needsYou,
     attempt,
     relatedAttempts: attempts,
     attemptAmbiguous: Boolean(attemptSelection?.ambiguous),
@@ -428,6 +460,82 @@ export function buildBoard({ rows = [], attempts = [], attemptIndex, liveAgents 
     byId.get(card.column)?.cards.push(card);
   }
   return columns;
+}
+
+// Strip counts are derived from the board that was actually drawn, so a filter
+// never shows totals for cards the person cannot see.
+export function boardStats(columns) {
+  const count = (id) => (columns ?? []).find((column) => column?.id === id)?.cards.length ?? 0;
+  const cards = flattenBoard(columns);
+  const counts = {
+    total: cards.length,
+    backlog: count("backlog"),
+    needsYou: count("needs_you"),
+    working: count("working"),
+    ready: count("ready"),
+    done: count("done"),
+  };
+  counts.open = counts.total - counts.done;
+  return counts;
+}
+
+// The oldest needs-you card owns the NEXT MOVE banner.
+export function nextMove(columns) {
+  const needs = (columns ?? []).find((column) => column?.id === "needs_you")?.cards ?? [];
+  return needs.slice().sort((left, right) => {
+    const time = timeValue(left.updated_at || left.created_at) - timeValue(right.updated_at || right.created_at);
+    return time || String(left.id).localeCompare(String(right.id));
+  })[0] ?? null;
+}
+
+// "Landed" is presentation only: known local-main ancestry or recorded merged
+// delivery. The result is oldest-first with today at index 6.
+export function landedWeek(rows, now = Date.now()) {
+  const counts = Array(7).fill(0);
+  const today = Math.floor(now / 86_400_000);
+  for (const row of rows ?? []) {
+    if (row?.mergedOnMain !== true && row?.deliveryState !== "merged") continue;
+    const at = timeValue(row?.updated_at || row?.created_at);
+    if (!at) continue;
+    const ago = today - Math.floor(at / 86_400_000);
+    if (ago >= 0 && ago < 7) counts[6 - ago] += 1;
+  }
+  return counts;
+}
+
+export function projectChips(cards) {
+  const chips = new Map();
+  for (const card of cards ?? []) {
+    const id = String(card?.project ?? "").trim() || "unknown";
+    const chip = chips.get(id) ?? { id, label: id, count: 0, needsYou: false };
+    chip.count += 1;
+    if (card?.column === "needs_you") chip.needsYou = true;
+    chips.set(id, chip);
+  }
+  return [...chips.values()].sort((left, right) => right.count - left.count || left.id.localeCompare(right.id));
+}
+
+// Archive is local presentation state keyed by workspace and immutable epic ID.
+export function archiveKey(workspace, id) {
+  return `${String(workspace ?? "")}\u0000${String(id ?? "")}`;
+}
+
+export function filterArchived(rows, archived, workspace) {
+  const list = rows ?? [];
+  if (!archived || typeof archived.has !== "function" || archived.size === 0) return list;
+  return list.filter((row) => !archived.has(archiveKey(workspace, canonicalId(row))));
+}
+
+// The lowest line on a blocked agent's screen that asks a question. The same
+// rule as the reference board: ignore chrome, shortcuts and bare prompts.
+export function lastQuestion(screen) {
+  const lines = String(screen ?? "").split("\n")
+    .map((line) => line.replace(/^[\s│┃╭╰╮╯─━❯›>⎿⏺●•◆□☐✳*]+/u, "").trim())
+    .reverse();
+  const question = lines.find((line) => line.length >= 10 && /\p{L}/u.test(line)
+    && /\?(\s|\)|$)/.test(line) && !line.startsWith("?") && !/shortcuts/i.test(line));
+  if (!question) return "";
+  return question.length > 160 ? `${question.slice(0, 159)}…` : question;
 }
 
 export function flattenBoard(columns) {

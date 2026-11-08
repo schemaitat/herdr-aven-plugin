@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
-  approvalMarker, assertBoardCoverage, buildBoard, cardForEpic, createdCutoff, detailArgs, detailCacheKey,
-  detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs, filterRowsByCreated, flattenBoard, indexAttempts,
-  isLiveEpicTerminal, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
-  mergeTabName, moveSelection, normalizeAttempt, normalizeEpic, openArgs, selectAttempt, selectedCard, selectMainSpace,
-  terminalName, upcomingArgs,
+  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, boardStats, buildBoard, cardForEpic,
+  createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
+  filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion,
+  liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
+  mergeTabName, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs, projectChips, selectAttempt,
+  selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
@@ -32,18 +33,19 @@ const attempt = (taskId, extra = {}) => ({
   coordinator_terminal: { address: "t-coordinator", core_id: "core", name: "coordinator" },
   pending_prompt: "must not enter the board model", ...extra,
 });
-const card = (status = "todo", metadata = {}, attempts = [], extra = {}) => {
+const card = (status = "todo", metadata = {}, attempts = [], extra = {}, liveAgents = []) => {
   const row = rawEpic("ONE", status, extra);
   const epic = normalizeEpic(row, detail(row, metadata));
-  return cardForEpic(epic, selectAttempt(attempts, epic.id), attempts);
+  return cardForEpic(epic, selectAttempt(attempts, epic.id), attempts, liveAgents);
 };
 
 assert.deepEqual(epicArgs("default"), ["list", "--workspace", "default", "--epics", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(upcomingArgs("default"), ["list", "--workspace", "default", "--upcoming", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(detailArgs("default", "HAP-ONE"), ["show", "HAP-ONE", "--workspace", "default", "--full", "--json"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"]);
-assert.deepEqual(BOARD_COLUMNS.map(({ id }) => id), ["backlog", "planned", "progress", "review", "done"]);
-assert.equal(BOARD_COLUMNS.find(({ id }) => id === "planned").title, "Planned out");
+assert.deepEqual(BOARD_COLUMNS.map(({ id }) => id), ["backlog", "needs_you", "working", "ready", "done"]);
+assert.deepEqual(BOARD_COLUMNS.map(({ title }) => title), ["BACKLOG", "NEEDS YOU", "WORKING", "READY TO LAND", "DONE"]);
+assert.deepEqual(BOARD_COLUMNS.map(({ tone }) => tone), ["dim", "attention", "working", "land", "done"]);
 assert.deepEqual(CREATED_FILTERS.map(({ id }) => id), ["all", "1w", "2w", "1mo", "1y"]);
 assert.deepEqual(CREATED_FILTERS.map(({ days }) => days), [null, 7, 14, 30, 365]);
 assert.doesNotThrow(() => assertBoardCoverage({ available: LIMIT - 1, upcoming: LIMIT - 1, attempts: ATTEMPT_LIMIT - 1, epics: LIMIT - 1 }));
@@ -108,37 +110,64 @@ assert.deepEqual(normalizeEpic(withPhases).taskIds, ["PHASES", "A", "B", "C"]);
 assert.equal(card("inbox").column, "backlog");
 assert.equal(card("backlog").column, "backlog");
 assert.equal(card("todo").column, "backlog");
-assert.equal(card("todo", { "sdd.plan-worked-out": "true" }).column, "planned");
-assert.equal(card("active", { "sdd.plan-worked-out": "true" }).column, "progress");
-assert.equal(card("todo", { "sdd.plan-worked-out": "true" }, [attempt("ONE")]).column, "progress", "execution moves a planned card without editing Aven");
-assert.equal(card("todo", {}, [attempt("ONE", { state: "failed" })]).column, "progress");
-assert.equal(card("todo", {}, [attempt("ONE", { state: "interrupted" })]).column, "progress");
-assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review" })]).column, "review");
-assert.equal(card("active", {}, [attempt("ONE", { state: "completed" })]).column, "review");
-assert.equal(card("done", {}, [attempt("ONE", { state: "needs-review" })]).column, "review");
-assert.equal(card("done", { "delivery.state": "pending" }).column, "review");
-assert.equal(card("done", { "delivery.state": "committed" }).column, "review");
+assert.equal(card("todo", { "sdd.plan-worked-out": "true" }).column, "backlog", "planned-out stays in intake with a badge");
+assert.equal(card("active", { "sdd.plan-worked-out": "true" }).column, "working");
+assert.equal(card("todo", { "sdd.plan-worked-out": "true" }, [attempt("ONE")]).column, "working", "execution moves a planned card without editing Aven");
+assert.equal(card("todo", {}, [attempt("ONE", { state: "failed" })]).column, "working");
+assert.equal(card("todo", {}, [attempt("ONE", { state: "interrupted" })]).column, "working");
+assert.equal(card("active", {}, [attempt("ONE", { state: "needs-review" })]).column, "ready");
+assert.equal(card("active", {}, [attempt("ONE", { state: "completed" })]).column, "ready");
+assert.equal(card("done", {}, [attempt("ONE", { state: "needs-review" })]).column, "ready");
+assert.equal(card("done", { "delivery.state": "pending" }).column, "ready");
+assert.equal(card("done", { "delivery.state": "committed" }).column, "ready");
 assert.equal(card("done", { "delivery.state": "merged" }).column, "done");
 assert.equal(card("done").column, "done", "legacy accepted work stays Done when no pending delivery fact exists");
 assert.equal(card("canceled").column, "done");
 const mainMerged = card("done", {}, [attempt("ONE", { state: "needs-review" })], { mergedOnMain: true });
-assert.equal(mainMerged.column, "done", "exact local-main ancestry moves terminal work out of Review despite stale execution");
+assert.equal(mainMerged.column, "done", "exact local-main ancestry moves terminal work out of Ready despite stale execution");
 assert.match(mainMerged.warnings.join(" "), /closeout not recorded/, "unrecorded closeout remains visible");
 assert.equal(card("done", { "delivery.state": "pending" }, [], { mergedOnMain: true }).column, "done", "main ancestry satisfies pending delivery presentation for terminal work");
 assert.equal(card("canceled", {}, [attempt("ONE", { state: "interrupted" })], { mergedOnMain: true }).column, "done");
-assert.equal(card("active", { "delivery.state": "pending" }, [], { mergedOnMain: true }).column, "review", "an active epic cannot be closed from code ancestry alone (HAP-SZ57)");
-assert.equal(card("done", {}, [attempt("ONE", { state: "needs-review" })]).column, "review", "unmerged terminal work remains Review");
+assert.equal(card("active", { "delivery.state": "pending" }, [], { mergedOnMain: true }).column, "ready", "an active epic cannot be closed from code ancestry alone (HAP-SZ57)");
+assert.equal(card("done", {}, [attempt("ONE", { state: "needs-review" })]).column, "ready", "unmerged terminal work remains Ready to land");
 const marked = markMergedOnMain([normalizeEpic(rawEpic("ONE", "done")), normalizeEpic(rawEpic("TWO", "done"))], new Set(["ONE"]));
 assert.equal(marked[0].mergedOnMain, true);
 assert.equal(marked[1].mergedOnMain, false);
-assert.equal(card("done", {}, [attempt("ONE", { state: "running", lifecycle: { contradiction: "terminal_live_execution" } })]).column, "review");
+assert.equal(card("done", {}, [attempt("ONE", { state: "running", lifecycle: { contradiction: "terminal_live_execution" } })]).column, "ready");
 assert.match(card("done", {}, [attempt("ONE", { state: "running", lifecycle: { contradiction: "terminal_live_execution" } })]).warnings.join(" "), /conflicts with active execution/);
 const unhydratedRow = rawEpic("UNKNOWN");
 assert.match(cardForEpic(normalizeEpic(unhydratedRow), selectAttempt([], unhydratedRow.id)).warnings.join(" "), /Plan metadata/, "unhydrated todo is labeled rather than presented as certainly unplanned");
 
+// NEEDS YOU is live blocked evidence on a working card, never an Aven edit.
+const blockedTerminals = { builder: { address: "t-builder", state: "live", status: "blocked" } };
+const workingTerminals = { builder: { address: "t-builder", state: "live", status: "working" } };
+assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE", { terminals: blockedTerminals }))), true);
+assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE", { terminals: workingTerminals }))), false);
+assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE")), [{ address: "t-builder", status: "blocked" }]), true);
+assert.equal(attemptNeedsYou(normalizeAttempt(attempt("ONE")), [{ address: "t-builder", status: "working" }]), false);
+assert.equal(attemptNeedsYou(null), false);
+assert.deepEqual(liveAgentFor(normalizeAttempt(attempt("ONE")), [{ address: "t-builder", status: "blocked" }]), { address: "t-builder", status: "blocked" });
+assert.equal(liveAgentFor(normalizeAttempt(attempt("ONE")), [{ address: "t-coordinator", status: "blocked" }]).address, "t-coordinator", "coordinator terminals count as related agents");
+const needsCard = card("active", {}, [attempt("ONE", { terminals: blockedTerminals })]);
+assert.equal(needsCard.column, "needs_you");
+assert.equal(needsCard.needsYou, true);
+assert.equal(card("active", {}, [attempt("ONE", { terminals: blockedTerminals })], {}, [{ address: "t-builder", status: "blocked" }]).column, "needs_you");
+assert.equal(card("active", {}, [attempt("ONE", { terminals: workingTerminals })]).column, "working");
+assert.notEqual(card("done", {}, [attempt("ONE", { terminals: blockedTerminals })]).column, "needs_you", "terminal work is never needs-you");
+assert.equal(card("done", {}, [attempt("ONE", { terminals: blockedTerminals })], { mergedOnMain: true }).column, "done");
+const ambiguousBlocked = cardForEpic(
+  normalizeEpic(rawEpic("ONE", "active"), detail(rawEpic("ONE", "active"))),
+  selectAttempt([
+    attempt("ONE", { attempt_id: "one", created_at: 100, terminals: blockedTerminals }),
+    attempt("ONE", { attempt_id: "two", created_at: 100, terminals: blockedTerminals }),
+  ], "ONE"),
+  [attempt("ONE", { terminals: blockedTerminals })],
+);
+assert.equal(ambiguousBlocked.column, "working", "ambiguous attempts keep dispatch paused instead of claiming needs-you");
+
 // Approval is the merge gate, not execution or a live builder terminal.
 const approvedReview = card("done", { ...fullApproval, "delivery.state": "committed" });
-assert.equal(approvedReview.column, "review");
+assert.equal(approvedReview.column, "ready");
 assert.equal(approvedReview.approved, true);
 assert.equal(approvedReview.approvalId, "approval_one");
 assert.equal(approvedReview.readyToMerge, true);
@@ -156,7 +185,7 @@ assert.deepEqual(approvalMarker({ "approval.state": "approved" }), {
   state: "approved", id: "", commit: "", workflow: "", approved: false, incomplete: true,
 });
 const stateOnly = card("done", { "approval.state": "approved", "delivery.state": "committed" });
-assert.equal(stateOnly.column, "review");
+assert.equal(stateOnly.column, "ready");
 assert.equal(stateOnly.approved, false);
 assert.equal(stateOnly.approvalIncomplete, true);
 assert.equal(stateOnly.readyToMerge, false);
@@ -298,7 +327,7 @@ assert.equal("pending_prompt" in attemptIndex.get("B")[0], false);
 const boardRows = ["A", "B", "C", "D", "E"].map((id) => rawEpic(id));
 const board = buildBoard({ rows: boardRows, attemptIndex });
 assert.equal(flattenBoard(board).length, 5);
-assert.equal(board.find(({ id }) => id === "review").cards[0].id, "B");
+assert.equal(board.find(({ id }) => id === "ready").cards[0].id, "B");
 const ordered = flattenBoard(board).map(({ id }) => id);
 const first = moveSelection(board, "", 1);
 assert.equal(first, ordered[0]);
@@ -306,7 +335,7 @@ assert.equal(moveSelection(board, first, 1), ordered[1]);
 assert.equal(moveSelection(board, ordered.at(-1), 1), ordered[0], "next wraps");
 assert.equal(moveSelection(board, ordered[0], -1), ordered.at(-1), "previous wraps");
 assert.equal(moveSelection([], "", 1), "");
-assert.equal(selectedCard(board, "B").column, "review");
+assert.equal(selectedCard(board, "B").column, "ready");
 assert.equal(selectedCard(board, "missing"), null);
 const childBoard = buildBoard({ rows: [childEpic], attemptIndex: indexAttempts([attempt("CHILD", { state: "running" })]) });
 assert.equal(flattenBoard(childBoard)[0].agentActive, true, "child attempts pulse the root card");
@@ -321,5 +350,69 @@ assert.deepEqual(openArgs({ workspace: "default", epic, cwd: "/repo", name }).sl
 assert.equal(openArgs({ workspace: "default", epic, cwd: "", name }).includes("--cwd"), false);
 assert.ok(dispatchTerminalName("default", epic.id, DISPATCH_ACTIONS[1]).startsWith(terminalName("default", epic.id)));
 assert.ok(dispatchTerminalName("default", epic.id, DISPATCH_ACTIONS[1]).endsWith("-s-"));
+
+// Strip, project chips and NEXT MOVE derive only from the board that is drawn.
+const statsColumns = [
+  { id: "backlog", cards: [{ id: "a", updated_at: "2026-01-01T00:00:00Z" }, { id: "b", updated_at: "2026-01-02T00:00:00Z" }] },
+  { id: "needs_you", cards: [{ id: "c", updated_at: "2026-01-03T00:00:00Z" }, { id: "d", updated_at: "2026-01-02T00:00:00Z" }] },
+  { id: "working", cards: [{ id: "e" }] },
+  { id: "ready", cards: [{ id: "f" }] },
+  { id: "done", cards: [{ id: "g" }, { id: "h" }, { id: "i" }] },
+];
+assert.deepEqual(boardStats(statsColumns), {
+  total: 9, backlog: 2, needsYou: 2, working: 1, ready: 1, done: 3, open: 6,
+});
+assert.deepEqual(boardStats([]), { total: 0, backlog: 0, needsYou: 0, working: 0, ready: 0, done: 0, open: 0 });
+assert.equal(nextMove(statsColumns).id, "d", "the oldest needs-you card owns the banner");
+assert.equal(nextMove([{ id: "backlog", cards: [{ id: "a" }] }]), null);
+const weekNow = Date.parse("2026-11-06T12:00:00Z");
+assert.deepEqual(landedWeek([
+  { mergedOnMain: true, updated_at: "2026-11-06T01:00:00Z" },
+  { deliveryState: "merged", updated_at: "2026-11-05T01:00:00Z" },
+  { mergedOnMain: true, updated_at: "2026-10-20T01:00:00Z" },
+  { mergedOnMain: false, deliveryState: "pending", updated_at: "2026-11-06T01:00:00Z" },
+], weekNow), [0, 0, 0, 0, 0, 1, 1]);
+assert.deepEqual(landedWeek([], weekNow), [0, 0, 0, 0, 0, 0, 0]);
+const chips = projectChips([
+  { project: "beta", column: "working" },
+  { project: "alpha", column: "needs_you" },
+  { project: "beta", column: "done" },
+  { project: "", column: "backlog" },
+]);
+assert.deepEqual(chips.map(({ id }) => id), ["beta", "alpha", "unknown"]);
+assert.equal(chips[0].count, 2);
+assert.equal(chips[1].needsYou, true);
+assert.equal(chips[1].count, 1);
+
+// Archive hides only the same workspace's immutable IDs and never edits Aven.
+assert.equal(archiveKey("default", "ONE"), "default\u0000ONE");
+assert.notEqual(archiveKey("default", "ONE"), archiveKey("other", "ONE"));
+const archived = new Set([archiveKey("default", "ONE")]);
+assert.deepEqual(filterArchived([rawEpic("ONE"), rawEpic("TWO")], archived, "default").map(({ id }) => id), ["TWO"]);
+assert.deepEqual(filterArchived([rawEpic("ONE")], archived, "other").map(({ id }) => id), ["ONE"], "another workspace is untouched");
+assert.equal(filterArchived([rawEpic("ONE")], new Set(), "default").length, 1);
+assert.equal(filterArchived([rawEpic("ONE")], null, "default").length, 1);
+
+// The question parser takes the lowest question, ignores chrome and shortcuts.
+assert.equal(lastQuestion(""), "");
+assert.equal(lastQuestion("│ Merge PR #43 as is, or split the cleanup out?\n❯ "), "Merge PR #43 as is, or split the cleanup out?");
+assert.equal(lastQuestion("First question here?\nsecond question here?\n"), "second question here?");
+assert.equal(lastQuestion("Shortcuts: press ? for help"), "");
+assert.equal(lastQuestion("? just a prompt"), "");
+const longQuestion = `${"a".repeat(180)}?`;
+assert.equal(lastQuestion(longQuestion).length, 160);
+assert.ok(lastQuestion(longQuestion).endsWith("…"));
+
+// Ship PR is a separate, explicit agent handoff, never a Git mutation.
+assert.match(shipPrompt({ id: "ONE" }), /Aven task ONE/);
+assert.match(shipPrompt({ id: "ONE" }), /pull request/);
+assert.doesNotMatch(shipPrompt({ id: "ONE" }), /\/ha-merge/);
+assert.equal(shipTabName({ ref: "HAP-ONE" }), "ship HAP-ONE");
+assert.throws(() => shipPrompt({}), /No approved task identity/);
+assert.throws(() => shipTabName({ id: "ONE" }), /No approved task reference/);
+assert.equal(mergeTabArgs({
+  name: shipTabName({ ref: "HAP-ONE" }), space: "sp-main", folder: "/repo",
+  argv: ["opencode"], task: shipPrompt({ id: "ONE" }),
+})[0], "do");
 
 console.log("aven kanban logic ok");
