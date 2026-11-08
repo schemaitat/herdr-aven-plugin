@@ -6,6 +6,11 @@
   first message as a positional argument, so launch OpenCode with `--prompt`
   instead of letting `/ha-merge <task-id>` be mistaken for a project directory
   and fail with `ENOENT ... chdir`. Non-OpenCode merge agents are unchanged.
+- Gate Kanban's "ready to merge" label and merge action on the complete
+  dispatcher approval marker (`approval.state`, id, commit, workflow) and a
+  `done` task, re-reading approval-sensitive details every refresh and again
+  before opening `/ha-merge`. Incomplete or stale approvals stay visible as an
+  explanation instead of a misleading merge handoff.
 - Remove the `aven-worktree` herdr-app panel and stop splitting an Aven pane
   beside dispatched agent terminals. The Aven-right layout panel now describes
   the focused worktree: root epic and progress, focused phase and position,
