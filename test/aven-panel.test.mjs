@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import {
-  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS,
+  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PANEL_TEXT_TOKENS, PROJECT_TONES, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS,
   SUMMARY_GENERATING_TIMEOUT_MS, SUMMARY_LABEL, autoSummaryCandidate, canonicalId, cardSummary,
   descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs,
   inferredUpcomingArgs, isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs,
-  phaseOverview, phaseProgress, projectArgs, projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel,
+  panelText, phaseOverview, phaseProgress, projectArgs, projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel,
   storedSummary, summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
@@ -20,6 +20,18 @@ assert.deepEqual(projectTone("  herdr-aven-plugin  "), projectTone("herdr-aven-p
 assert.deepEqual(projectTone("herdr-aven-plugin"), projectTone("herdr-aven-plugin"), "project colour is deterministic");
 assert.notEqual(projectTone("herdr-aven-plugin").fg, projectTone("rofm-argo-apps").fg, "representative projects get distinct colours");
 assert.notEqual(projectTone("lakehouse-client").fg, projectTone("unitycatalog").fg, "more than two projects stay distinguishable");
+
+// The shipped graphite layout's `dim` token is 1.9–2.6:1 against the panel
+// surfaces, so content and metadata must resolve to the readable ramp instead.
+assert.deepEqual(PANEL_TEXT_TOKENS, { primary: "foreground", secondary: "muted" }, "readable text roles stay explicit");
+const graphiteTheme = { foreground: "#e4e4e7", muted: "#8a898e", dim: "#56555b" };
+assert.equal(panelText(graphiteTheme, "primary"), graphiteTheme.foreground, "content uses the strongest foreground");
+assert.equal(panelText(graphiteTheme, "secondary"), graphiteTheme.muted, "metadata uses the muted foreground");
+assert.equal(panelText(graphiteTheme, "unknown"), graphiteTheme.foreground, "an unknown role falls back to content");
+for (const role of Object.keys(PANEL_TEXT_TOKENS)) {
+  assert.notEqual(panelText(graphiteTheme, role), graphiteTheme.dim, `${role} never uses the low-contrast dim token`);
+}
+assert.equal(panelText({}, "primary"), "", "a missing theme stays empty instead of hard-coding a colour");
 assert.equal(descriptionSnippet("# Goal\n\nBring **the** board look with `code` and [a link](https://x).\n\nAnother paragraph."), "Bring the board look with code and a link.", "the collapsed description is one cleaned paragraph");
 assert.equal(descriptionSnippet(""), "", "an empty description has no snippet");
 assert.equal(descriptionSnippet("x".repeat(30), 10), "xxxxxxxxx…", "the snippet is bounded");

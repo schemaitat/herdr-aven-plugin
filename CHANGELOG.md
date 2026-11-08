@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Make the Aven-right panel and LLM summaries readable: task content, raw
+  descriptions, phase snippets, and summary bullets now use the theme
+  `foreground`, while refs, counts, and section labels use `muted` instead of
+  the graphite `dim` token (1.9–2.6:1 on the panel surfaces). `dim` stays
+  reserved for decorative chevrons. Expanded Kanban summary bullets use the
+  card's primary text colour, with stale/generating hints on the muted ramp.
 - Fix the Kanban **all** project chip doing nothing: both board list reads now
   pass `aven list --all-projects`, so the board holds every epic in its explicit
   workspace and the project chips (including **all**) genuinely narrow and widen

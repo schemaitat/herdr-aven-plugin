@@ -1,6 +1,16 @@
 // Pure Aven-panel contracts. Kept independent of GPUI so query and identity
 // behavior can be exercised with Node fixtures.
 export const LIMIT = 500;
+// The Aven-right layout's graphite theme exposes `dim` at only 1.9–2.6:1 on the
+// panel surfaces, below WCAG AA for text. Content therefore resolves to the
+// readable foreground ramp; `dim` stays reserved for decorative glyphs.
+export const PANEL_TEXT_TOKENS = Object.freeze({ primary: "foreground", secondary: "muted" });
+
+export function panelText(themeColors, role = "primary") {
+  const token = PANEL_TEXT_TOKENS[role] ?? PANEL_TEXT_TOKENS.primary;
+  return String(themeColors?.[token] ?? "");
+}
+
 // The Board/Kanban project chip palette. Each project keeps one colour so the
 // panel rows and the Kanban project chips agree without shared state.
 export const PROJECT_TONES = [

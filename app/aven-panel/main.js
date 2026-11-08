@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
-import { DISPATCH_ACTIONS, LIMIT, SUMMARY_LABEL, autoSummaryCandidate, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, summaryState, taskSummary, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
+import { DISPATCH_ACTIONS, LIMIT, SUMMARY_LABEL, autoSummaryCandidate, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, panelText, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, summaryState, taskSummary, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const FOCUS_POLL_MS = 1000;
@@ -9,6 +9,11 @@ const PHASE_GLYPH = { done: "✓", active: "●", canceled: "–", todo: "○", 
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
+
+// Panel text uses the theme's readable ramp only. `dim` is too weak for text on
+// the shipped graphite layout and stays reserved for decorative chevrons.
+const contentText = (t) => panelText(t, "primary");
+const metaText = (t) => panelText(t, "secondary");
 
 function parse(result, label) {
   if (result.code !== 0) throw new Error(`${label}: ${(result.stderr || "").trim() || `exit ${result.code}`}`);
@@ -362,13 +367,12 @@ export default class AvenPanel extends View {
     if (stage === "Review") return t.accent;
     if (stage === "In progress") return t.working;
     if (stage === "Done") return t.done;
-    if (stage === "Canceled") return t.dim;
     return t.muted;
   }
 
   dispatchTone(t, state) {
     const value = String(state ?? "");
-    if (!value) return t.dim;
+    if (!value) return t.muted;
     if (/review|completed/.test(value)) return t.accent;
     if (/running|waiting|pending|starting|queued/.test(value)) return t.working;
     if (/fail|interrupt|block/.test(value)) return t.blocked;
@@ -416,10 +420,10 @@ export default class AvenPanel extends View {
         .hover((style) => style.bg(t.hover))
         .on_click((_event, clickCx) => { clickCx.stop_propagation(); this.togglePhase(phase.ref, clickCx ?? cx); })
         .child(div().flex_none().w(9).text_size(10).text_color(tone).child(PHASE_GLYPH[phase.status] ?? "○"))
-        .child(div().flex_none().w(14).text_size(9.5).text_color(t.dim).child(`${phase.position}.`))
+        .child(div().flex_none().w(14).text_size(9.5).text_color(metaText(t)).child(`${phase.position}.`))
         .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(10).text_color(phase.worktree ? t.foreground : t.muted).child(`${phase.ref} · ${phase.title}`))
-          .when(Boolean(snippet), (el) => el.child(div().truncate().text_size(9).text_color(t.dim)
+          .child(div().truncate().text_size(10).text_color(contentText(t)).child(`${phase.ref} · ${phase.title}`))
+          .when(Boolean(snippet), (el) => el.child(div().truncate().text_size(9).text_color(contentText(t))
             .child(summary || generating ? `${SUMMARY_LABEL} · ${snippet}` : snippet))))
         .when(Boolean(marker), (el) => el.child(div().flex_none().px(4).py(1).rounded(3).bg(marker.color)
           .text_color(t.background).text_size(8.5).font_semibold().child(marker.label)))
@@ -429,14 +433,14 @@ export default class AvenPanel extends View {
         .when(Boolean(summary), (row) => row.child(h_flex().gap(5).items_center()
           .child(div().text_size(8.5).font_semibold().text_color(t.accent).child(SUMMARY_LABEL))
           .when(Boolean(summary?.stale), (staleRow) => staleRow.child(div().text_size(8.5).text_color(t.blocked).child("stale")))
-          .when(generating, (genRow) => genRow.child(div().text_size(8.5).text_color(t.dim).child("generating…")))))
+          .when(generating, (genRow) => genRow.child(div().text_size(8.5).text_color(metaText(t)).child("generating…")))))
         .when(!summary && generating, (row) => row.child(h_flex().gap(5).items_center()
           .child(div().text_size(8.5).font_semibold().text_color(t.accent).child(SUMMARY_LABEL))
-          .child(div().text_size(8.5).text_color(t.dim).child("generating…"))))
+          .child(div().text_size(8.5).text_color(metaText(t)).child("generating…"))))
         .when(Boolean(summary), (row) => row.children((summary?.lines ?? []).map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
           .child(div().flex_none().text_size(10).text_color(t.accent).child("•"))
-          .child(div().flex_1().min_w(0).whitespace_normal().text_size(10).text_color(t.muted).child(line)))))
-        .when(!summary, (row) => row.child(div().w_full().min_w(0).whitespace_normal().text_size(10).text_color(detail?.error ? t.blocked : t.muted).child(body)))));
+          .child(div().flex_1().min_w(0).whitespace_normal().text_size(10).text_color(contentText(t)).child(line)))))
+        .when(!summary, (row) => row.child(div().w_full().min_w(0).whitespace_normal().text_size(10).text_color(detail?.error ? t.blocked : contentText(t)).child(body)))));
   }
 
   smallButton(t, id, text, onClick) {
@@ -449,10 +453,10 @@ export default class AvenPanel extends View {
     if (!context) return null;
     if (context.kind !== "dispatch") {
       return v_flex().mx(8).my(7).p(8).gap(2).rounded(6).bg(t.raised)
-        .child(div().text_size(10).font_semibold().text_color(t.dim).child("CURRENT SPACE"))
+        .child(div().text_size(10).font_semibold().text_color(metaText(t)).child("CURRENT SPACE"))
         .child(div().text_size(11.5).truncate().child(context.name || "Unnamed space"))
-        .when(Boolean(context.folder), (row) => row.child(div().text_size(10.5).truncate().text_color(t.dim).child(context.folder)))
-        .child(div().text_size(10.5).text_color(t.muted).child(context.message));
+        .when(Boolean(context.folder), (row) => row.child(div().text_size(10.5).truncate().text_color(metaText(t)).child(context.folder)))
+        .child(div().text_size(10.5).text_color(metaText(t)).child(context.message));
     }
     const { root, task, attempt } = context;
     const { phase } = focusedPhase(root, task);
@@ -466,48 +470,48 @@ export default class AvenPanel extends View {
     const taskDescription = descriptionSnippet(task?.description ?? "", 160);
     return v_flex().mx(8).my(7).p(8).gap(5).rounded(6).bg(t.raised)
       .child(h_flex().gap(6).items_center()
-        .child(div().text_size(10).font_semibold().text_color(t.dim).child("WORKTREE"))
+        .child(div().text_size(10).font_semibold().text_color(metaText(t)).child("WORKTREE"))
         .child(div().flex_1())
         .child(div().id("aven-panel-lifecycle").text_size(10).font_semibold().text_color(this.stageTone(t, stage)).child(stage)))
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().text_color(t.accent).child("◆"))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_semibold().text_color(t.foreground).child(root.ref))
         .child(this.statusChip(t, root.status)))
-      .child(div().text_size(11).text_color(t.muted).truncate().child(root.title))
+      .child(div().text_size(11).text_color(contentText(t)).truncate().child(root.title))
       .when(progress.total > 0, (el) => el.child(h_flex().gap(7).items_center()
         .child(div().flex_1().min_w(0).h(3).rounded(2).bg(t.border).overflow_hidden()
           .child(div().h_full().w(`${Math.round((progress.complete / progress.total) * 100)}%`).rounded(2).bg(t.accent)))
-        .child(div().flex_none().text_size(10).text_color(t.dim).child(`${progress.complete}/${progress.total} phases`))))
+        .child(div().flex_none().text_size(10).text_color(metaText(t)).child(`${progress.complete}/${progress.total} phases`))))
       .child(div().h(1).flex_none().bg(t.border))
       .when(overview.phases.length > 0, (el) => el.child(v_flex().id("aven-panel-phases").gap(1)
         .child(h_flex().gap(6).items_center().px(4)
-          .child(div().text_size(9.5).font_semibold().text_color(t.dim).child("PHASES"))
+          .child(div().text_size(9.5).font_semibold().text_color(metaText(t)).child("PHASES"))
           .child(div().flex_1())
-          .child(div().text_size(9.5).text_color(t.dim).child(`${progress.complete}/${progress.total}`)))
+          .child(div().text_size(9.5).text_color(metaText(t)).child(`${progress.complete}/${progress.total}`)))
         .children(overview.phases.map((entry) => this.phaseRow(t, entry, cx)))))
       .when(overview.phases.length > 0, (el) => el.child(div().h(1).flex_none().bg(t.border)))
       .child(h_flex().gap(6).items_center()
-        .child(div().flex_none().w(38).text_size(10).text_color(t.dim).child("TASK"))
+        .child(div().flex_none().w(38).text_size(10).text_color(metaText(t)).child("TASK"))
         .child(div().id("aven-panel-task").flex_1().min_w(0).truncate().text_size(11).font_semibold().text_color(t.foreground).child(task.ref))
         .child(this.statusChip(t, task.status)))
-      .child(div().text_size(10.5).text_color(t.muted).truncate().child(task.title))
+      .child(div().text_size(10.5).text_color(contentText(t)).truncate().child(task.title))
       .when(Boolean(detailSummary), (el) => el.child(v_flex().gap(1).pt(1)
         .child(h_flex().gap(5).items_center()
           .child(div().text_size(8.5).font_semibold().text_color(t.accent).child(SUMMARY_LABEL))
           .when(Boolean(detailSummary?.stale), (staleRow) => staleRow.child(div().text_size(8.5).text_color(t.blocked).child("stale")))
-          .when(generating, (genRow) => genRow.child(div().text_size(8.5).text_color(t.dim).child("generating…"))))
+          .when(generating, (genRow) => genRow.child(div().text_size(8.5).text_color(metaText(t)).child("generating…"))))
         .children((detailSummary?.lines ?? []).map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
           .child(div().flex_none().text_size(10).text_color(t.accent).child("•"))
-          .child(div().flex_1().min_w(0).whitespace_normal().text_size(10).text_color(t.dim).child(line))))))
+          .child(div().flex_1().min_w(0).whitespace_normal().text_size(10).text_color(contentText(t)).child(line))))))
       .when(!detailSummary && generating, (el) => el.child(h_flex().gap(5).items_center().pt(1)
         .child(div().text_size(8.5).font_semibold().text_color(t.accent).child(SUMMARY_LABEL))
-        .child(div().text_size(8.5).text_color(t.dim).child("generating…"))))
-      .when(!detailSummary && !generating && Boolean(taskDescription), (el) => el.child(div().w_full().min_w(0).whitespace_normal().text_size(10).text_color(t.dim).child(taskDescription)))
+        .child(div().text_size(8.5).text_color(metaText(t)).child("generating…"))))
+      .when(!detailSummary && !generating && Boolean(taskDescription), (el) => el.child(div().w_full().min_w(0).whitespace_normal().text_size(10).text_color(contentText(t)).child(taskDescription)))
       .child(h_flex().gap(6).items_center()
         .child(div().size(6).rounded(3).flex_none().bg(this.dispatchTone(t, attempt?.state)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(dispatchLabel(attempt?.state)))
-        .when(Boolean(agent), (row) => row.child(div().flex_none().text_size(10).text_color(t.dim).child(agent))))
-      .when(Boolean(attempt?.execution_mode), (el) => el.child(div().text_size(10).text_color(t.dim).child(attempt.execution_mode)))
+        .when(Boolean(agent), (row) => row.child(div().flex_none().text_size(10).text_color(metaText(t)).child(agent))))
+      .when(Boolean(attempt?.execution_mode), (el) => el.child(div().text_size(10).text_color(metaText(t)).child(attempt.execution_mode)))
       .when(Boolean(attempt?.lifecycle?.contradiction), (el) => el.child(div().text_size(10).text_color(t.blocked).child(String(attempt.lifecycle.contradiction).replaceAll("_", " "))))
       .child(h_flex().gap(6).pt(1)
         .child(this.smallButton(t, "aven-panel-open-task", "Open task", (clickCx) => this.launch(task, clickCx ?? cx)))
@@ -524,7 +528,7 @@ export default class AvenPanel extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(epic.title))
         .child(div().flex_none().text_size(10).text_color(t.accent).child(epic.status))
         .child(this.dispatchMenuButton(t, epic, cx)))
-      .child(h_flex().gap(6).text_size(10.5).text_color(t.dim)
+      .child(h_flex().gap(6).text_size(10.5).text_color(pinned ? contentText(t) : metaText(t))
         .child(div().flex_none().child(epic.ref)).child(this.projectChip(epic.project)))
       .when(this.dispatchMenuEpicId === epic.id, (el) => el.child(this.dispatchMenu(t, epic, cx)));
   }
@@ -545,11 +549,11 @@ export default class AvenPanel extends View {
       .child(div().h(1).flex_none().bg(t.border))
       .when(Boolean(card), (el) => el.child(card))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().py(5)
-        .when(state.loading, (el) => el.child(div().p(12).text_size(11.5).text_color(t.dim).child("Loading epics…")))
+        .when(state.loading, (el) => el.child(div().p(12).text_size(11.5).text_color(metaText(t)).child("Loading epics…")))
         .when(Boolean(state.error), (el) => el.child(div().mx(8).p(8).rounded(6).text_size(11).text_color(t.blocked).bg(t.raised).child(state.error)))
         .when(Boolean(state.coverageError), (el) => el.child(div().mx(8).p(8).rounded(6).text_size(11).text_color(t.blocked).bg(t.raised).child(`Incomplete coverage: ${state.coverageError}`)))
-        .when(state.stale && state.rows.length > 0, (el) => el.child(div().mx(8).py(5).text_size(10.5).text_color(t.dim).child("Showing last successful results (stale).")))
-          .when(!state.loading && !state.error && !state.coverageError && rows.length === 0, (el) => el.child(div().p(12).text_size(11.5).text_color(t.dim).child("No epics in this project.")))
+        .when(state.stale && state.rows.length > 0, (el) => el.child(div().mx(8).py(5).text_size(10.5).text_color(metaText(t)).child("Showing last successful results (stale).")))
+          .when(!state.loading && !state.error && !state.coverageError && rows.length === 0, (el) => el.child(div().p(12).text_size(11.5).text_color(metaText(t)).child("No epics in this project.")))
          .children(rows.map((epic) => this.row(t, epic, cx))));
   }
 }

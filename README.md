@@ -574,8 +574,9 @@ for needs-you cards, phase plan/execution/delivery facts, warnings, and a 3px
 left bar in their column colour. Cards whose description is longer than 100
 characters and has a stored LLM summary keep the title as the primary content
 and expose a clickable **LLM SUMMARY** chip (or `u` on the selected card) that
-expands the three summary bullets; a stale digest is marked and short or
-unsummarized descriptions are unchanged.
+expands the three summary bullets in the card's strongest text colour, with
+stale and generating hints on the muted ramp; a stale digest is marked and short
+or unsummarized descriptions are unchanged.
 
 **Project chips** filter by project and show per-project counts plus a yellow
 dot when a card there needs you; the **all** chip clears the filter and shows
@@ -723,7 +724,11 @@ The layout paints itself in the Kanban board's Board/Slate palette: graphite
 near-black canvas and chrome, the lilac `#b4a0db` accent, JetBrains Mono labels
 and Geist UI text, 1px `#1e1e20` dividers, and compact radius-6 pane frames
 with a `#625187` focus border. The look is scoped to `aven-right`; the shipped
-`main` layout and the app's global theme are untouched.
+`main` layout and the app's global theme are untouched. Text resolves from the
+theme's readable ramp rather than the graphite `dim` token (1.9–2.6:1 on the
+panel surfaces): task content and LLM summary bullets use `foreground`, while
+refs, counts, and section labels use `muted`; `dim` stays reserved for
+decorative chevrons.
 
 When the focused space is a dispatched worktree, the Aven panel shows a compact
 worktree card above the epic list: root epic and status, phase progress, the
