@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Paint the optional **Aven right** layout in the Kanban Board palette: the
+  graphite near-black canvas and chrome, lilac accent, JetBrains Mono/Geist
+  type, compact pane frames and focus border. The look is scoped to that layout
+  and leaves the personal `main` layout and global app theme alone.
+- Give each Aven project a stable colour in the right-side Aven panel using the
+  Board chip palette and project-name hash. Epic rows show a project-colour
+  left bar and chip; the colour is presentation-only and matches the Kanban
+  project chips.
+- Show the focused root epic's full phase plan in the Aven worktree card, mark
+  the currently active phase, and mark the selected phase worktree when it is
+  different so a reviewer can see both the plan and their checkout at once.
+  Each phase carries a one-line description and opens its full description in
+  a single-open accordion; the current task also shows a small description.
 - Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
   NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
   LAND / DONE columns with colour bars, agent glyphs, timers, facts and

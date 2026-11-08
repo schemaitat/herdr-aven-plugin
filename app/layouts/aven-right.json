@@ -6,14 +6,58 @@
     12,
     16
   ],
-  "background": "canvas",
+  "theme": "graphite",
+  "colors": {
+    "chrome": "#101012",
+    "canvas": "#121214",
+    "surface": "#121214",
+    "popover": "#18181b",
+    "raised": "#242328",
+    "hover": "#1a1a1d",
+    "selected": "#2c2838",
+    "border": "#1e1e20",
+    "input": "#161618",
+    "muted": "#8a898e",
+    "dim": "#56555b",
+    "accent": "#b4a0db",
+    "accent_foreground": "#0f0f11",
+    "solid": "#b4a0db",
+    "solid_foreground": "#0f0f11",
+    "working": "#8f7fd1",
+    "blocked": "#ffb406",
+    "done": "#53cf91",
+    "idle": "#56555b",
+    "unknown": "#56555b",
+    "background": "#121214",
+    "foreground": "#e4e4e7",
+    "selection": "#3a3150",
+    "ansi0": "#1a1a1d",
+    "ansi1": "#e0707f",
+    "ansi2": "#53cf91",
+    "ansi3": "#e6c35c",
+    "ansi4": "#6fb3f2",
+    "ansi5": "#a690e8",
+    "ansi6": "#3ec9b4",
+    "ansi7": "#c8c8cc",
+    "ansi8": "#56555b",
+    "ansi9": "#f08a97",
+    "ansi10": "#7ee0ad",
+    "ansi11": "#f0d27a",
+    "ansi12": "#93c7f7",
+    "ansi13": "#bfaef0",
+    "ansi14": "#6fdccb",
+    "ansi15": "#f4f4f5"
+  },
+  "font": "JetBrains Mono",
+  "ui_font": "Geist",
+  "background": "#121214",
   "terminal_padding": [
     14,
     12
   ],
   "divider": {
     "width": 1,
-    "color": "border"
+    "color": "#1e1e20"
   },
   "children": [
     {
@@ -110,16 +154,16 @@
                 "tab": "active",
                 "pane": {
                   "gap": 8,
-                  "radius": 10,
-                  "background": "background",
+                  "radius": 6,
+                  "background": "#121214",
                   "lone": true,
                   "border": {
                     "width": 1,
-                    "color": "border"
+                    "color": "#1e1e20"
                   },
                   "focus": {
                     "width": 1,
-                    "color": "accent"
+                    "color": "#625187"
                   },
                   "header": {
                     "content": {

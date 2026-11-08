@@ -1,14 +1,32 @@
 import assert from "node:assert/strict";
 import {
-  DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs,
-  isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseProgress, projectArgs,
-  resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
+  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs,
+  isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseOverview, phaseProgress, projectArgs,
+  projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
 assert.deepEqual(projectArgs("default"), ["project", "list", "--workspace", "default", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(inferredEpicArgs("default"), ["list", "--workspace", "default", "--epics", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(inferredUpcomingArgs("default"), ["list", "--workspace", "default", "--upcoming", "--limit", String(LIMIT), "--json"]);
+assert.equal(PROJECT_TONES.length, 8, "the panel reuses the eight Board project chip colours");
+assert.ok(PROJECT_TONES.every(({ fg, bg }) => /^#[0-9a-f]{6}$/.test(fg) && /^#[0-9a-f]{6}$/.test(bg)), "project tones are explicit hex colours");
+assert.deepEqual(projectTone(""), DEFAULT_PROJECT_TONE, "an empty project stays neutral");
+assert.deepEqual(projectTone(null), DEFAULT_PROJECT_TONE, "a missing project stays neutral");
+assert.deepEqual(projectTone("  herdr-aven-plugin  "), projectTone("herdr-aven-plugin"), "project colour is stable across whitespace");
+assert.deepEqual(projectTone("herdr-aven-plugin"), projectTone("herdr-aven-plugin"), "project colour is deterministic");
+assert.notEqual(projectTone("herdr-aven-plugin").fg, projectTone("rofm-argo-apps").fg, "representative projects get distinct colours");
+assert.notEqual(projectTone("lakehouse-client").fg, projectTone("unitycatalog").fg, "more than two projects stay distinguishable");
+assert.equal(descriptionSnippet("# Goal\n\nBring **the** board look with `code` and [a link](https://x).\n\nAnother paragraph."), "Bring the board look with code and a link.", "the collapsed description is one cleaned paragraph");
+assert.equal(descriptionSnippet(""), "", "an empty description has no snippet");
+assert.equal(descriptionSnippet("x".repeat(30), 10), "xxxxxxxxx…", "the snippet is bounded");
+assert.equal(descriptionBody("# Goal\n\nBring **the** board look.\n\n- second item"), "Goal\n\nBring the board look.\n\n• second item", "the accordion body keeps structure and strips Markdown markers");
+assert.equal(descriptionBody(""), "", "an empty body stays empty");
+const wrapped = fullDetail({ task: { ref: "HAP-ONE", is_epic: true }, description: "# Goal\n\nBody text" });
+assert.equal(wrapped.ref, "HAP-ONE", "full detail unwraps the task");
+assert.equal(wrapped.is_epic, true, "full detail keeps task fields");
+assert.equal(wrapped.description, "# Goal\n\nBody text", "full detail keeps the description");
+assert.equal(fullDetail({ ref: "HAP-TWO" }).ref, "HAP-TWO", "a flat task remains unchanged");
 assert.deepEqual(DISPATCH_ACTIONS.map(({ label }) => label), ["z d", "z s", "z p", "z i", "z r", "z x", "z b"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"], "buttons send lowercase task-detail bindings through hc");
 assert.ok(DISPATCH_ACTIONS.every(({ description }) => description.length > 0), "each dispatcher shortcut has a menu description");
@@ -51,6 +69,20 @@ assert.equal(rootTarget[0].taskRef, root.ref, "the root worktree resolves to the
 assert.deepEqual(dispatchTargets([{ worktree: "/other" }], "/root"), [], "an unrelated worktree does not resolve");
 assert.equal(focusedPhase(rootWithPhases, { ref: "HAP-P2" }).position, 2, "a phase worktree reports its position");
 assert.equal(focusedPhase(rootWithPhases, { ref: root.ref }).phase.ref, "HAP-P2", "a root worktree focuses the active phase");
+const samePhase = phaseOverview(rootWithPhases, { ref: "HAP-P2" });
+assert.deepEqual(samePhase.phases.map(({ ref }) => ref), ["HAP-P1", "HAP-P2"], "the card lists every phase in order");
+assert.equal(samePhase.activeRef, "HAP-P2");
+assert.equal(samePhase.worktreeRef, "HAP-P2");
+assert.deepEqual(samePhase.phases.map(({ active, worktree }) => [active, worktree]), [[false, false], [true, true]], "the active phase worktree is marked once");
+const laterPhases = [...phases, { id: "p3", ref: "HAP-P3", title: "third", status: "todo", open: true }];
+const laterPhase = phaseOverview({ ...rootWithPhases, epic_children: laterPhases }, { ref: "HAP-P3" });
+assert.equal(laterPhase.activeRef, "HAP-P2");
+assert.equal(laterPhase.worktreeRef, "HAP-P3");
+assert.deepEqual(laterPhase.phases.map(({ active, worktree }) => [active, worktree]), [[false, false], [true, false], [false, true]], "a non-active phase worktree is marked separately from the active phase");
+const rootPlan = phaseOverview(rootWithPhases, { ref: root.ref });
+assert.equal(rootPlan.worktreeRef, "", "a root worktree does not name a phase");
+assert.deepEqual(rootPlan.phases.map(({ active, worktree }) => [active, worktree]), [[false, false], [true, false]], "a root worktree still marks the active phase");
+assert.deepEqual(phaseOverview({ epic_children: [] }, { ref: "HAP-X" }).phases, [], "no phases renders no rows");
 assert.equal(lifecycleStage({ status: "todo", attempt: { state: "needs-review" } }), "Review", "review execution overrides open acceptance");
 assert.equal(lifecycleStage({ status: "active", attempt: { state: "running" } }), "In progress");
 assert.equal(lifecycleStage({ status: "todo" }), "Planned");

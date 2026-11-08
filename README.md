@@ -674,12 +674,21 @@ dispatched worktree reveals **Aven** so the focused work shows its context. An
 explicit Files/Changes choice for that space still wins, and the shipped main
 layout's panel preference is neither read nor changed.
 
+The layout paints itself in the Kanban board's Board/Slate palette: graphite
+near-black canvas and chrome, the lilac `#b4a0db` accent, JetBrains Mono labels
+and Geist UI text, 1px `#1e1e20` dividers, and compact radius-6 pane frames
+with a `#625187` focus border. The look is scoped to `aven-right`; the shipped
+`main` layout and the app's global theme are untouched.
+
 When the focused space is a dispatched worktree, the Aven panel shows a compact
 worktree card above the epic list: root epic and status, phase progress, the
-focused phase and its position (or the active/next phase when the checkout is
-the root worktree), the current task and Aven status, the persisted dispatch
+full phase list in order with the active phase marked ACTIVE and the selected
+phase worktree marked WORKTREE when it differs from the active phase, the
+current task and Aven status with a one-line description, the persisted dispatch
 state with agent/model and execution mode, and one lifecycle stage (Backlog,
-Planned, In progress, Review, Done, Canceled). A phase worktree resolves through
+Planned, In progress, Review, Done, Canceled). Each phase shows a small
+description snippet; clicking the phase opens its cleaned full description as
+an accordion (one phase open at a time). A phase worktree resolves through
 its attempt's phase entry, so the card names the phase task rather than the
 root. The card also exposes Open task/Open phase buttons, which reuse the same
 exact Aven terminal launcher. Dispatcher facts stay read-only; an unknown or
@@ -693,6 +702,13 @@ upcoming reads, deduplicates canonical IDs, orders valid `created_at` values
 newest first (stable ID ties; invalid dates last), and labels loading, empty,
 stale, errors, and incomplete coverage separately. A list cap, malformed data,
 timeout, or project failure is never displayed as a complete empty list.
+
+Every row carries its project's stable colour as a 3px left bar and a coloured
+project chip. The colour comes from the same eight-colour Board chip palette
+and name hash as the Kanban project chips, so a project reads the same in both
+surfaces; an unassigned project stays neutral. The project name, qualified ref
+and status remain the authoritative cues, so colour is never the only signal,
+and nothing is written to Aven.
 
 Clicking an epic starts or reveals its exact `aven --workspace default tui
 <ref>` terminal. Its Dispatch menu sends the same existing Aven detail shortcuts

@@ -1,6 +1,19 @@
 // Pure Aven-panel contracts. Kept independent of GPUI so query and identity
 // behavior can be exercised with Node fixtures.
 export const LIMIT = 500;
+// The Board/Kanban project chip palette. Each project keeps one colour so the
+// panel rows and the Kanban project chips agree without shared state.
+export const PROJECT_TONES = [
+  { fg: "#e0707f", bg: "#3b1d24" },
+  { fg: "#3ec9b4", bg: "#11302d" },
+  { fg: "#f0a050", bg: "#3a2410" },
+  { fg: "#a690e8", bg: "#2a2245" },
+  { fg: "#e6c35c", bg: "#352c10" },
+  { fg: "#6fb3f2", bg: "#152a40" },
+  { fg: "#e88cc8", bg: "#3a1a30" },
+  { fg: "#8fd18a", bg: "#1c321c" },
+];
+export const DEFAULT_PROJECT_TONE = { fg: "#c8c8cc", bg: "#242328" };
 export const DISPATCH_ACTIONS = [
   { id: "dispatch", detailKey: "d", terminalKey: "d", label: "z d", description: "Dispatch task" },
   { id: "plan-implement", detailKey: "s", terminalKey: "s", label: "z s", description: "Plan then implement" },
@@ -80,6 +93,62 @@ export function mergeProjectRows({ workspace, project, open = [], upcoming = [] 
   return sortEpics([...rows.values()]);
 }
 
+// A project colour is decoration, never identity: it is derived from the name
+// with the same hash the Kanban board uses, so one project reads the same in
+// both surfaces. An absent project stays neutral instead of borrowing a colour.
+export function projectTone(name) {
+  const label = String(name ?? "").trim();
+  if (!label) return DEFAULT_PROJECT_TONE;
+  let hash = 0;
+  for (const character of label) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return PROJECT_TONES[hash % PROJECT_TONES.length] ?? DEFAULT_PROJECT_TONE;
+}
+
+// Sidebar descriptions are display text, not Markdown input. Keep the first
+// meaningful paragraph for a collapsed row and a lightly cleaned multi-line
+// body for the accordion, both bounded so a long description never takes over
+// the card.
+function cleanDescriptionLine(line) {
+  return String(line ?? "")
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/, "")
+    .replace(/^\s*>\s?/, "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function clampDescription(text, limit) {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+export function descriptionSnippet(description, limit = 160) {
+  const lines = String(description ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const parts = [];
+  for (const line of lines) {
+    if (/^\s*#{1,6}\s+/.test(line)) continue;
+    const text = cleanDescriptionLine(line);
+    if (!text) {
+      if (parts.length) break;
+      continue;
+    }
+    parts.push(text);
+  }
+  return clampDescription(parts.join(" ").trim(), limit);
+}
+
+export function descriptionBody(description, limit = 1600) {
+  const lines = String(description ?? "").replace(/\r\n?/g, "\n").split("\n").map((line) => {
+    if (/^\s*#{1,6}\s+/.test(line)) return cleanDescriptionLine(line);
+    if (/^\s*(?:[-*+]|\d+\.)\s+/.test(line)) return `• ${cleanDescriptionLine(line)}`;
+    return cleanDescriptionLine(line);
+  });
+  return clampDescription(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), limit);
+}
+
 export function mergeCoverage(results) {
   const rows = new Map();
   const errors = [];
@@ -88,6 +157,14 @@ export function mergeCoverage(results) {
     for (const row of result.rows ?? []) if (!rows.has(row.id)) rows.set(row.id, row);
   }
   return { rows: sortEpics([...rows.values()]), coverageError: errors.join("; ") };
+}
+
+// `aven show --full --json` wraps the task and its long text fields. Normalize
+// it to the task shape the panel uses and keep the description alongside it.
+export function fullDetail(payload) {
+  const task = payload?.task ?? payload;
+  if (!task || typeof task !== "object") return task;
+  return payload?.description ? { ...task, description: String(payload.description) } : task;
 }
 
 function terminalHash(value) {
@@ -231,6 +308,25 @@ export function focusedPhase(root, task) {
     return { phase: next >= 0 ? children[next] : null, position: next >= 0 ? next + 1 : 0, total: children.length, current: false };
   }
   return { phase: null, position: 0, total: children.length, current: false };
+}
+
+// The whole phase plan for the focused root epic. "active" follows Aven's
+// acceptance state (the first active child); "worktree" follows the exact task
+// ref of the selected checkout, so a root worktree never names a phase.
+export function phaseOverview(root, task) {
+  const children = Array.isArray(root?.epic_children) ? root.epic_children : [];
+  const activeRef = children.find((child) => String(child?.status ?? "") === "active")?.ref ?? "";
+  const worktreeRef = children.find((child) => child?.ref === task?.ref)?.ref ?? "";
+  return {
+    activeRef,
+    worktreeRef,
+    phases: children.map((phase, index) => ({
+      ...phase,
+      position: index + 1,
+      active: Boolean(activeRef) && phase.ref === activeRef,
+      worktree: Boolean(worktreeRef) && phase.ref === worktreeRef,
+    })),
+  };
 }
 
 // Dispatcher data is only authoritative when it names this exact worktree.
