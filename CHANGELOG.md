@@ -21,6 +21,12 @@
   different so a reviewer can see both the plan and their checkout at once.
   Each phase carries a one-line description and opens its full description in
   a single-open accordion; the current task also shows a small description.
+- Paint the Aven Kanban board as soon as its bounded list reads finish instead
+  of waiting for every epic detail and local-main ancestry check. Details and
+  delivery evidence now enrich the same cards in the background with a
+  four-worker limit, the board labels incomplete enrichment, and Archive stays
+  fail-closed until classification is complete while Merge and Ship keep their
+  exact fresh-approval re-read.
 - Redraw the Kanban overlay in the herdr-layouts Board style: a today strip,
   NEXT MOVE banner, project chips, and BACKLOG / NEEDS YOU / WORKING / READY TO
   LAND / DONE columns with colour bars, agent glyphs, timers, facts and

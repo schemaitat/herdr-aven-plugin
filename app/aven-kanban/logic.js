@@ -82,6 +82,52 @@ export function detailArgs(workspace, ref) {
   return ["show", ref, "--workspace", workspace, "--full", "--json"];
 }
 
+// Metadata that gates approval, delivery, or plan badges. Everything else in an
+// `aven show --full` payload stays outside the board model.
+export const DETAIL_METADATA = [
+  "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
+  "delivery.state", "delivery.target", "delivery.obligation",
+];
+
+// A malformed or unexpected detail payload must never become board evidence.
+export function safeDetail(payload) {
+  const task = payload?.task ?? {};
+  const metadata = {};
+  for (const key of DETAIL_METADATA) {
+    if (typeof payload?.metadata?.[key] === "string") metadata[key] = payload.metadata[key];
+  }
+  return {
+    task: {
+      id: String(task.id ?? ""), ref: String(task.ref ?? ""), title: String(task.title ?? ""),
+      status: String(task.status ?? ""), is_epic: task.is_epic === true,
+      epic_children: Array.isArray(task.epic_children) ? task.epic_children.map((child) => ({
+        id: String(child?.id ?? ""), ref: String(child?.ref ?? ""), title: String(child?.title ?? ""),
+        status: String(child?.status ?? ""), open: child?.open !== false,
+      })) : [],
+    },
+    metadata,
+  };
+}
+
+// Run async work over a list with a small fixed pool. Results keep input order
+// and the pool never exceeds `limit`, so process-spawning reads cannot storm.
+export async function mapLimit(items, limit, worker) {
+  const list = items ?? [];
+  const results = new Array(list.length);
+  if (!list.length) return results;
+  const width = Math.max(1, Math.min(Number(limit) || 1, list.length));
+  let next = 0;
+  await Promise.all(Array.from({ length: width }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= list.length) return;
+      results[index] = await worker(list[index], index);
+    }
+  }));
+  return results;
+}
+
 function canonicalId(row) {
   return String(row?.id ?? row?.canonical_id ?? "").trim();
 }
@@ -124,6 +170,40 @@ export function detailNeedsRefresh(cached, workspace, row) {
   if (!detailIsCurrent(cached, workspace, row)) return true;
   return cached.detail?.task?.status === "done"
     || Boolean(cached.detail?.metadata?.["approval.state"]);
+}
+
+// Hydrate the details that are stale or absent, publishing each outcome as soon
+// as it lands so the board can enrich incrementally. `publish(row, snapshot)`
+// receives a cache-ready snapshot, or null when the read must invalidate any
+// older approval evidence. Failures are returned, never swallowed silently.
+export async function hydrateDetails({
+  rows = [], workspace = "", cached = () => undefined, read, publish = () => {}, limit = 4,
+}) {
+  const needed = rows.filter((row) => detailNeedsRefresh(cached(row), workspace, row));
+  const failures = [];
+  await mapLimit(needed, limit, async (row) => {
+    const key = qualifiedRef(row);
+    try {
+      const detail = safeDetail(await read(row));
+      if (detail.task.id !== canonicalId(row) || !detail.task.is_epic) throw new Error("identity mismatch");
+      publish(row, { workspace: String(workspace), updatedAt: row?.updated_at, detail });
+    } catch (error) {
+      publish(row, null);
+      failures.push(`${key}: ${String(error?.message ?? error)}`);
+    }
+  });
+  return { needed: needed.length, failures };
+}
+
+// Merge, ship, and archive depend on a completely classified board. Until the
+// background stages finish, those actions stay closed rather than acting on a
+// provisional column.
+export function enrichmentPending(state) {
+  return state?.enriching === true || state?.evidencePending === true;
+}
+
+export function cardArchiveable(card, state) {
+  return card?.column === "done" && card?.hydrated === true && !enrichmentPending(state);
 }
 
 // Fresh-read gate for the merge handoff. Returns a human-readable list of the

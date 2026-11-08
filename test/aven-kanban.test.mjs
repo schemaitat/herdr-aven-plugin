@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
-  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard, cardForEpic,
-  createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName, epicArgs,
-  filterArchived, filterRowsByCreated, flattenBoard, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion,
+  ATTEMPT_LIMIT, BOARD_COLUMNS, CREATED_FILTERS, DETAIL_METADATA, DISPATCH_ACTIONS, LIMIT, MERGE_PROMPT,
+  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard,
+  cardArchiveable, cardForEpic, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh,
+  dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, flattenBoard,
+  hydrateDetails, indexAttempts, isLiveEpicTerminal, landedWeek, lastQuestion, mapLimit, safeDetail,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs, projectChips, selectAttempt,
   selectedCard, selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
@@ -444,5 +445,109 @@ assert.equal(mergeTabArgs({
   name: shipTabName({ ref: "HAP-ONE" }), space: "sp-main", folder: "/repo",
   argv: ["opencode"], task: shipPrompt({ id: "ONE" }),
 })[0], "do");
+
+// Detail normalization keeps only the approval/delivery/plan metadata the board
+// renders, including trimmed child identity fields.
+assert.deepEqual(DETAIL_METADATA, [
+  "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
+  "delivery.state", "delivery.target", "delivery.obligation",
+]);
+const sanitized = safeDetail({
+  task: {
+    id: "ONE", ref: "HAP-ONE", title: "Epic", status: "done", is_epic: true,
+    description: "must not leak", epic_children: [{ id: "C", ref: "HAP-C", title: "Child", status: "done", open: false, note: "x" }],
+  },
+  metadata: { "approval.state": "approved", "approval.id": 42, "delivery.state": "pending", secret: "no" },
+  notes: [{ body: "must not leak" }],
+});
+assert.deepEqual(sanitized.metadata, { "approval.state": "approved", "delivery.state": "pending" });
+assert.equal("description" in sanitized.task, false);
+assert.equal("notes" in sanitized, false);
+assert.deepEqual(sanitized.task.epic_children, [{ id: "C", ref: "HAP-C", title: "Child", status: "done", open: false }]);
+
+// The bounded pool preserves input order and never exceeds its width.
+let activeReads = 0;
+let peakReads = 0;
+const pooled = await mapLimit([1, 2, 3, 4, 5], 2, async (value) => {
+  activeReads += 1;
+  peakReads = Math.max(peakReads, activeReads);
+  await new Promise((resolve) => setTimeout(resolve, 4 - (value % 3)));
+  activeReads -= 1;
+  return value * 10;
+});
+assert.deepEqual(pooled, [10, 20, 30, 40, 50]);
+assert.equal(peakReads, 2, "the worker pool is bounded");
+assert.deepEqual(await mapLimit([], 4, async () => { throw new Error("must not run"); }), []);
+
+// Progressive startup: a fast detail publishes while a slow read is still
+// pending, so the board can draw before enrichment finishes.
+let releaseSlow;
+const slowGate = new Promise((resolve) => { releaseSlow = resolve; });
+const hydrationEvents = [];
+const slowRows = [rawEpic("FAST"), rawEpic("SLOW", "done")];
+const hydrating = hydrateDetails({
+  rows: slowRows,
+  workspace: "default",
+  cached: () => undefined,
+  limit: 2,
+  read: async (row) => {
+    if (row.id === "SLOW") await slowGate;
+    return detail(row, row.id === "SLOW" ? fullApproval : { "sdd.plan-worked-out": "true" });
+  },
+  publish: (row, snapshot) => hydrationEvents.push([row.id, snapshot]),
+});
+await new Promise((resolve) => setTimeout(resolve, 10));
+assert.deepEqual(hydrationEvents.map(([id]) => id), ["FAST"], "the fast detail publishes before the slow read resolves");
+assert.equal(hydrationEvents[0][1].detail.task.id, "FAST");
+releaseSlow();
+const hydration = await hydrating;
+assert.equal(hydration.needed, 2);
+assert.deepEqual(hydration.failures, []);
+assert.deepEqual(hydrationEvents.map(([id]) => id), ["FAST", "SLOW"]);
+
+// Already-current ordinary details are not re-read; approval-sensitive ones are.
+const cachedRows = [rawEpic("CACHE"), rawEpic("APPROVED", "done")];
+const hydratedCache = {
+  CACHE: { workspace: "default", updatedAt: cachedRows[0].updated_at, detail: detail(cachedRows[0]) },
+  APPROVED: { workspace: "default", updatedAt: cachedRows[1].updated_at, detail: detail(cachedRows[1], fullApproval) },
+};
+const readIds = [];
+await hydrateDetails({
+  rows: cachedRows,
+  workspace: "default",
+  cached: (row) => hydratedCache[row.id],
+  read: async (row) => { readIds.push(row.id); return detail(row, fullApproval); },
+});
+assert.deepEqual(readIds, ["APPROVED"], "only the approval-sensitive detail is re-read");
+
+// A failed or mismatched read invalidates the cache and is reported by ref.
+const failedEvents = [];
+const failures = await hydrateDetails({
+  rows: [rawEpic("BAD")],
+  workspace: "default",
+  cached: () => undefined,
+  read: async () => { throw new Error("aven show failed"); },
+  publish: (row, snapshot) => failedEvents.push([row.id, snapshot]),
+});
+assert.deepEqual(failures.failures, ["HAP-BAD: aven show failed"]);
+assert.deepEqual(failedEvents, [["BAD", null]]);
+const mismatchedHydration = await hydrateDetails({
+  rows: [rawEpic("WANTED")],
+  workspace: "default",
+  cached: () => undefined,
+  read: async () => detail(rawEpic("OTHER")),
+});
+assert.match(mismatchedHydration.failures[0], /identity mismatch/);
+
+// Provisional boards stay fail-closed: an unhydrated or still-enriching Done
+// card cannot be archived, while a fully hydrated final board can.
+const finalDone = card("done");
+const provisionalDone = cardForEpic(normalizeEpic(rawEpic("DONE", "done")), selectAttempt([], "DONE"));
+assert.equal(cardArchiveable(finalDone, { enriching: false, evidencePending: false }), true);
+assert.equal(cardArchiveable(provisionalDone, { enriching: false, evidencePending: false }), false, "unhydrated cards never archive");
+assert.equal(cardArchiveable(finalDone, { enriching: true, evidencePending: false }), false, "enrichment blocks archive");
+assert.equal(cardArchiveable(finalDone, { enriching: false, evidencePending: true }), false, "ancestry evidence blocks archive");
+assert.equal(cardArchiveable({ ...finalDone, column: "ready" }, {}), false, "only Done cards archive");
+assert.equal(enrichmentPending({}), false);
 
 console.log("aven kanban logic ok");
