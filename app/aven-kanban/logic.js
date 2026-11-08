@@ -79,12 +79,15 @@ export function filterRowsByCreated(rows, filterId, now = Date.now()) {
   });
 }
 
+// The board owns a project chip per project plus an `all` chip, so both reads
+// span the whole workspace instead of letting Aven infer one project from the
+// checkout directory. Qualified refs keep detail reads and handoffs working.
 export function epicArgs(workspace) {
-  return ["list", "--workspace", workspace, "--epics", "--limit", String(LIMIT), "--json"];
+  return ["list", "--workspace", workspace, "--all-projects", "--epics", "--limit", String(LIMIT), "--json"];
 }
 
 export function upcomingArgs(workspace) {
-  return ["list", "--workspace", workspace, "--upcoming", "--limit", String(LIMIT), "--json"];
+  return ["list", "--workspace", workspace, "--all-projects", "--upcoming", "--limit", String(LIMIT), "--json"];
 }
 
 export function detailArgs(workspace, ref) {

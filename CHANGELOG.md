@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the Kanban **all** project chip doing nothing: both board list reads now
+  pass `aven list --all-projects`, so the board holds every epic in its explicit
+  workspace and the project chips (including **all**) genuinely narrow and widen
+  the set instead of re-rendering a single inferred project.
 - Add on-demand LLM summaries for long task descriptions. `d l` (or `z l`) in
   Aven runs `aven-dispatch describe --llm`, which summarizes the focused task
   and up to 20 long phase descriptions with the installed OpenCode CLI and
