@@ -81,14 +81,18 @@ function safeDetail(payload) {
 }
 const firstLine = (value) => ((value ?? "").split("\n").map((line) => line.trim()).find(Boolean) ?? "").slice(0, 160);
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const DEFAULT_CHIP = ["#c8c8cc", "#242328"];
 function hash(value) {
-  let h = 0;
-  for (const ch of String(value ?? "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return h;
+  try {
+    let h = 0;
+    for (const ch of String(value ?? "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return h;
+  } catch { return 0; }
 }
+// A chip is cosmetic: an unexpected project value must never stop a render.
 function tone(value) {
-  const [fg, bg] = CHIPS[hash(value) % CHIPS.length];
-  return { fg, bg };
+  const pair = CHIPS[hash(value) % CHIPS.length] ?? DEFAULT_CHIP;
+  return { fg: pair[0], bg: pair[1] };
 }
 function dur(ms) {
   const minutes = Math.max(0, Math.floor(ms / 60000));
@@ -112,6 +116,7 @@ export default class AvenKanban extends View {
     this.mainEvidence = { head: "", entries: new Map() };
     this.questions = new Map();
     this.programs = {};
+    this.renderTimes = new Map();
     const storedFilter = String(shared("aven-kanban.created-filter") ?? "");
     this.createdFilter = CREATED_FILTERS.some((filter) => filter.id === storedFilter) ? storedFilter : "all";
     this.projectFilter = String(shared("aven-kanban.project-filter") ?? "");
@@ -686,14 +691,15 @@ export default class AvenKanban extends View {
   }
 
   projectChip(name) {
-    const toneValue = tone(name || "unknown");
+    const label = String(name ?? "").trim() || "unknown";
+    const toneValue = tone(label);
     return div().flex_none().px(5).rounded(3).bg(toneValue.bg).text_color(toneValue.fg)
-      .font_family(SANS).text_size(11).child(String(name || "unknown"));
+      .font_family(SANS).text_size(11).child(label);
   }
 
   cardWhen(card) {
     const agent = this.relatedAgent(card);
-    const tab = agent ? this.times().get(agent.address) : null;
+    const tab = agent ? (this.renderTimes.get(agent.address) ?? this.times().get(agent.address)) : null;
     if (card.column === "needs_you") return tab?.changed ? `waiting ${dur(this.now - tab.changed)}` : "waiting";
     if (card.column === "working") return card.agentActive ? (tab?.working ? dur(this.now - tab.working) : "working") : card.status;
     if (card.column === "ready") return "ready";
@@ -890,6 +896,7 @@ export default class AvenKanban extends View {
   }
 
   render(cx) {
+    this.renderTimes = this.times();
     const columns = this.columns();
     const stats = boardStats(columns);
     const next = nextMove(columns);
