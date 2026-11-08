@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
-import { DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseProgress, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
+import { DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const FOCUS_POLL_MS = 1000;
@@ -263,6 +263,12 @@ export default class AvenPanel extends View {
       .child(div().text_size(10).text_color(tone).child(statusLabel(status)));
   }
 
+  projectChip(project) {
+    const tone = projectTone(project);
+    return div().flex_none().px(5).py(1).rounded(3).bg(tone.bg).text_color(tone.fg)
+      .text_size(9.5).child(String(project ?? "").trim() || "unassigned");
+  }
+
   smallButton(t, id, text, onClick) {
     return div().id(id).px(7).py(4).rounded(5).cursor_pointer().text_size(10).bg(t.selected).text_color(t.foreground)
       .hover((style) => style.bg(t.hover)).on_click((_event, clickCx) => onClick(clickCx)).child(text);
@@ -321,14 +327,16 @@ export default class AvenPanel extends View {
 
   row(t, epic, cx) {
     const pinned = canonicalId(this.state.context?.pinned) === canonicalId(epic);
-    return v_flex().id(`aven-epic-${epic.id}`).mx(8).px(9).py(7).gap(3).rounded(6).cursor_pointer().when(pinned, (el) => el.bg(t.selected))
+    const tone = projectTone(epic.project);
+    return v_flex().id(`aven-epic-${epic.id}`).mx(8).px(9).py(7).gap(3).rounded(6).border_l(3).border_color(tone.fg)
+      .cursor_pointer().when(pinned, (el) => el.bg(t.selected))
       .hover((style) => style.bg(t.hover)).on_click((_event, clickCx) => this.launch(epic, clickCx ?? cx))
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(epic.title))
         .child(div().flex_none().text_size(10).text_color(t.accent).child(epic.status))
         .child(this.dispatchMenuButton(t, epic, cx)))
       .child(h_flex().gap(6).text_size(10.5).text_color(t.dim)
-        .child(div().flex_none().child(epic.ref)).child(div().min_w(0).truncate().child(epic.project)))
+        .child(div().flex_none().child(epic.ref)).child(this.projectChip(epic.project)))
       .when(this.dispatchMenuEpicId === epic.id, (el) => el.child(this.dispatchMenu(t, epic, cx)));
   }
 

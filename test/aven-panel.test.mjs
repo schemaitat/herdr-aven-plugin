@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
 import {
-  DISPATCH_ACTIONS, LIMIT, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs,
+  DEFAULT_PROJECT_TONE, DISPATCH_ACTIONS, LIMIT, PROJECT_TONES, canonicalId, dispatchLabel, dispatchTargets, focusedPhase, inferredEpicArgs, inferredUpcomingArgs,
   isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs, phaseProgress, projectArgs,
-  resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
+  projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel, terminalName, upcomingArgs,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
 assert.deepEqual(projectArgs("default"), ["project", "list", "--workspace", "default", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(inferredEpicArgs("default"), ["list", "--workspace", "default", "--epics", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(inferredUpcomingArgs("default"), ["list", "--workspace", "default", "--upcoming", "--limit", String(LIMIT), "--json"]);
+assert.equal(PROJECT_TONES.length, 8, "the panel reuses the eight Board project chip colours");
+assert.ok(PROJECT_TONES.every(({ fg, bg }) => /^#[0-9a-f]{6}$/.test(fg) && /^#[0-9a-f]{6}$/.test(bg)), "project tones are explicit hex colours");
+assert.deepEqual(projectTone(""), DEFAULT_PROJECT_TONE, "an empty project stays neutral");
+assert.deepEqual(projectTone(null), DEFAULT_PROJECT_TONE, "a missing project stays neutral");
+assert.deepEqual(projectTone("  herdr-aven-plugin  "), projectTone("herdr-aven-plugin"), "project colour is stable across whitespace");
+assert.deepEqual(projectTone("herdr-aven-plugin"), projectTone("herdr-aven-plugin"), "project colour is deterministic");
+assert.notEqual(projectTone("herdr-aven-plugin").fg, projectTone("rofm-argo-apps").fg, "representative projects get distinct colours");
+assert.notEqual(projectTone("lakehouse-client").fg, projectTone("unitycatalog").fg, "more than two projects stay distinguishable");
 assert.deepEqual(DISPATCH_ACTIONS.map(({ label }) => label), ["z d", "z s", "z p", "z i", "z r", "z x", "z b"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"], "buttons send lowercase task-detail bindings through hc");
 assert.ok(DISPATCH_ACTIONS.every(({ description }) => description.length > 0), "each dispatcher shortcut has a menu description");

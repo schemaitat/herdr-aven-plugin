@@ -1,6 +1,19 @@
 // Pure Aven-panel contracts. Kept independent of GPUI so query and identity
 // behavior can be exercised with Node fixtures.
 export const LIMIT = 500;
+// The Board/Kanban project chip palette. Each project keeps one colour so the
+// panel rows and the Kanban project chips agree without shared state.
+export const PROJECT_TONES = [
+  { fg: "#e0707f", bg: "#3b1d24" },
+  { fg: "#3ec9b4", bg: "#11302d" },
+  { fg: "#f0a050", bg: "#3a2410" },
+  { fg: "#a690e8", bg: "#2a2245" },
+  { fg: "#e6c35c", bg: "#352c10" },
+  { fg: "#6fb3f2", bg: "#152a40" },
+  { fg: "#e88cc8", bg: "#3a1a30" },
+  { fg: "#8fd18a", bg: "#1c321c" },
+];
+export const DEFAULT_PROJECT_TONE = { fg: "#c8c8cc", bg: "#242328" };
 export const DISPATCH_ACTIONS = [
   { id: "dispatch", detailKey: "d", terminalKey: "d", label: "z d", description: "Dispatch task" },
   { id: "plan-implement", detailKey: "s", terminalKey: "s", label: "z s", description: "Plan then implement" },
@@ -78,6 +91,17 @@ export function mergeProjectRows({ workspace, project, open = [], upcoming = [] 
     if (row && !rows.has(row.id)) rows.set(row.id, row);
   }
   return sortEpics([...rows.values()]);
+}
+
+// A project colour is decoration, never identity: it is derived from the name
+// with the same hash the Kanban board uses, so one project reads the same in
+// both surfaces. An absent project stays neutral instead of borrowing a colour.
+export function projectTone(name) {
+  const label = String(name ?? "").trim();
+  if (!label) return DEFAULT_PROJECT_TONE;
+  let hash = 0;
+  for (const character of label) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return PROJECT_TONES[hash % PROJECT_TONES.length] ?? DEFAULT_PROJECT_TONE;
 }
 
 export function mergeCoverage(results) {
