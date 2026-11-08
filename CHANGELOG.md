@@ -15,7 +15,8 @@
   enqueue a bounded background `describe --auto` for long descriptions without
   a current summary, recording `summary.llm.state` (`generating`/`done`/`error`),
   showing **generating…**, and exposing `AVEN_DISPATCH_SUMMARY_AUTO=0` as a kill
-  switch.
+  switch. Kanban cards keep the title as the primary content and expand their
+  LLM summary from a clickable **LLM SUMMARY** chip or `l`.
 - Paint the optional **Aven right** layout in the Kanban Board palette: the
   graphite near-black canvas and chrome, lilac accent, JetBrains Mono/Geist
   type, compact pane frames and focus border. The look is scoped to that layout

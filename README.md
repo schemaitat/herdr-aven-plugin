@@ -555,9 +555,10 @@ needs-you card and offers **Answer** and **Go to agent**. Cards show the agent
 glyph, project chip, qualified ref, timer or status, title, an **ASKS YOU** box
 for needs-you cards, phase plan/execution/delivery facts, warnings, and a 3px
 left bar in their column colour. Cards whose description is longer than 100
-characters and has a stored LLM summary also show it under an **LLM SUMMARY**
-label; a stale digest is marked and short or unsummarized descriptions are
-unchanged.
+characters and has a stored LLM summary keep the title as the primary content
+and expose a clickable **LLM SUMMARY** chip (or `l` on the selected card) that
+expands the three summary bullets; a stale digest is marked and short or
+unsummarized descriptions are unchanged.
 
 **Project chips** filter by project and show per-project counts plus a yellow
 dot when a card there needs you. A **Created** control filters visible cards by
@@ -597,6 +598,7 @@ identity; repeated activation is deduplicated.
 | `A` | Archive all visible Done cards |
 | `h` | Ship PR for an approved Ready to land card |
 | `d` | Toggle the selected epic's Dispatch menu |
+| `l` | Expand/collapse the selected card's LLM summary |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
 | `m` | Open `/ha-merge` for an approved Ready to land epic in the main space |
 | `r` | Refresh |

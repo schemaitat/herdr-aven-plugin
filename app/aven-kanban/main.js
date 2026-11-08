@@ -131,6 +131,7 @@ export default class AvenKanban extends View {
     const storedArchive = shared(ARCHIVE_SHARED);
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
+    this.summaryCardId = "";
     this.dispatchMenuEpicId = null;
     this.folder = String(props()?.cwd ?? "");
     this.handle = cx.focus_handle();
@@ -182,6 +183,7 @@ export default class AvenKanban extends View {
         else if (name === "archive") this.archiveSelected(cx);
         else if (name === "archive-all") this.archiveAll(cx);
         else if (name === "dispatch") this.toggleDispatch(cx);
+        else if (name === "summary") this.toggleSummary(cx);
         else if (name === "plan" || name === "plan-implement" || name === "implement") this.dispatchSelected(name, cx);
         else if (name === "merge") this.mergeSelected(cx);
         else cx.notify();
@@ -528,6 +530,12 @@ export default class AvenKanban extends View {
     this.dispatchMenuEpicId = this.dispatchMenuEpicId === card.id ? null : card.id;
     this.notify(cx);
   }
+  toggleSummary(cx) {
+    const card = this.selected();
+    if (!card || card.summaryLines.length === 0) return;
+    this.summaryCardId = this.summaryCardId === card.id ? "" : card.id;
+    this.notify(cx);
+  }
 
   async reveal(address, cx) {
     if (!address) return;
@@ -803,6 +811,8 @@ export default class AvenKanban extends View {
 
   card(card, cx) {
     const selected = card.id === this.selectedId;
+    const summaryOpen = this.summaryCardId === card.id;
+    const stop = (_event, clickCx) => clickCx.stop_propagation();
     const columnTone = TONES[BOARD_COLUMNS.find((column) => column.id === card.column)?.tone ?? "dim"] ?? C.dim;
     const whenColor = card.column === "needs_you" ? C.you : card.column === "ready" ? C.land : C.dim;
     return div().id(`aven-kanban-card-${card.id}`).w_full().flex_none().flex().flex_row().rounded(6).overflow_hidden()
@@ -817,11 +827,20 @@ export default class AvenKanban extends View {
           .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(10.5).text_color(C.dim).child(card.ref))
           .child(mono(10, whenColor, this.cardWhen(card))))
         .child(div().font_family(SANS).text_size(12.5).text_color(C.text).child(card.title))
-        .when(card.summaryLines.length > 0, (el) => el.child(v_flex().gap(1).pt(1)
-          .child(h_flex().gap(5).items_center()
-            .child(mono(9, C.accent, SUMMARY_LABEL))
-            .when(card.summaryStale, (row) => row.child(mono(9, C.dim, "stale")))
-            .when(card.summaryGenerating, (row) => row.child(mono(9, C.dim, "generating…"))))
+        .when(card.summaryLines.length > 0, (el) => el.child(h_flex().id(`aven-kanban-summary-${card.id}`)
+          .flex_none().gap(5).items_center().px(5).py(2).rounded(4).cursor_pointer()
+          .hover((style) => style.bg(C.hover))
+          .on_mouse_down("left", stop)
+          .on_click((_event, clickCx) => {
+            clickCx.stop_propagation();
+            this.summaryCardId = summaryOpen ? "" : card.id;
+            this.notify(clickCx);
+          })
+          .child(mono(9, C.accent, SUMMARY_LABEL))
+          .when(card.summaryStale, (row) => row.child(mono(9, C.dim, "stale")))
+          .when(card.summaryGenerating, (row) => row.child(mono(9, C.dim, "generating…")))
+          .child(div().text_size(9).text_color(C.dim).child(summaryOpen ? "⌃" : "⌄"))))
+        .when(summaryOpen && card.summaryLines.length > 0, (el) => el.child(v_flex().gap(1).pt(1)
           .children(card.summaryLines.map((line) => h_flex().w_full().min_w(0).gap(4).items_start()
             .child(mono(9, C.accent, "•"))
             .child(div().flex_1().min_w(0).whitespace_normal().font_family(SANS).text_size(10.5).text_color(C.soft).child(line))))))
@@ -980,6 +999,7 @@ export default class AvenKanban extends View {
         else if (key === "A") this.archiveAll(keyCx);
         else if (key === "h") this.shipSelected(keyCx);
         else if (key === "d") this.toggleDispatch(keyCx);
+        else if (key === "l") this.toggleSummary(keyCx);
         else if (key === "s") this.dispatchSelected("plan-implement", keyCx);
         else if (key === "p") this.dispatchSelected("plan", keyCx);
         else if (key === "i") this.dispatchSelected("implement", keyCx);
@@ -998,7 +1018,7 @@ export default class AvenKanban extends View {
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, C.dim, "j/k move · ⏎ go to agent · a answer/archive · g go · h ship · m merge · d dispatch · r refresh"))
+          .child(mono(10, C.dim, "j/k move · ⏎ go to agent · a answer/archive · g go · h ship · m merge · d dispatch · l summary · r refresh"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
