@@ -121,7 +121,6 @@ export default class AvenKanban extends View {
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
     this.dispatchMenuEpicId = null;
-    this.pendingFirst = false;
     this.helpOpen = false;
     this.folder = String(props()?.cwd ?? "");
     this.handle = cx.focus_handle();
@@ -170,8 +169,6 @@ export default class AvenKanban extends View {
   // fallback, so the two paths can never drift apart.
   command(name, cx) {
     if (this.closed) return;
-    // Esc inspects the pending prefix itself; every other command consumes it.
-    if (name !== "first-prefix" && name !== "close") this.pendingFirst = false;
     if (name === "close") this.escape(cx);
     else if (name === "help") this.toggleHelp(cx);
     else if (name === "refresh") this.refresh(cx);
@@ -179,7 +176,6 @@ export default class AvenKanban extends View {
     else if (name === "previous") this.select(-1, cx);
     else if (name === "column-next") this.selectColumn(1, cx);
     else if (name === "column-previous") this.selectColumn(-1, cx);
-    else if (name === "first-prefix") this.firstPrefix(cx);
     else if (name === "first") this.selectEdge(false, cx);
     else if (name === "last") this.selectEdge(true, cx);
     else if (/^column-[1-5]$/.test(name)) this.jumpColumn(Number(name.slice(-1)) - 1, cx);
@@ -196,24 +192,13 @@ export default class AvenKanban extends View {
   }
 
   escape(cx) {
-    if (this.helpOpen) { this.helpOpen = false; this.pendingFirst = false; this.notify(cx); }
-    else if (this.pendingFirst) { this.pendingFirst = false; this.notify(cx); }
+    if (this.helpOpen) { this.helpOpen = false; this.notify(cx); }
     else if (this.dispatchMenuEpicId) { this.dispatchMenuEpicId = null; this.notify(cx); }
     else this.close();
   }
 
   toggleHelp(cx) {
     this.helpOpen = !this.helpOpen;
-    this.notify(cx);
-  }
-
-  firstPrefix(cx) {
-    if (this.pendingFirst) {
-      this.pendingFirst = false;
-      this.selectEdge(false, cx);
-      return;
-    }
-    this.pendingFirst = true;
     this.notify(cx);
   }
 
@@ -405,14 +390,12 @@ export default class AvenKanban extends View {
   }
 
   select(delta, cx) {
-    this.pendingFirst = false;
     this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
     this.dispatchMenuEpicId = null;
     this.notify(cx);
   }
 
   selectCard(card, cx) {
-    this.pendingFirst = false;
     this.selectedId = card.id;
     this.dispatchMenuEpicId = null;
     this.notify(cx);
@@ -529,11 +512,11 @@ export default class AvenKanban extends View {
     else this.notify(cx);
   }
 
+  // o is the explicit "open in Aven" action. Enter jumps to a live agent via
+  // goSelected and only falls back to opening the epic when there is none.
   openSelected(cx) {
     const card = this.selected();
-    if (!card) return;
-    if (this.jumpToAgent(card)) return;
-    this.open(card, cx);
+    if (card) this.open(card, cx);
   }
   dispatchSelected(actionId, cx) {
     const card = this.selected();
@@ -976,9 +959,10 @@ export default class AvenKanban extends View {
       escape: "close", j: "next", down: "next", k: "previous", up: "previous",
       h: "column-previous", left: "column-previous", l: "column-next", right: "column-next",
       tab: "column-next", "shift-tab": "column-previous",
-      g: "first-prefix", G: "last", home: "first", end: "last",
+      g: "first", "shift-g": "last", G: "last", home: "first", end: "last",
       1: "column-1", 2: "column-2", 3: "column-3", 4: "column-4", 5: "column-5",
-      enter: "open", o: "open", a: "answer", A: "archive-all", S: "ship", x: "archive",
+      enter: "go", o: "open", a: "answer", "shift-a": "archive-all", A: "archive-all",
+      "shift-s": "ship", S: "ship", x: "archive",
       d: "dispatch", s: "plan-implement", p: "plan", i: "implement", m: "merge", r: "refresh",
       "?": "help", "shift-/": "help",
     };
@@ -1001,9 +985,7 @@ export default class AvenKanban extends View {
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, this.pendingFirst ? C.you : C.dim, this.pendingFirst
-            ? "g …  press g for the first card in this column"
-            : "j/k card · h/l column · gg/G first/last · 1–5 column · ⏎ open · a answer · S ship · m merge · d dispatch · ? keys"))
+          .child(mono(10, C.dim, "j/k card · h/l column · g/G top/bottom · 1–5 column · ⏎ agent · o open · a answer · S ship · m merge · d dispatch · ? keys"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
@@ -1021,21 +1003,22 @@ export default class AvenKanban extends View {
       ["Navigation", [
         ["j / k  ↓ / ↑", "next / previous card in the focused column"],
         ["h / l  ← / →", "previous / next non-empty column"],
-        ["g g  Home", "first card in the focused column"],
-        ["G  End", "last card in the focused column"],
+        ["g  Home", "jump to the top of the focused column"],
+        ["Shift-G  End", "jump to the bottom of the focused column"],
         ["Tab / Shift-Tab", "next / previous column"],
         ["1 – 5", "jump to a column"],
       ]],
       ["Actions", [
-        ["Enter / o", "open the epic or go to its live agent"],
+        ["Enter", "jump to the epic's live agent (Open when none)"],
+        ["o", "open the epic in Aven"],
         ["a", "answer a Needs you card / archive a Done card"],
-        ["A", "archive all visible Done cards"],
-        ["S", "ship a PR for an approved card"],
+        ["Shift-A", "archive all visible Done cards"],
+        ["Shift-S", "ship a PR for an approved card"],
         ["m", "merge an approved card"],
         ["d", "toggle Dispatch"],
         ["s / p / i", "plan-and-implement / plan / implement"],
         ["r", "refresh"],
-        ["Esc", "close help, pending g, Dispatch, then the board"],
+        ["Esc", "close help, Dispatch, then the board"],
       ]],
     ];
     return v_flex().id("aven-kanban-help").absolute().top(50).right(16).w(520).p(16).gap(10).rounded(8)

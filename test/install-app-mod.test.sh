@@ -1,6 +1,7 @@
 #!/bin/sh
-# scripts/install-app-mod.sh: owns only the mod files, merges free keys, and
-# never replaces a binding the person already has.
+# scripts/install-app-mod.sh: owns only the mod files, merges free keys, never
+# replaces a binding the person gave another action, and reconciles its own mod
+# sections when a shipped key moves or disappears.
 set -eu
 . "$(dirname "$0")/helpers.sh"
 
@@ -42,6 +43,37 @@ assert_file_contains "$app_home/keys.json" '"ctrl-shift-h": "mod.open:picker"' '
 assert_file_contains "$app_home/keys.json" '"mod:aven-kanban"' 'Kanban key section installed'
 assert_file_contains "$app_home/keys.json" '"m": "aven-kanban.merge"' 'Kanban merge key installed'
 [ -f "$app_home/keys.json.aven-backup" ] || fail 'changed keys need a backup'
+
+# An upgrade reconciles this plugin's own mod bindings: moved keys are updated,
+# removed commands disappear, and a key bound to someone else's action stays.
+stale=$work/stale
+mkdir -p "$stale"
+printf '%s\n' \
+  '{' \
+  '  "mod:aven-kanban": {' \
+  '    "G": "aven-kanban.last",' \
+  '    "g": "aven-kanban.first-prefix",' \
+  '    "h": "aven-kanban.ship",' \
+  '    "l": "aven-kanban.summary",' \
+  '    "q": "aven-kanban.removed",' \
+  '    "z": "other.command"' \
+  '  }' \
+  '}' > "$stale/keys.json"
+stale_out=$(PATH="$fake:$PATH" HERDR_APP_HOME=$stale sh "$PLUGIN_ROOT/scripts/install-app-mod.sh")
+assert_contains "$stale_out" 'updated: h -> aven-kanban.column-previous (was aven-kanban.ship)' 'stale h is moved to column-left'
+assert_contains "$stale_out" 'updated: l -> aven-kanban.column-next (was aven-kanban.summary)' 'stale l is moved to column-right'
+assert_contains "$stale_out" 'updated: g -> aven-kanban.first (was aven-kanban.first-prefix)' 'stale g is moved to the column top'
+assert_contains "$stale_out" 'removed stale: q -> aven-kanban.removed' 'a removed owned binding is dropped'
+assert_contains "$stale_out" 'removed stale: G -> aven-kanban.last' 'an uppercase binding is dropped for Shift-G'
+assert_file_contains "$stale/keys.json" '"h": "aven-kanban.column-previous"' 'h is column-left after upgrade'
+assert_file_contains "$stale/keys.json" '"l": "aven-kanban.column-next"' 'l is column-right after upgrade'
+assert_file_contains "$stale/keys.json" '"g": "aven-kanban.first"' 'g jumps to the column top after upgrade'
+assert_file_contains "$stale/keys.json" '"shift-g": "aven-kanban.last"' 'Shift-G selects the last card after upgrade'
+assert_file_contains "$stale/keys.json" '"shift-s": "aven-kanban.ship"' 'Ship PR is installed on Shift-S after upgrade'
+assert_file_contains "$stale/keys.json" '"z": "other.command"' 'a foreign binding in the mod section is preserved'
+assert_file_lacks "$stale/keys.json" '"q": "aven-kanban.removed"' 'the removed owned binding is gone'
+assert_file_lacks "$stale/keys.json" '"h": "aven-kanban.ship"' 'the old h ship binding is gone'
+assert_file_lacks "$stale/keys.json" '"G": "aven-kanban.last"' 'the uppercase G binding is gone'
 
 # An upgrade removes only the exact retired plugin-owned panel.
 mkdir -p "$app_home/mods/aven-worktree"

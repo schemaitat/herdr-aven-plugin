@@ -29,8 +29,10 @@ commands, installs the global OpenCode `/approve` and `/ha-merge` commands and t
 `layouts/aven-right.json` into `$HERDR_APP_HOME` (or `~/.config/herdr-app`), and
 reports readiness with `just doctor`. The app mods are optional; when
 `herdr-app` is absent the same dispatch, supervision, and recovery work
-headlessly. The installer preserves unrelated app settings, never overwrites an
-existing key binding, and refuses a differing skill file. Re-run
+headlessly. The installer preserves unrelated app settings, never replaces a
+key the person bound to another action, and refuses a differing skill file. It
+does reconcile its own mod key sections, so a moved board key such as `h` is
+updated by an upgrade instead of staying on an old action. Re-run
 `just install-app-mod` after an upgrade to refresh owned assets; an upgrade also
 removes the retired `mods/aven-worktree` panel when it is still the
 plugin-installed copy. Both commands install the Aven-right assets by default,
@@ -591,28 +593,31 @@ identity; repeated activation is deduplicated.
 
 Navigation follows Aven's columns view: vertical movement wraps inside the
 focused column, horizontal movement skips empty columns and keeps the row, and
-`gg`/`G` work like vim.
+`g`/`G` jump to the top/bottom of the focused column. The app's key map
+normalises shifted letters, so `G`, `S` and `A` are installed as `shift-g`,
+`shift-s` and `shift-a`.
 
 | Board key | Action |
 | --- | --- |
 | `j` / `k` or `Down` / `Up` | Next / previous card in the focused column |
 | `h` / `l` or `Left` / `Right` | Previous / next non-empty column |
-| `gg` or `Home` | First card in the focused column |
-| `G` or `End` | Last card in the focused column |
+| `g` or `Home` | Jump to the top of the focused column |
+| `G` (Shift-G) or `End` | Jump to the bottom of the focused column |
 | `Tab` / `Shift-Tab` | Next / previous column |
 | `1`–`5` | Jump to a column (the nearest non-empty one) |
-| `Enter` or `o` | Jump to a live agent's space/tab, or open the selected epic |
+| `Enter` | Jump to the epic's live agent (open the epic when none) |
+| `o` | Open the selected epic in Aven |
 | `a` | Answer on a Needs you card; Archive on a Done card |
-| `A` | Archive all visible Done cards |
-| `S` | Ship PR for an approved Ready to land card |
+| `A` (Shift-A) | Archive all visible Done cards |
+| `S` (Shift-S) | Ship PR for an approved Ready to land card |
 | `d` | Toggle the selected epic's Dispatch menu |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
 | `m` | Open `/ha-merge` for an approved Ready to land epic in the main space |
 | `?` | Open the in-board keyboard reference |
 | `r` | Refresh |
-| `Esc` | Close help, a pending `g`, a Dispatch menu, then the board |
+| `Esc` | Close help, a Dispatch menu, then the board |
 
-The footer names the core keys and shows `g …` after a pending `g`. 
+The footer names the core keys. 
 
 **Answer** focuses the blocked agent's exact terminal (and its pane) so the
 question can be answered immediately. **Go to agent** selects the agent's space
