@@ -5,7 +5,7 @@ import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
   boardStats, buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
-  isLiveEpicTerminal, jumpToColumn,
+  isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard,
   selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
@@ -81,6 +81,9 @@ export default class AvenKanban extends View {
     this.mainMerged = new Set();
     this.coverageError = "";
     this.ancestryChecked = false;
+    // Until the first complete board is published, enrich it progressively.
+    // Later refreshes stage everything and replace the board atomically.
+    this.hasSettledBoard = false;
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
     // Navigation and archive presses that arrive before classification settles
@@ -364,20 +367,26 @@ export default class AvenKanban extends View {
 
   refresh(cx) {
     if (this.refreshing || this.closed) return;
+    // A first paint may grow progressively. A refresh of a settled board is
+    // staged and published once; otherwise merged/main badges would disappear
+    // and reappear while metadata and Git evidence are recomputed.
+    const progressive = refreshMayPublishProgress(this.hasSettledBoard);
     this.refreshing = true;
-    this.ancestryChecked = false;
-    this.state = { ...this.state, loading: !this.state.rows.length, error: "" };
+    if (progressive) this.ancestryChecked = false;
+    if (!this.state.rows.length) this.state = { ...this.state, loading: true, error: "" };
     this.notify(cx);
     cx.spawn(async (taskCx) => {
       try {
         const sources = await this.readSources();
         this.sources = sources;
-        this.mainMerged = new Set();
-        this.coverageError = "";
+        if (progressive) {
+          this.mainMerged = new Set();
+          this.coverageError = "";
+        }
         const needed = sources.baseRows.filter((row) =>
           detailNeedsRefresh(this.details.get(detailCacheKey(sources.workspace, row.id)), sources.workspace, row)).length;
         // Publish provisional cards now; enrichment continues below.
-        this.publishRows(taskCx, { enriching: needed > 0 });
+        if (progressive) this.publishRows(taskCx, { enriching: needed > 0 });
         const hydration = await hydrateDetails({
           rows: sources.baseRows,
           workspace: sources.workspace,
@@ -392,10 +401,10 @@ export default class AvenKanban extends View {
             // A failed read must not leave an older approval marker usable.
             if (snapshot) this.details.set(key, snapshot);
             else this.details.delete(key);
-            this.publishRows(taskCx, { enriching: true });
+            if (progressive) this.publishRows(taskCx, { enriching: true });
           },
         });
-        this.publishRows(taskCx, { evidencePending: true });
+        if (progressive) this.publishRows(taskCx, { evidencePending: true });
         // The checkout can be briefly unavailable right after the overlay
         // opens (its space or live pane is still settling). Wait a bounded
         // moment for a real Git checkout instead of classifying against a
@@ -407,13 +416,15 @@ export default class AvenKanban extends View {
           cwd = folder ? await this.rootFolder(folder) : "";
         }
         const mainEvidence = await this.evidenceFromMain(cwd, this.mergedRows(), sources.attemptIndex);
-        this.mainMerged = mainEvidence.merged;
-        this.ancestryChecked = true;
         const coverage = [];
         if (hydration.failures.length) coverage.push(`${hydration.failures.length} epic metadata read(s) failed: ${hydration.failures.slice(0, 3).join("; ")}`);
         if (mainEvidence.error) coverage.push(mainEvidence.error);
+        // Final state is complete: apply ancestry and publish once.
+        this.mainMerged = mainEvidence.merged;
+        this.ancestryChecked = true;
         this.coverageError = coverage.join("; ");
         this.publishRows(taskCx, {});
+        this.hasSettledBoard = true;
         this.autoSummarize(taskCx);
       } catch (error) {
         this.state = {
@@ -845,6 +856,21 @@ export default class AvenKanban extends View {
     this.retainSelection(cx);
   }
 
+  // Keep the refresh control's measured content constant. The spinner slot is
+  // always present; only its visibility and pulse change while a read is in
+  // flight, so the top bar never reflows on a timer or manual refresh.
+  refreshButton(cx) {
+    return h_flex().id("aven-kanban-refresh").flex_none().gap(6).px(9).py(3).rounded(5).items_center()
+      .bg(C.raised).border(1).border_color(C.line2).text_color(C.text)
+      .font_family(SANS).text_size(12).cursor_pointer().hover((style) => style.opacity(0.85))
+      .on_mouse_down("left", (_event, clickCx) => clickCx.stop_propagation())
+      .on_click((_event, clickCx) => { clickCx.stop_propagation(); this.refresh(clickCx); })
+      .child("Refresh")
+      .child(div().id("aven-kanban-refresh-spinner").w(8).h(8).flex_none().rounded(4)
+        .when(this.refreshing, (spinner) => spinner.bg(C.accent)
+          .loop("opacity", { from: 0.3, to: 1, period: 800 })));
+  }
+
   btn(id, label, kind, onClick) {
     const [bg, fg, border] = kind === "you" ? [C.you, "#1a1300", C.you]
       : kind === "land" ? [C.land, "#08180f", C.land]
@@ -1040,7 +1066,7 @@ export default class AvenKanban extends View {
       .child(mono(10, C.dim, `${plural(stats.total, "epic")}`))
       .child(div().flex_1())
       .child(this.btn("aven-kanban-help-toggle", "? Keys", "plain", (clickCx) => this.toggleHelp(clickCx)))
-      .child(this.btn("aven-kanban-refresh", this.refreshing ? "Refreshing…" : "Refresh", "plain", (clickCx) => this.refresh(clickCx)))
+      .child(this.refreshButton(cx))
       .child(mono(10, C.dim, "Esc"));
   }
 

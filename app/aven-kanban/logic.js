@@ -260,6 +260,13 @@ export function enrichmentPending(state) {
   return state?.enriching === true || state?.evidencePending === true;
 }
 
+// A first paint may enrich progressively while no board exists yet. Refreshing
+// an already-settled board instead stages hydration and delivery evidence and
+// publishes once, so merged badges cannot flicker mid-refresh.
+export function refreshMayPublishProgress(hasSettledBoard) {
+  return !hasSettledBoard;
+}
+
 export function cardArchiveable(card, state) {
   return card?.column === "done" && card?.hydrated === true && !enrichmentPending(state);
 }
@@ -358,7 +365,10 @@ export function summaryState(metadata, now = Date.now()) {
   return { state, at, age, generating, errorCooling };
 }
 
+// Terminal cards are final results; auto-summarizing them only restarts the
+// board's refresh loop after the card has already settled.
 export function autoSummaryCandidate(task, now = Date.now()) {
+  if (TERMINAL_STATUSES.has(String(task?.status ?? ""))) return false;
   if (!summaryNeeded(task?.description)) return false;
   const summary = storedSummary(task?.metadata, task?.description);
   if (summary && !summary.stale) return false;
@@ -402,7 +412,7 @@ export function normalizeEpic(row, detail) {
     summaryStale: Boolean(summary?.stale),
     summaryState: state.state,
     summaryGenerating: hydrated && state.generating,
-    summaryAuto: hydrated && autoSummaryCandidate({ description, metadata }),
+    summaryAuto: hydrated && autoSummaryCandidate({ description, metadata, status }),
     planWorkedOut: hydrated && metadata["sdd.plan-worked-out"] === "true",
     approvalState: approval.state,
     approvalId: approval.id,

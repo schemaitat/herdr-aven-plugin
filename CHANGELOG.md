@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Make Kanban refreshes atomic once the board is visible: hydration and
+  local-main delivery evidence are staged off-screen and the board is replaced
+  in one publish, so **on main** badges and columns no longer flicker while a
+  refresh is running. The first paint still enriches progressively.
+- Keep the Kanban **Refresh** control geometrically stable: the label stays
+  `Refresh` and a fixed-size spinner slot is always reserved, so timer and
+  manual refreshes no longer reflow the top bar or move adjacent text.
+- Stop the Kanban board from auto-summarizing terminal epics. Done and canceled
+  cards are final results, so the background `describe --auto` queue now skips
+  them instead of refreshing the whole board to summarize each historical epic
+  in turn. Open work keeps the same bounded, one-at-a-time behaviour, and manual
+  `d l` / `z l` generation still works for any task.
 - Make the Aven-right panel and LLM summaries readable: task content, raw
   descriptions, phase snippets, and summary bullets now use the theme
   `foreground`, while refs, counts, and section labels use `muted` instead of

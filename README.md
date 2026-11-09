@@ -679,7 +679,13 @@ pushes, opens a pull request, changes Aven acceptance, applies closeout, or
 closes a space; Merge and Ship PR are agent handoffs that keep the human in
 control.
 
-Refresh is non-overlapping. Full Aven metadata is cached by immutable epic ID
+Refresh is non-overlapping. The top-bar **Refresh** control keeps a constant
+label and a reserved spinner slot, so starting or finishing a refresh never
+reflows the toolbar or moves the adjacent `Esc` hint. Once a board is visible,
+a refresh stages all metadata reads and local-main evidence and replaces the
+board in one publish; merged/main badges and columns never flicker through
+provisional states while the read is in flight. Full Aven metadata is
+cached by immutable epic ID
 and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
 the merged epic set, and dispatcher attempts. Dispatcher reads use read-only,
 prompt-free `aven-dispatch list --summary --limit 500`; exceeding a cap is an
@@ -838,10 +844,12 @@ Generation is both explicit and automatic. Pressing `d l`/`z l` always
 regenerates the focused task in a terminal. Separately, the sidebar and Kanban
 board enqueue a background `describe --auto` for a long description without a
 current summary: the selected/focused card first, one run at a time, with a
-per-task lock. The UI shows **generating…** while `summary.llm.state` is
-`generating`, retries a failed run only after ten minutes, and treats a
-`generating` marker older than ten minutes as retryable. Set
-`AVEN_DISPATCH_SUMMARY_AUTO=0` (also `false`, `off`, or `no`) to disable
+per-task lock. Done and canceled epics are never enqueued automatically: they
+already show their final card, and summarizing them would restart the board's
+refresh chain for no user-visible benefit. The UI shows **generating…** while
+`summary.llm.state` is `generating`, retries a failed run only after ten
+minutes, and treats a `generating` marker older than ten minutes as retryable.
+Set `AVEN_DISPATCH_SUMMARY_AUTO=0` (also `false`, `off`, or `no`) to disable
 automatic generation.
 
 ### Dispatch flow
