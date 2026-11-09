@@ -273,7 +273,10 @@ impl LockedStore {
         self.dirty.remove(&key);
         Ok(removed)
     }
-    pub(crate) fn remove_attempts_for_task(&mut self, task_id: &str) -> Result<usize> {
+    /// Remove every execution record owned by one immutable task. Both attempts
+    /// and their pending publication journal are deleted, including effects
+    /// that outlived their attempt rows.
+    pub(crate) fn remove_task_state(&mut self, task_id: &str) -> Result<(usize, usize)> {
         let attempts = self
             .store
             .attempts
@@ -281,50 +284,46 @@ impl LockedStore {
             .filter(|attempt| attempt.task_id == task_id)
             .cloned()
             .collect::<Vec<_>>();
-        if attempts.is_empty() {
-            return Ok(0);
-        }
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        {
-            let mut statement = transaction
-                .prepare_cached("DELETE FROM attempts WHERE task_id = ?1 AND workflow = ?2")?;
-            for attempt in &attempts {
-                statement.execute(params![&attempt.task_id, &attempt.workflow])?;
-            }
-        }
-        transaction.commit()?;
-        // Reset invalidates the whole execution generation, including its
-        // pending publication journal, but never Aven history.
-        let effect_keys = self
+        // Reset and delete invalidate the whole execution generation, including
+        // its pending publication journal, but never Aven history.
+        let effects = self
             .store
             .effects
             .values()
             .filter(|effect| effect.task_id == task_id)
-            .map(|effect| effect_key(&effect.task_id, &effect.workflow, &effect.operation_id))
+            .cloned()
             .collect::<Vec<_>>();
-        if !effect_keys.is_empty() {
+        if attempts.is_empty() && effects.is_empty() {
+            return Ok((0, 0));
+        }
+        if !attempts.is_empty() {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            {
+                let mut statement = transaction
+                    .prepare_cached("DELETE FROM attempts WHERE task_id = ?1 AND workflow = ?2")?;
+                for attempt in &attempts {
+                    statement.execute(params![&attempt.task_id, &attempt.workflow])?;
+                }
+            }
+            transaction.commit()?;
+        }
+        if !effects.is_empty() {
             let transaction = self
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
             {
                 let mut statement = transaction
                     .prepare_cached("DELETE FROM effects WHERE task_id = ?1 AND workflow = ?2")?;
-                for effect in self
-                    .store
-                    .effects
-                    .values()
-                    .filter(|effect| effect.task_id == task_id)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                {
+                for effect in &effects {
                     statement.execute(params![&effect.task_id, &effect.workflow])?;
                 }
             }
             transaction.commit()?;
         }
-        for key in effect_keys {
+        for effect in &effects {
+            let key = effect_key(&effect.task_id, &effect.workflow, &effect.operation_id);
             self.store.effects.remove(&key);
             self.dirty_effects.remove(&key);
         }
@@ -333,7 +332,10 @@ impl LockedStore {
             self.store.attempts.remove(&key);
             self.dirty.remove(&key);
         }
-        Ok(attempts.len())
+        Ok((attempts.len(), effects.len()))
+    }
+    pub(crate) fn remove_attempts_for_task(&mut self, task_id: &str) -> Result<usize> {
+        Ok(self.remove_task_state(task_id)?.0)
     }
 }
 
@@ -520,6 +522,32 @@ mod tests {
         reopened.save().unwrap();
         drop(reopened);
         assert!(LockedStore::open(state).unwrap().store.attempts.is_empty());
+    }
+
+    #[test]
+    fn sqlite_store_removes_effects_even_without_attempts() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("dispatch.sqlite");
+        let mut store = LockedStore::open(state.clone()).unwrap();
+        store.begin_effect(EffectRecord {
+            scope: "default".into(),
+            task_id: "task-one".into(),
+            task_ref: "APP-ONE".into(),
+            workflow: "implementation".into(),
+            attempt_id: "att_one".into(),
+            operation_id: "op_one".into(),
+            kind: "aven_metadata".into(),
+            state: "pending".into(),
+            ..EffectRecord::default()
+        });
+        store.save().unwrap();
+        drop(store);
+        let mut reopened = LockedStore::open(state.clone()).unwrap();
+        assert!(reopened.store.attempts.is_empty());
+        assert_eq!(reopened.remove_task_state("task-one").unwrap(), (0, 1));
+        reopened.save().unwrap();
+        drop(reopened);
+        assert!(LockedStore::open(state).unwrap().store.effects.is_empty());
     }
 
     #[test]

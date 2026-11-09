@@ -326,6 +326,20 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Inventory, and with --apply delete, a root task tree and its state.
+    Delete {
+        /// Root task reference; its epic children are discovered from Aven.
+        task: String,
+        /// Perform the cascade and remove dispatcher state. Default is inventory.
+        #[arg(long)]
+        apply: bool,
+        /// Aven workspace key.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Print the structured inventory/outcome as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Propose (and, with explicit tasks, apply) reviewed board hygiene repairs.
     Board {
         /// Aven project key; inferred from the repository name when omitted.
@@ -587,6 +601,20 @@ fn main() -> Result<()> {
                 task,
                 reason,
                 workspace,
+                json,
+            },
+        ),
+        Commands::Delete {
+            task,
+            apply,
+            workspace,
+            json,
+        } => dispatch::delete::run(
+            path,
+            dispatch::delete::DeleteArgs {
+                task,
+                workspace,
+                apply,
                 json,
             },
         ),
