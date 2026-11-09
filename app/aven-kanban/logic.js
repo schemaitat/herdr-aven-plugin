@@ -96,8 +96,8 @@ const STOPPED_TERMINAL_STATES = new Set(["finished", "removed"]);
 const PENDING_DELIVERY_STATES = new Set(["pending", "committed"]);
 const RECORDED_DELIVERY_STATES = new Set(["merged", "not-applicable", "superseded", "waived"]);
 
-export function assertBoardCoverage({ available = 0, upcoming = 0, attempts = 0, epics = 0 }) {
-  if (available >= LIMIT || upcoming >= LIMIT || epics >= LIMIT) throw new Error(`epic read reached the ${LIMIT}-item safety limit`);
+export function assertBoardCoverage({ available = 0, upcoming = 0, attempts = 0, epics = 0, obligations = 0 }) {
+  if (available >= LIMIT || upcoming >= LIMIT || epics >= LIMIT || obligations >= LIMIT) throw new Error(`epic or obligation read reached the ${LIMIT}-item safety limit`);
   if (attempts >= ATTEMPT_LIMIT) throw new Error(`dispatcher read reached the ${ATTEMPT_LIMIT}-attempt safety limit`);
 }
 
@@ -134,12 +134,20 @@ export function detailArgs(workspace, ref) {
   return ["show", ref, "--workspace", workspace, "--full", "--json"];
 }
 
+// Delivery obligations are ordinary open tasks linked to their accepted source
+// by `delivery.obligation-for`. One bounded list plus one detail read per open
+// obligation is cheaper than reading every child phase of every epic.
+export function obligationListArgs(workspace) {
+  return ["list", "--workspace", workspace, "--all-projects", "--open",
+    "--has-metadata", "delivery.obligation-for", "--limit", String(LIMIT), "--json"];
+}
+
 // Metadata that gates approval, delivery, or plan badges, plus the LLM summary
 // contract the board renders. Everything else in an `aven show --full` payload
 // stays outside the board model.
 export const DETAIL_METADATA = [
   "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
-  "delivery.state", "delivery.target", "delivery.obligation",
+  "delivery.state", "delivery.target", "delivery.obligation", "delivery.obligation-for",
   "summary.llm", "summary.llm.digest", "summary.llm.generated-at",
   "summary.llm.state", "summary.llm.state-at", "summary.llm.error",
 ];
@@ -304,10 +312,12 @@ function phaseProgress(children) {
 // Remaining open tasks prevent an accepted epic from becoming done. The
 // dispatcher publishes one delivery obligation linked from `delivery.obligation`
 // (and `delivery.obligation-for` on the obligation itself), while open child
-// phases block closeout independently. Unrelated related links, such as
-// dispatcher log tasks, are context rather than blockers, so only the named
-// obligation and open children are surfaced.
-export function openTaskBlockers({ children = [], related = [], obligation = "" } = {}) {
+// phases block closeout independently. Approval attaches obligations to
+// accepted child phases, so the indexed child obligations are included too.
+// Unrelated related links, such as dispatcher log tasks, are context rather
+// than blockers, so only the named/indexed obligations and open children are
+// surfaced.
+export function openTaskBlockers({ children = [], related = [], obligation = "", obligations = [] } = {}) {
   const blockers = [];
   const seen = new Set();
   const add = (task, kind) => {
@@ -330,8 +340,30 @@ export function openTaskBlockers({ children = [], related = [], obligation = "" 
   // An obligation absent from `related` has unknown state, so it is not
   // invented as an open blocker.
   if (linked) add(linked, "delivery");
+  for (const item of obligations ?? []) add(item, "delivery");
   for (const child of children ?? []) add(child, "phase");
   return blockers;
+}
+
+// Index open delivery obligations by the accepted source they belong to. The
+// board only lists root epics, while approval attaches an obligation to each
+// accepted child phase, so the root card needs the child's obligation too.
+export function openObligationIndex(details) {
+  const index = new Map();
+  for (const detail of details ?? []) {
+    const source = String(detail?.metadata?.["delivery.obligation-for"] ?? "").trim();
+    const ref = String(detail?.task?.ref ?? "").trim();
+    const status = String(detail?.task?.status ?? "").trim();
+    if (!source || !ref || TERMINAL_STATUSES.has(status)) continue;
+    if (!index.has(source)) index.set(source, []);
+    index.get(source).push({
+      ref,
+      title: String(detail?.task?.title ?? "").trim(),
+      status,
+      kind: "delivery",
+    });
+  }
+  return index;
 }
 
 function normalizedDescription(description) {
@@ -422,7 +454,7 @@ export function autoSummaryCandidate(task, now = Date.now()) {
 
 // Normalize only the fields the board renders. In particular, dispatcher
 // pending_prompt and Aven descriptions/notes never enter the view model.
-export function normalizeEpic(row, detail) {
+export function normalizeEpic(row, detail, obligations = new Map()) {
   const id = canonicalId(row);
   const ref = qualifiedRef(row);
   if (!id || !ref || row?.deleted || row?.is_epic !== true) return null;
@@ -434,6 +466,10 @@ export function normalizeEpic(row, detail) {
   const childIds = (Array.isArray(children) ? children : [])
     .map((child) => String(child?.id ?? "").trim())
     .filter(Boolean);
+  const childRefs = (Array.isArray(children) ? children : [])
+    .map((child) => String(child?.ref ?? "").trim())
+    .filter(Boolean);
+  const childObligations = childRefs.flatMap((childRef) => obligations?.get?.(childRef) ?? []);
   const status = String(hydrated && detailTask.status ? detailTask.status : (row.status ?? "unknown"));
   const approval = approvalMarker(hydrated ? metadata : {});
   const description = hydrated && typeof detail?.description === "string" ? detail.description : "";
@@ -475,16 +511,17 @@ export function normalizeEpic(row, detail) {
       children,
       related,
       obligation: metadata["delivery.obligation"] ?? "",
+      obligations: childObligations,
     }) : [],
   };
 }
 
-export function mergeEpicRows({ available = [], upcoming = [], details = {} }) {
+export function mergeEpicRows({ available = [], upcoming = [], details = {}, obligations = new Map() }) {
   const rows = new Map();
   for (const raw of [...available, ...upcoming]) {
     const id = canonicalId(raw);
     if (!id || rows.has(id)) continue;
-    const row = normalizeEpic(raw, details[id]);
+    const row = normalizeEpic(raw, details[id], obligations);
     if (row) rows.set(id, row);
   }
   return [...rows.values()].sort((left, right) => {
@@ -761,7 +798,7 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
     warnings.push("On main; closeout not recorded.");
   }
   if (blockedAfterMerge) {
-    warnings.push(`${openTasks.length} open task${openTasks.length === 1 ? "" : "s"} still block done.`);
+    warnings.push(`${openTasks.length} open task${openTasks.length === 1 ? "" : "s"} still ${openTasks.length === 1 ? "blocks" : "block"} done.`);
   }
 
   let column;

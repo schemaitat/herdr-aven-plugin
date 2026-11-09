@@ -7,7 +7,7 @@ import {
   cardArchiveable, cardForEpic, cardSummary, contrastRatio, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent,
   detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
-  openTaskBlockers,
+  obligationListArgs, openObligationIndex, openTaskBlockers,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
   projectChips, refreshMayPublishProgress, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
@@ -72,10 +72,11 @@ assert.deepEqual(BOARD_COLUMNS.map(({ title }) => title), ["BACKLOG", "NEEDS YOU
 assert.deepEqual(BOARD_COLUMNS.map(({ tone }) => tone), ["dim", "attention", "working", "land", "done"]);
 assert.deepEqual(CREATED_FILTERS.map(({ id }) => id), ["all", "1w", "2w", "1mo", "1y"]);
 assert.deepEqual(CREATED_FILTERS.map(({ days }) => days), [null, 7, 14, 30, 365]);
-assert.doesNotThrow(() => assertBoardCoverage({ available: LIMIT - 1, upcoming: LIMIT - 1, attempts: ATTEMPT_LIMIT - 1, epics: LIMIT - 1 }));
-assert.throws(() => assertBoardCoverage({ available: LIMIT }), /epic read reached/);
-assert.throws(() => assertBoardCoverage({ upcoming: LIMIT }), /epic read reached/);
-assert.throws(() => assertBoardCoverage({ epics: LIMIT }), /epic read reached/, "merged available/upcoming coverage is capped before metadata hydration");
+assert.doesNotThrow(() => assertBoardCoverage({ available: LIMIT - 1, upcoming: LIMIT - 1, attempts: ATTEMPT_LIMIT - 1, epics: LIMIT - 1, obligations: LIMIT - 1 }));
+assert.throws(() => assertBoardCoverage({ available: LIMIT }), /epic or obligation read reached/);
+assert.throws(() => assertBoardCoverage({ upcoming: LIMIT }), /epic or obligation read reached/);
+assert.throws(() => assertBoardCoverage({ epics: LIMIT }), /epic or obligation read reached/, "merged available/upcoming coverage is capped before metadata hydration");
+assert.throws(() => assertBoardCoverage({ obligations: LIMIT }), /epic or obligation read reached/, "the open-obligation read is capped too");
 assert.throws(() => assertBoardCoverage({ attempts: ATTEMPT_LIMIT }), /dispatcher read reached/);
 
 // Creation filters hide cards outside the selected lookback; unknown dates are
@@ -261,9 +262,9 @@ assert.equal(card("done", {}, [attempt("ONE", { state: "needs-review" })]).colum
 // A merge into local main only verifies code ancestry. An open task still
 // blocking delivery keeps the card in Ready to land and closes merge actions,
 // because the approved result is already on main.
-const blockerCard = (metadata, related, children = [], status = "done") => {
+const blockerCard = (metadata, related, children = [], status = "done", obligations = new Map()) => {
   const row = rawEpic("ONE", status, { epic_children: children });
-  const epic = normalizeEpic(row, { task: { ...row }, metadata, related });
+  const epic = normalizeEpic(row, { task: { ...row }, metadata, related }, obligations);
   return cardForEpic({ ...epic, mergedOnMain: true }, selectAttempt([], epic.id), []);
 };
 const mergedBlocked = blockerCard(
@@ -273,7 +274,7 @@ const mergedBlocked = blockerCard(
 assert.equal(mergedBlocked.column, "ready", "a merged result with an open blocker is not Done");
 assert.equal(mergedBlocked.mergeable, false, "already-merged work is not offered a second merge");
 assert.equal(mergedBlocked.openTasks[0].title, "Manual main integration");
-assert.match(mergedBlocked.warnings.join(" "), /1 open task still block done/);
+assert.match(mergedBlocked.warnings.join(" "), /1 open task still blocks done/);
 const mergedClear = blockerCard(
   { ...fullApproval, "delivery.state": "committed", "delivery.obligation": "HAP-OB" },
   [{ ref: "HAP-OB", title: "Manual main integration", status: "done" }],
@@ -282,6 +283,15 @@ assert.equal(mergedClear.column, "done", "a resolved obligation returns the card
 assert.doesNotMatch(mergedClear.warnings.join(" "), /still block done/);
 const mergedChildBlocked = blockerCard({ "delivery.state": "committed" }, [{ ref: "HAP-CH", status: "todo" }], [{ id: "CH", ref: "HAP-CH", status: "todo", open: true }]);
 assert.equal(mergedChildBlocked.column, "ready", "an accepted epic with an open child is not Done");
+const mergedChildObligation = blockerCard(
+  { ...fullApproval, "delivery.state": "committed" },
+  [],
+  [{ id: "CH", ref: "HAP-CH", title: "child", status: "done", open: false }],
+  "done",
+  openObligationIndex([{ task: { ref: "HAP-COB", title: "Manual main check", status: "todo" }, metadata: { "delivery.obligation-for": "HAP-CH" } }]),
+);
+assert.equal(mergedChildObligation.column, "ready", "a done child's open obligation still blocks the root");
+assert.equal(mergedChildObligation.openTasks[0].ref, "HAP-COB");
 assert.equal(card("canceled", {}, [], { mergedOnMain: true }).column, "done", "canceled work stays final");
 const canceledBlocked = blockerCard({ "delivery.state": "committed" }, [], [{ id: "CH", ref: "HAP-CH", status: "todo", open: true }], "canceled");
 assert.equal(canceledBlocked.column, "done", "open children never reopen canceled work");
@@ -679,9 +689,13 @@ assert.equal(mergeTabArgs({
 // metadata the board renders, including trimmed child identity fields.
 assert.deepEqual(DETAIL_METADATA, [
   "sdd.plan-worked-out", "approval.state", "approval.id", "approval.commit", "approval.workflow",
-  "delivery.state", "delivery.target", "delivery.obligation",
+  "delivery.state", "delivery.target", "delivery.obligation", "delivery.obligation-for",
   "summary.llm", "summary.llm.digest", "summary.llm.generated-at",
   "summary.llm.state", "summary.llm.state-at", "summary.llm.error",
+]);
+assert.deepEqual(obligationListArgs("default"), [
+  "list", "--workspace", "default", "--all-projects", "--open",
+  "--has-metadata", "delivery.obligation-for", "--limit", String(LIMIT), "--json",
 ]);
 const sanitized = safeDetail({
   task: {
@@ -732,6 +746,21 @@ assert.deepEqual(openTaskBlockers({ obligation: "HAP-MISSING", related: [] }), [
   "an obligation absent from related has unknown state and is not invented");
 assert.deepEqual(openTaskBlockers({ obligation: "HAP-CANCELED", related: [{ ref: "HAP-CANCELED", status: "canceled" }] }), [],
   "a canceled obligation no longer blocks");
+const childObligations = [{ ref: "HAP-COB", title: "Manual main check", status: "todo", kind: "delivery" }];
+assert.deepEqual(openTaskBlockers({
+  obligation: "HAP-OB",
+  related: [obligation],
+  obligations: childObligations,
+  children: [{ ref: "HAP-OB", title: "child with same ref", status: "active", open: true }],
+}).map(({ ref }) => ref), ["HAP-OB", "HAP-COB"], "child obligations follow the root obligation and dedupe shared refs");
+const obligationIndex = openObligationIndex([
+  { task: { ref: "HAP-OB", title: "Manual main integration", status: "todo" }, metadata: { "delivery.obligation-for": "HAP-CHILD" } },
+  { task: { ref: "HAP-DONE", title: "done", status: "done" }, metadata: { "delivery.obligation-for": "HAP-CHILD" } },
+  { task: { ref: "HAP-NOSOURCE", title: "bad", status: "todo" }, metadata: {} },
+]);
+assert.deepEqual(obligationIndex.get("HAP-CHILD"), [{ ref: "HAP-OB", title: "Manual main integration", status: "todo", kind: "delivery" }]);
+assert.equal(obligationIndex.size, 1, "terminal and sourceless rows never enter the obligation index");
+assert.deepEqual(openObligationIndex([]), new Map());
 const blockedRow = rawEpic("BLOCKED", "done");
 const blockedEpic = normalizeEpic(blockedRow, {
   task: { ...blockedRow, epic_children: [{ id: "CH", ref: "HAP-CH", title: "Child", status: "active", open: true }] },
@@ -739,6 +768,17 @@ const blockedEpic = normalizeEpic(blockedRow, {
   related: [obligation],
 });
 assert.deepEqual(blockedEpic.openTasks.map(({ ref }) => ref), ["HAP-OB", "HAP-CH"]);
+const childBlockedRow = rawEpic("CHILDROOT", "done", {
+  epic_children: [{ id: "CH2", ref: "HAP-CH2", title: "Done child", status: "done", open: false }],
+});
+const childBlockedEpic = normalizeEpic(childBlockedRow, {
+  task: { ...childBlockedRow },
+  metadata: { "delivery.state": "committed" },
+}, openObligationIndex([
+  { task: { ref: "HAP-COB", title: "Manual main check", status: "todo" }, metadata: { "delivery.obligation-for": "HAP-CH2" } },
+]));
+assert.deepEqual(childBlockedEpic.openTasks, [{ ref: "HAP-COB", title: "Manual main check", status: "todo", kind: "delivery" }],
+  "a root card surfaces its terminal child's open delivery obligation");
 assert.deepEqual(normalizeEpic(blockedRow).openTasks, [], "unhydrated cards never claim open blockers");
 
 // The bounded pool preserves input order and never exceeds its width.

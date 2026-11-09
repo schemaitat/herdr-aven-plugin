@@ -7,7 +7,7 @@ import {
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
-  mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard,
+  mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex, openArgs, projectChips, safeDetail, selectAttempt, selectedCard,
   selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
@@ -77,6 +77,7 @@ export default class AvenKanban extends View {
       enriching: false, evidencePending: false,
     };
     this.details = new Map();
+    this.obligationDetails = new Map();
     this.sources = null;
     this.mainMerged = new Set();
     this.coverageError = "";
@@ -245,22 +246,42 @@ export default class AvenKanban extends View {
     // Never guess a checkout from the app's own cwd: a wrong repository would
     // silently mark another project's work as delivered.
     const cwd = folder ? await this.rootFolder(folder) : "";
-    const [availableResult, upcomingResult, attemptsResult] = await Promise.all([
+    const [availableResult, upcomingResult, attemptsResult, obligationResult] = await Promise.all([
       exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
+      exec("aven", obligationListArgs(workspace), cwd ? { cwd } : undefined),
     ]);
     const available = parseList(availableResult, "Epics");
     const upcoming = parseList(upcomingResult, "Upcoming epics");
-    assertBoardCoverage({ available: available.length, upcoming: upcoming.length });
+    const obligationRows = parseList(obligationResult, "Delivery obligations")
+      .filter((row) => String(row?.ref ?? "").trim());
+    assertBoardCoverage({ available: available.length, upcoming: upcoming.length, obligations: obligationRows.length });
     const rawAttempts = parseList(attemptsResult, "Dispatcher attempts");
     assertBoardCoverage({ attempts: rawAttempts.length });
-    const baseRows = mergeEpicRows({ available, upcoming });
+    // Read only changed open obligations. A resolved obligation disappears from
+    // the bounded list, so the cache is pruned before indexing.
+    const currentObligations = new Set(obligationRows.map((row) => String(row?.ref ?? "")).filter(Boolean));
+    for (const ref of this.obligationDetails.keys()) if (!currentObligations.has(ref)) this.obligationDetails.delete(ref);
+    const obligationDetails = await mapLimit(obligationRows, READ_WORKERS, async (row) => {
+      const ref = String(row?.ref ?? "");
+      const cached = this.obligationDetails.get(ref);
+      if (cached && cached.updatedAt === row?.updated_at
+        && cached.detail?.task?.status === String(row?.status ?? "")) return cached.detail;
+      const detail = safeDetail(parse(
+        await exec("aven", detailArgs(workspace, ref), cwd ? { cwd } : undefined),
+        `Obligation ${ref}`,
+      ));
+      this.obligationDetails.set(ref, { updatedAt: row?.updated_at, detail });
+      return detail;
+    });
+    const obligations = openObligationIndex(obligationDetails);
+    const baseRows = mergeEpicRows({ available, upcoming, obligations });
     assertBoardCoverage({ epics: baseRows.length });
     const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
     for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
     const attemptIndex = indexAttempts(rawAttempts);
-    return { workspace, cwd, available, upcoming, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
+    return { workspace, cwd, available, upcoming, obligations, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
   }
 
   mergedRows() {
@@ -272,7 +293,7 @@ export default class AvenKanban extends View {
       if (detailIsCurrent(cached, sources.workspace, row)) details[row.id] = cached.detail;
     }
     return markMergedOnMain(
-      mergeEpicRows({ available: sources.available, upcoming: sources.upcoming, details }),
+      mergeEpicRows({ available: sources.available, upcoming: sources.upcoming, details, obligations: sources.obligations }),
       this.mainMerged,
     ).map((row) => ({ ...row, ancestryPending: !this.ancestryChecked }));
   }
