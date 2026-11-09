@@ -1085,9 +1085,14 @@ Only after the recorded checks from all approvals pass on the exact reviewed
 combined commit does the CLI fast-forward clean local main. A moved target,
 changed source, missing approval, dirty worktree, incompatible requirements or
 failed verification leaves main untouched. Extra integration changes outside the
-approved changed paths require a new approval. Source worktrees, branches and
-Herdr spaces are retained; this workflow never pushes main, creates a PR or
-performs teardown. OpenCode/tool permissions still apply.
+approved changed paths require a new approval. Source worktrees and branches are
+retained; this workflow never pushes main, creates a PR or deletes them. Once
+delivery recording is complete, `/ha-merge` finalizes with an explicit offer to
+close only the exact Herdr-app spaces associated with the merged tasks, derived
+from recorded attempt worktree and owned-terminal evidence. The offer defaults
+to **No**, never includes the main or current space, and each association is
+revalidated immediately before closing; closing ends the space's terminals.
+OpenCode/tool permissions still apply.
 
 Delivery is finalized automatically, children first and root last. If Aven fails
 after Git succeeds, the SQLite journal retains the exact merged result; resume

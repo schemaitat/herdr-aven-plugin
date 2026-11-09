@@ -89,7 +89,42 @@ teardown. Follow the active Git/GitHub, conventional-commit and Aven instruction
    recorded delivery outcome. Stop on failure; do not claim the batch succeeded
    merely because a source was approved or preparation exited successfully.
 
-Never push main, create a PR, close a Herdr space, or delete a Git worktree or
-branch as part of this command. OpenCode/tool permissions still apply; this
-prompt directs automatic conflict resolution, while the CLI enforces approval,
-isolation, exact-commit verification and delivery boundaries.
+## Finalize and optional space closure
+
+9. Offer closure only after step 6 reported a verified merge and step 8 recorded
+   delivery for every merged task. A **merged; delivery recording pending**
+   result is not final: resume the operation and do not offer closure yet.
+   Derive the associated Herdr-app spaces from recorded dispatcher attempt
+   evidence, never from focus, a space name, a folder prefix, or the newest
+   attempt:
+   - For each supplied task, read `aven-dispatch status <task-ref>` (or a
+     bounded `aven-dispatch list --summary --limit 500`).
+   - Include the attempt's exact worktree folder and every recorded owned
+     terminal address (builder, coordinator, babysitter and phases). For an
+     epic, include its dispatched phase children's attempts too.
+   - Compare that evidence with `herdr-app ls`. A space is associated only when
+     its `folder` exactly equals one of those worktree paths or one of its tabs
+     contains a recorded owned terminal.
+10. Never include the repository's primary-checkout/main space or a space that
+    hosts this merge session. If no space is associated, report that and finish.
+11. List every candidate space with its ID, name, folder and the exact matching
+    worktree or terminal. Ask explicitly whether to close exactly those spaces,
+    state that closing ends their terminals, and make the default **No**. Do not
+    close anything on no answer, partial evidence, or an ambiguous association.
+12. On an explicit Yes, record the candidate list and outcome in a durable Aven
+    note first, then for each space revalidate the exact association
+    immediately before closing and run:
+
+    ```sh
+    herdr-app do space.close --id <space-id> --confirmed true
+    ```
+
+    Stop on the first failure and report which spaces were closed and which
+    remain. Never retry a reassigned or mismatched ID. Worktrees and branches
+    stay untouched.
+
+Never push main, create a PR, close a Herdr space without the explicit
+confirmation in step 12, or delete a Git worktree or branch. OpenCode/tool
+permissions still apply; this prompt directs automatic conflict resolution,
+while the CLI enforces approval, isolation, exact-commit verification and
+delivery boundaries.

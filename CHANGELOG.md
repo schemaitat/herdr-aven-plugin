@@ -20,6 +20,13 @@
   session, focuses the new terminal, and reveals it in herdr-app. Cards without a
   saved attempt still open the Aven TUI, and done/canceled cards never restart
   work. Worktree coordinators are focusable too.
+- Finalize `/ha-merge` with a default-No offer to close the Herdr-app spaces
+  associated with the merged tasks. Candidate spaces come only from recorded
+  dispatcher attempt evidence (exact worktree folder or owned terminal), never
+  from focus or a name; the main/current space is excluded, each association is
+  revalidated immediately before closing, and worktrees and branches stay
+  untouched. The offer waits until the merge and delivery recording are both
+  verified.
 - Make Kanban refreshes atomic once the board is visible: hydration and
   local-main delivery evidence are staged off-screen and the board is replaced
   in one publish, so **on main** badges and columns no longer flicker while a
