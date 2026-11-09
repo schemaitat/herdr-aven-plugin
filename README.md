@@ -552,8 +552,8 @@ drawn on:
 | **Backlog** | Inbox, backlog, and todo epics. A todo epic with `sdd.plan-worked-out=true` stays here with a **planned out** badge. |
 | **Needs you** | A presentation split of Working cards whose related live agent (or live terminal observation) reports `blocked`. The card quotes the lowest question on the agent's screen, read with `hc read`; questions stay in memory. |
 | **Working** | Active epics and running, pending, failed, or interrupted execution. |
-| **Ready to land** | Needs-review/completed execution awaiting approval or delivery, plus explicit `pending`/`committed` delivery not verified on local main. |
-| **Done** | Delivered or legacy accepted done epics, terminal work whose exact attempt result is verified on local main, and canceled epics. |
+| **Ready to land** | Needs-review/completed execution awaiting approval or delivery, explicit `pending`/`committed` delivery not verified on local main, and accepted work that is merged but still has an open delivery obligation or open child task blocking Done. |
+| **Done** | Delivered or legacy accepted done epics, terminal work whose exact attempt result is verified on local main with no open tasks, and canceled epics. |
 
 Startup paints the board as soon as the bounded epic, scheduled-epic, and
 dispatcher list reads finish. Epic details and the read-only local-main
@@ -604,6 +604,17 @@ This is presentation evidence only: it never edits Aven delivery metadata or
 treats active epics as complete. Legacy done epics without delivery metadata
 remain Done as accepted historical work. Failed/interrupted non-merged
 execution stays Working rather than appearing ready to land.
+
+A Ready to land card lists every task that still blocks Done under
+**STILL OPEN**: the root's open delivery obligation followed by any open child
+phases, each by ref and title. Local-main ancestry alone cannot finish the card
+while those tasks remain open, so an approved result that is already merged but
+still needs a manual integration check stays in Ready to land with an explicit
+`open task still blocks done` warning instead of claiming Done. Because its
+result is already on main, that card has no second **Merge** or **Ship PR**
+action. Resolving the obligation or child on the next refresh removes it from
+the list and restores the normal classification. Unrelated related links, such
+as dispatcher log tasks, are never shown as blockers.
 
 **Open** starts or reveals the exact epic's Aven TUI. **Dispatch** offers the
 same dispatch, plan, plan-and-implement, implement, reset, and babysitter

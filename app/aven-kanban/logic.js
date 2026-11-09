@@ -160,6 +160,16 @@ export function safeDetail(payload) {
         status: String(child?.status ?? ""), open: child?.open !== false,
       })) : [],
     },
+    // Related tasks carry the delivery obligation and its live status. Keep
+    // only identity and state; aven show never lets notes or extra fields leak
+    // into the board model.
+    related: Array.isArray(payload?.related) ? payload.related.map((linked) => ({
+      id: String(linked?.task_id ?? linked?.id ?? ""),
+      ref: String(linked?.ref ?? linked?.display_ref ?? ""),
+      title: String(linked?.title ?? ""),
+      status: String(linked?.status ?? ""),
+      deleted: linked?.deleted === true,
+    })) : [],
     description: String(payload?.description ?? ""),
     metadata,
   };
@@ -226,6 +236,7 @@ export function detailNeedsRefresh(cached, workspace, row) {
   if (!detailIsCurrent(cached, workspace, row)) return true;
   return cached.detail?.task?.status === "done"
     || Boolean(cached.detail?.metadata?.["approval.state"])
+    || Boolean(cached.detail?.metadata?.["delivery.obligation"])
     || Boolean(cached.detail?.metadata?.["summary.llm"])
     || cached.detail?.metadata?.["summary.llm.state"] === "generating";
 }
@@ -288,6 +299,39 @@ function phaseProgress(children) {
   const total = Array.isArray(children) ? children.length : 0;
   const complete = (children ?? []).filter((child) => child?.open === false || TERMINAL_STATUSES.has(child?.status)).length;
   return { complete, total };
+}
+
+// Remaining open tasks prevent an accepted epic from becoming done. The
+// dispatcher publishes one delivery obligation linked from `delivery.obligation`
+// (and `delivery.obligation-for` on the obligation itself), while open child
+// phases block closeout independently. Unrelated related links, such as
+// dispatcher log tasks, are context rather than blockers, so only the named
+// obligation and open children are surfaced.
+export function openTaskBlockers({ children = [], related = [], obligation = "" } = {}) {
+  const blockers = [];
+  const seen = new Set();
+  const add = (task, kind) => {
+    const ref = String(task?.ref ?? task?.display_ref ?? "").trim();
+    if (!ref || seen.has(ref)) return;
+    if (task?.deleted === true) return;
+    if (task?.open === false || TERMINAL_STATUSES.has(String(task?.status ?? ""))) return;
+    seen.add(ref);
+    blockers.push({
+      ref,
+      title: String(task?.title ?? "").trim(),
+      status: String(task?.status ?? "").trim(),
+      kind,
+    });
+  };
+  const wanted = String(obligation ?? "").trim();
+  const linked = wanted
+    ? (related ?? []).find((task) => String(task?.ref ?? task?.display_ref ?? "").trim() === wanted)
+    : null;
+  // An obligation absent from `related` has unknown state, so it is not
+  // invented as an open blocker.
+  if (linked) add(linked, "delivery");
+  for (const child of children ?? []) add(child, "phase");
+  return blockers;
 }
 
 function normalizedDescription(description) {
@@ -386,6 +430,7 @@ export function normalizeEpic(row, detail) {
   const hydrated = detailTask?.id === id && detailTask?.is_epic === true;
   const metadata = hydrated && detail?.metadata && typeof detail.metadata === "object" ? detail.metadata : {};
   const children = hydrated && Array.isArray(detailTask.epic_children) ? detailTask.epic_children : (row.epic_children ?? []);
+  const related = hydrated && Array.isArray(detail?.related) ? detail.related : [];
   const childIds = (Array.isArray(children) ? children : [])
     .map((child) => String(child?.id ?? "").trim())
     .filter(Boolean);
@@ -426,6 +471,11 @@ export function normalizeEpic(row, detail) {
     deliveryObligation: hydrated ? String(metadata["delivery.obligation"] ?? "") : "",
     taskIds: [id, ...childIds],
     phases: phaseProgress(children),
+    openTasks: hydrated ? openTaskBlockers({
+      children,
+      related,
+      obligation: metadata["delivery.obligation"] ?? "",
+    }) : [],
   };
 }
 
@@ -700,13 +750,23 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   if (epic.approvalInvalid) warnings.push("Approval marker is incomplete or belongs to a non-done task; rerun /approve.");
   if (terminalExecution) warnings.push("Terminal Aven status conflicts with active execution.");
 
-  const deliveredByMain = terminalStatus && epic.mergedOnMain === true;
-  if (deliveredByMain && !RECORDED_DELIVERY_STATES.has(epic.deliveryState)) {
+  const openTasks = Array.isArray(epic.openTasks) ? epic.openTasks : [];
+  const onMain = terminalStatus && epic.mergedOnMain === true;
+  // A merge into local main verifies code ancestry, not delivery. Canceled epics
+  // are already final; every other terminal card with an open blocker stays out
+  // of Done until that task is done or canceled.
+  const blockedAfterMerge = onMain && epic.status !== "canceled" && openTasks.length > 0;
+  const deliveredByMain = onMain && !blockedAfterMerge;
+  if (onMain && !RECORDED_DELIVERY_STATES.has(epic.deliveryState)) {
     warnings.push("On main; closeout not recorded.");
+  }
+  if (blockedAfterMerge) {
+    warnings.push(`${openTasks.length} open task${openTasks.length === 1 ? "" : "s"} still block done.`);
   }
 
   let column;
   if (deliveredByMain) column = "done";
+  else if (blockedAfterMerge) column = "ready";
   else if (PENDING_DELIVERY_STATES.has(epic.deliveryState)) column = "ready";
   // Until local-main ancestry is known, terminal work without an approval
   // cannot claim Ready to land. It stays Done provisionally and may move to
@@ -724,7 +784,7 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
   // the contradiction warning above instead.
   const agentActive = !terminalStatus && working;
   const approved = epic.approved === true;
-  const readyToMerge = column === "ready" && approved && epic.status === "done";
+  const readyToMerge = column === "ready" && approved && epic.status === "done" && !onMain;
   return {
     ...epic,
     column,
