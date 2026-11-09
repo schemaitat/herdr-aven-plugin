@@ -3,13 +3,13 @@ import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, BORDER_CONTRAST_PAIRS, CREATED_FILTERS, DETAIL_METADATA, DISPATCH_ACTIONS, LIMIT,
   MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS, SUMMARY_LABEL, TEXT_CONTRAST_PAIRS, autoSummaryCandidate,
-  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard,
-  cardArchiveable, cardForEpic, cardSummary, contrastRatio, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent,
+  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardStats, buildBoard,
+  cardArchiveable, cardForEpic, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, detailArgs, detailCacheKey, detailIsCurrent,
   detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
-  projectChips, refreshMayPublishProgress, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
+  projectChips, refreshMayPublishProgress, resolveCurrentProject, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
   summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -62,6 +62,23 @@ const card = (status = "todo", metadata = {}, attempts = [], extra = {}, liveAge
 
 assert.deepEqual(epicArgs("default"), ["list", "--workspace", "default", "--all-projects", "--epics", "--limit", String(LIMIT), "--json"]);
 assert.deepEqual(upcomingArgs("default"), ["list", "--workspace", "default", "--all-projects", "--upcoming", "--limit", String(LIMIT), "--json"]);
+// The board resolves the selected space's project through Aven's own cwd
+// inference; the read must stay bounded and must not widen to every project.
+assert.deepEqual(currentProjectArgs("default"), ["list", "--workspace", "default", "--limit", "1", "--json"]);
+assert.equal(resolveCurrentProject([{ project: "herdr-aven-plugin" }]), "herdr-aven-plugin");
+assert.equal(resolveCurrentProject([{ project: { key: "herdr-aven-plugin" } }]), "herdr-aven-plugin");
+assert.equal(resolveCurrentProject([{ project: "one" }, { project: "two" }]), "", "an unexpected multi-project read is not a resolution");
+assert.equal(resolveCurrentProject([], "scope: project herdr-aven-plugin (from git root name) · --all-projects for everything\n"), "herdr-aven-plugin",
+  "Aven's resolved scope fills an empty bounded read");
+assert.equal(resolveCurrentProject([], "Error: error unknown-project input=probe\n"), "", "an inference error leaves the board on all");
+assert.equal(resolveCurrentProject([], ""), "");
+assert.equal(automaticProjectFilter("herdr-aven-plugin", [{ project: "herdr-aven-plugin" }]), "herdr-aven-plugin");
+assert.equal(automaticProjectFilter("herdr-aven-plugin", [{ project: "other" }]), "", "a project with no visible card falls back to all");
+assert.equal(automaticProjectFilter("herdr-aven-plugin", []), "");
+assert.equal(automaticProjectFilter("", [{ project: "herdr-aven-plugin" }]), "");
+assert.match(kanbanSource, /currentProjectArgs\(workspace\)/, "the board reads Aven's inferred project on every refresh");
+assert.match(kanbanSource, /aven-kanban\.project-auto/, "an explicit chip choice is persisted separately from automatic resolution");
+assert.match(kanbanSource, /automaticProjectFilter\(/, "automatic selection checks the visible cards");
 assert.deepEqual(detailArgs("default", "HAP-ONE"), ["show", "HAP-ONE", "--workspace", "default", "--full", "--json"]);
 assert.deepEqual(DISPATCH_ACTIONS.map(({ detailKey }) => detailKey), ["d", "s", "p", "i", "r", "x", "b"]);
 assert.deepEqual(BOARD_COLUMNS.map(({ id }) => id), ["backlog", "needs_you", "working", "ready", "done"]);

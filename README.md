@@ -539,10 +539,13 @@ the Board layout from
 Graphite-style palette, a compact top bar, a today strip, a NEXT MOVE banner,
 project chips, and colour-accented, independently scrolling columns. It lists
 nondeleted root epics from every Aven project in the explicit local `default`
-workspace, with the project chips narrowing that set. Scheduled open epics and
-terminal done/canceled epics are included. Five flexible columns always fit the
-window width without horizontal scrolling and combine independent Aven and
-dispatcher facts instead of creating another task store. The selected card has
+workspace. On open it resolves the Aven project that owns the selected Herdr
+space/worktree through Aven's own checkout inference and starts on that
+project's chip; the **all** chip widens the board to every project. Scheduled
+open epics and terminal done/canceled epics are included. Five flexible columns
+always fit the window width without horizontal scrolling and combine
+independent Aven and dispatcher facts instead of creating another task store.
+The selected card has
 a bright accent border and the focused column header carries an accent rule and
 count chip; every board text colour meets WCAG AA contrast on the surface it is
 drawn on:
@@ -580,7 +583,12 @@ or unsummarized descriptions are unchanged.
 
 **Project chips** filter by project and show per-project counts plus a yellow
 dot when a card there needs you; the **all** chip clears the filter and shows
-every project in the workspace. A **Created** control filters visible cards by
+every project in the workspace. The first chip is the project Aven resolves from
+the selected space/worktree (linked worktrees and project path mappings
+included), unless the person has chosen a chip before. An explicit choice,
+including **all**, persists across overlay openings; automatic resolution is
+never persisted and falls back to **all** when the project has no visible card.
+A **Created** control filters visible cards by
 `created_at` with `All`, `1w`, `2w`, `1mo`, and `1y` windows (fixed
 7/14/30/365-day lookbacks). Both choices persist across overlay openings, and a
 hidden card cannot stay selected. Cards whose root epic or any child task has a
