@@ -277,16 +277,47 @@ export function detailIsCurrent(cached, workspace, row) {
 }
 
 // Aven `updated_at` has second granularity, so a metadata-only edit inside the
-// same second can leave the row timestamp unchanged. Re-read anything that can
-// affect the merge gate on every refresh instead of trusting the timestamp.
-export function detailNeedsRefresh(cached, workspace, row) {
+// same second can leave the row timestamp unchanged. Reading those cards on a
+// slower revalidation tier keeps the merge gate honest without re-reading every
+// terminal epic on every 10-second tick.
+export function detailNeedsRefresh(cached, workspace, row, { revalidate = true } = {}) {
   if (!detailIsCurrent(cached, workspace, row)) return true;
+  // An in-flight summary is an active writer; poll it on every refresh.
+  if (cached.detail?.metadata?.["summary.llm.state"] === "generating") return true;
+  if (!revalidate) return false;
   return cached.detail?.task?.status === "done"
     || Boolean(cached.detail?.metadata?.["approval.state"])
     || Boolean(cached.detail?.metadata?.["delivery.obligation"])
     || Boolean(cached.detail?.metadata?.["summary.llm"])
     || cached.detail?.metadata?.["summary.llm.state"] === "generating";
 }
+
+// A cheap, deterministic identity of every list-read fact that can change a
+// card's column. The board uses it to decide whether cached details and Git
+// ancestry must be recomputed instead of re-reading everything on a timer.
+export function boardSourceSignature({ rows = [], attempts = [], obligations = new Map() } = {}) {
+  const rowPart = (rows ?? []).map((row) => [canonicalId(row), row?.status ?? "", row?.updated_at ?? ""].join(":")).join("|");
+  const attemptPart = (attempts ?? []).map((raw) => {
+    const attempt = normalizeAttempt(raw);
+    return [
+      attempt.taskId, attempt.attemptId, attempt.generation, attempt.state, attempt.workflow,
+      attempt.branch, attempt.worktree, attempt.observation, attempt.contradiction,
+      JSON.stringify(attempt.terminals), JSON.stringify(attempt.terminal), JSON.stringify(attempt.coordinatorTerminal),
+    ].join(":");
+  }).join("|");
+  const obligationPart = [...(obligations ?? new Map())].map(([source, list]) =>
+    `${source}:${(list ?? []).map((item) => `${item?.ref ?? ""}:${item?.status ?? ""}`).join(",")}`).join("|");
+  return `${rowPart}\n${attemptPart}\n${obligationPart}`;
+}
+
+// Local-main ancestry is expensive (ref probes per terminal attempt). Reuse
+// the cached set unless the source changed, details were hydrated, or the
+// resolved main head moved. The periodic full tier still refreshes it.
+export function evidenceNeedsRefresh({ full = false, changed = false, hydrated = 0, head = "", previousHead = "" } = {}) {
+  if (full || changed || hydrated > 0) return true;
+  return String(head) !== String(previousHead);
+}
+
 
 // Hydrate the details that are stale or absent, publishing each outcome as soon
 // as it lands so the board can enrich incrementally. `publish(row, snapshot)`
@@ -323,6 +354,18 @@ export function enrichmentPending(state) {
 // publishes once, so merged badges cannot flicker mid-refresh.
 export function refreshMayPublishProgress(hasSettledBoard) {
   return !hasSettledBoard;
+}
+
+// Progressive hydration can resolve dozens of details in a burst. Repainting
+// the whole board for each one turns startup into visible jank, so publishes
+// are coalesced to a small interval. The final hydrated publish is separate
+// and always runs, so a skipped intermediate frame is never the last word.
+export function progressPublishDue(lastAt, now, intervalMs = 120) {
+  const last = Number(lastAt) || 0;
+  const current = Number(now) || 0;
+  const interval = Math.max(0, Number(intervalMs) || 0);
+  if (current < last) return true;
+  return current - last >= interval;
 }
 
 export function cardArchiveable(card, state) {

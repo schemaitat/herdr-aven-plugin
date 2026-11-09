@@ -3,15 +3,15 @@ import { readFileSync } from "node:fs";
 import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, BORDER_CONTRAST_PAIRS, CREATED_FILTERS, DETAIL_METADATA, DISPATCH_ACTIONS, LIMIT,
   MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS, SUMMARY_LABEL, TEXT_CONTRAST_PAIRS, autoSummaryCandidate,
-  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardStats, buildBoard,
+  approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardSourceSignature, boardStats, buildBoard,
   cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, deleteArgs, deletedTaskIds,
   detailArgs, detailCacheKey, detailIsCurrent,
-  detailNeedsRefresh, dispatchTerminalName, emptyWhenUnknownMetadata, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
+  detailNeedsRefresh, dispatchTerminalName, emptyWhenUnknownMetadata, enrichmentPending, epicArgs, evidenceNeedsRefresh, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, landedWeekTotal, lastQuestion, mapLimit, safeDeleteOutcome, safeDetail,
   handoffAgentRun, handoffSendArgs, handoffTabArgs, liveAgentFor, liveHandoffTerminal, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
   nextMove, normalizeAttempt, normalizeEpic, obligationListArgs, openObligationIndex, openTaskBlockers, openArgs,
-  projectChips, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard,
+  projectChips, progressPublishDue, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard,
   selectWorktreeSpace, shipPrompt, shipTabName,
   summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
@@ -38,6 +38,18 @@ assert.match(kanbanSource, /const progressive = refreshMayPublishProgress\(this\
 assert.match(kanbanSource, /if \(progressive\) this\.publishRows/);
 assert.match(kanbanSource, /this\.mainMerged = mainEvidence\.merged;/);
 assert.match(kanbanSource, /this\.hasSettledBoard = true;/);
+
+// Progressive startup hydration must not repaint once per epic. The first
+// detail may publish immediately, bursts are coalesced, and the final
+// post-hydration publish is unconditional.
+assert.equal(progressPublishDue(0, 119, 120), false, "a burst frame inside the interval is coalesced");
+assert.equal(progressPublishDue(0, 120, 120), true, "the first frame after the interval publishes");
+assert.equal(progressPublishDue(1000, 3400, 120), true, "a later frame publishes");
+assert.equal(progressPublishDue(1000, 900, 120), true, "a backwards clock publishes instead of starving");
+assert.match(kanbanSource, /PROGRESS_PUBLISH_MS = 120/);
+assert.match(kanbanSource, /progressPublishDue\(lastProgressPublish, Date\.now\(\), PROGRESS_PUBLISH_MS\)/);
+assert.match(kanbanSource, /const hydration = neededRows\.length/);
+assert.match(kanbanSource, /if \(progressive\) this\.publishRows\(taskCx, \{ evidencePending: true \}\)/, "the final staged publish still runs");
 
 // One render takes one live snapshot and builds the board once. The drawn,
 // project-filtered columns then drive selection, stats, and chips instead of a
@@ -282,6 +294,71 @@ assert.equal(
   true,
   "obligation-sensitive details are re-read even when the second-granular timestamp matches",
 );
+
+// The cheap refresh tier trusts the row timestamp; the periodic full tier
+// keeps the same-second collision guarantee. An active summary writer is
+// always polled.
+const cheapTierApproval = { workspace: "default", updatedAt: "t1", detail: { task: { status: "done" }, metadata: fullApproval } };
+assert.equal(detailNeedsRefresh(cheapTierApproval, "default", { updated_at: "t1" }, { revalidate: false }), false,
+  "the cheap tier reuses an unchanged terminal detail");
+assert.equal(detailNeedsRefresh(cheapTierApproval, "default", { updated_at: "t2" }, { revalidate: false }), true,
+  "a changed row is still re-read on the cheap tier");
+assert.equal(detailNeedsRefresh(cheapTierApproval, "notes", { updated_at: "t1" }, { revalidate: false }), true,
+  "a workspace change is still re-read on the cheap tier");
+assert.equal(detailNeedsRefresh(
+  { workspace: "default", updatedAt: "t1", detail: { task: { status: "active" }, metadata: { "summary.llm.state": "generating" } } },
+  "default", { updated_at: "t1" }, { revalidate: false },
+), true, "an in-flight summary is polled on every refresh");
+
+// The source signature covers every list-read fact that can move a card, so a
+// cheap refresh can skip hydration and ancestry work when nothing changed.
+const signatureRows = [rawEpic("ONE", "done"), rawEpic("TWO", "todo")];
+const signatureBase = boardSourceSignature({ rows: signatureRows, attempts: [attempt("ONE")], obligations: new Map() });
+assert.equal(
+  boardSourceSignature({ rows: [rawEpic("ONE", "done"), rawEpic("TWO", "todo")], attempts: [attempt("ONE")], obligations: new Map() }),
+  signatureBase,
+  "identical list reads share a signature",
+);
+assert.equal(
+  boardSourceSignature({ rows: [rawEpic("ONE", "done"), rawEpic("TWO", "todo")], attempts: [normalizeAttempt(attempt("ONE"))], obligations: new Map() }),
+  signatureBase,
+  "raw and already-normalized attempts share a signature",
+);
+assert.notEqual(
+  boardSourceSignature({ rows: [rawEpic("ONE", "done"), rawEpic("TWO", "active")], attempts: [attempt("ONE")], obligations: new Map() }),
+  signatureBase,
+  "a status change changes the signature",
+);
+assert.notEqual(
+  boardSourceSignature({ rows: [rawEpic("ONE", "done", { updated_at: "later" }), rawEpic("TWO", "todo")], attempts: [attempt("ONE")], obligations: new Map() }),
+  signatureBase,
+  "a row timestamp change changes the signature",
+);
+assert.notEqual(
+  boardSourceSignature({ rows: signatureRows, attempts: [attempt("ONE", { state: "needs-review" })], obligations: new Map() }),
+  signatureBase,
+  "an attempt state change changes the signature",
+);
+assert.notEqual(
+  boardSourceSignature({
+    rows: signatureRows,
+    attempts: [attempt("ONE")],
+    obligations: new Map([["HAP-ONE", [{ ref: "HAP-OB", status: "todo" }]]]),
+  }),
+  signatureBase,
+  "an open obligation change changes the signature",
+);
+assert.equal(evidenceNeedsRefresh({ head: "a", previousHead: "a" }), false, "unchanged evidence is reused");
+assert.equal(evidenceNeedsRefresh({ full: true, head: "a", previousHead: "a" }), true, "the full tier revalidates evidence");
+assert.equal(evidenceNeedsRefresh({ changed: true, head: "a", previousHead: "a" }), true, "changed sources revalidate evidence");
+assert.equal(evidenceNeedsRefresh({ hydrated: 1, head: "a", previousHead: "a" }), true, "hydrated details revalidate evidence");
+assert.equal(evidenceNeedsRefresh({ head: "b", previousHead: "a" }), true, "a moved main head revalidates evidence");
+assert.match(kanbanSource, /FULL_REVALIDATE_MS = 60000/);
+assert.match(kanbanSource, /const full = progressive \|\| Date\.now\(\) - this\.lastFullRefresh >= FULL_REVALIDATE_MS/);
+assert.match(kanbanSource, /revalidate: full/);
+assert.match(kanbanSource, /const evidenceDue = evidenceNeedsRefresh\(\{/);
+assert.match(kanbanSource, /const waitForCheckout = full \|\| changed \|\| hydration\.needed > 0 \|\| !this\.ancestryChecked/,
+  "a steady refresh does not stall on a missing checkout");
 
 // Every lifecycle column and the independent acceptance/execution/delivery facts.
 assert.equal(card("inbox").column, "backlog");
