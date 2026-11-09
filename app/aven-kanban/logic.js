@@ -800,6 +800,11 @@ export function landedWeek(rows, now = Date.now()) {
   return counts;
 }
 
+// The strip headline is the whole rolling week, not only today's bar.
+export function landedWeekTotal(rows, now = Date.now()) {
+  return landedWeek(rows, now).reduce((total, count) => total + count, 0);
+}
+
 export function projectChips(cards) {
   const chips = new Map();
   for (const card of cards ?? []) {

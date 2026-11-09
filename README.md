@@ -566,7 +566,8 @@ enrichment would reclassify. The ancestry check waits briefly for the space's
 live checkout, and navigation or archive presses made while the board is still
 settling are replayed against the authoritative cards.
 
-The today strip counts **Landed today** (with seven daily bars), **Needs you**,
+The today strip counts **Landed this week** (with seven daily bars and `0`–`7`
+x-axis indices), **Needs you**,
 **Working**, **Ready to land**, and **Open**. **Next move** quotes the oldest
 needs-you card and offers **Answer** and **Go to agent**. Cards show the agent
 glyph, project chip, qualified ref, timer or status, title, an **ASKS YOU** box

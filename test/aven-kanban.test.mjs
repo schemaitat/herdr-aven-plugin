@@ -6,7 +6,7 @@ import {
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, blockedAddress, boardStats, buildBoard,
   cardArchiveable, cardForEpic, cardSummary, contrastRatio, createdCutoff, detailArgs, detailCacheKey, detailIsCurrent,
   detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, flattenBoard,
-  hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
+  hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, landedWeekTotal, lastQuestion, mapLimit, safeDetail,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
   projectChips, refreshMayPublishProgress, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
@@ -591,13 +591,19 @@ assert.deepEqual(boardStats([]), { total: 0, backlog: 0, needsYou: 0, working: 0
 assert.equal(nextMove(statsColumns).id, "d", "the oldest needs-you card owns the banner");
 assert.equal(nextMove([{ id: "backlog", cards: [{ id: "a" }] }]), null);
 const weekNow = Date.parse("2026-11-06T12:00:00Z");
-assert.deepEqual(landedWeek([
+const landedRows = [
   { mergedOnMain: true, updated_at: "2026-11-06T01:00:00Z" },
   { deliveryState: "merged", updated_at: "2026-11-05T01:00:00Z" },
   { mergedOnMain: true, updated_at: "2026-10-20T01:00:00Z" },
   { mergedOnMain: false, deliveryState: "pending", updated_at: "2026-11-06T01:00:00Z" },
-], weekNow), [0, 0, 0, 0, 0, 1, 1]);
+];
+assert.deepEqual(landedWeek(landedRows, weekNow), [0, 0, 0, 0, 0, 1, 1]);
 assert.deepEqual(landedWeek([], weekNow), [0, 0, 0, 0, 0, 0, 0]);
+assert.equal(landedWeekTotal(landedRows, weekNow), 2, "the headline counts the whole rolling week");
+assert.equal(landedWeekTotal([], weekNow), 0);
+assert.match(kanbanSource, /LANDED THIS WEEK/, "the strip headline names the rolling week");
+assert.match(kanbanSource, /landedWeekTotal\(this\.state\.rows, this\.now\)/, "the headline uses the weekly total");
+assert.match(kanbanSource, /LANDED_AXIS\.map/, "the bars carry the 0-7 axis labels");
 const chips = projectChips([
   { project: "beta", column: "working" },
   { project: "alpha", column: "needs_you" },

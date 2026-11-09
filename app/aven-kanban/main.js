@@ -6,7 +6,7 @@ import {
   boardStats, buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
-  landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
+  landedWeek, landedWeekTotal, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard,
   selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
@@ -27,6 +27,8 @@ const C = BOARD_COLORS;
 const TONES = { dim: C.dim, attention: C.you, working: C.work, land: C.land, done: C.done };
 const MONO = "JetBrains Mono";
 const SANS = "Geist";
+// Boundary indices for the seven daily bars: 0 at the oldest edge, 7 at today.
+const LANDED_AXIS = [0, 1, 2, 3, 4, 5, 6, 7];
 const CHIPS = [
   ["#e0707f", "#3b1d24"], ["#3ec9b4", "#11302d"], ["#f0a050", "#3a2410"], ["#a690e8", "#2a2245"],
   ["#e6c35c", "#352c10"], ["#6fb3f2", "#152a40"], ["#e88cc8", "#3a1a30"], ["#8fd18a", "#1c321c"],
@@ -1074,9 +1076,12 @@ export default class AvenKanban extends View {
     const week = landedWeek(this.state.rows, this.now);
     const max = Math.max(1, ...week);
     return div().w_full().flex_none().flex().flex_row().gap(10)
-      .child(this.stat("LANDED TODAY", week[6], C.land,
-        h_flex().h(20).mt(4).gap(4).items_end().children(week.map((count, index) =>
-          div().flex_1().h(Math.max(2, Math.round(18 * count / max))).rounded(2).bg(C.land).opacity(index === 6 ? 1 : 0.3))), true))
+      .child(this.stat("LANDED THIS WEEK", landedWeekTotal(this.state.rows, this.now), C.land,
+        v_flex().mt(4).gap(2)
+          .child(h_flex().h(20).gap(4).items_end().children(week.map((count, index) =>
+            div().flex_1().h(Math.max(2, Math.round(18 * count / max))).rounded(2).bg(C.land).opacity(index === 6 ? 1 : 0.3))))
+          .child(h_flex().w_full().justify_between().children(LANDED_AXIS.map((index) =>
+            mono(8, C.dim, String(index))))), true))
       .child(this.stat("NEEDS YOU", stats.needsYou, C.you))
       .child(this.stat("WORKING", stats.working, C.work))
       .child(this.stat("READY TO LAND", stats.ready, C.land))
