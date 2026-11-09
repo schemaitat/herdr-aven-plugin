@@ -5,12 +5,11 @@ import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
   boardStats, buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
-  isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress, reopenTarget,
-  landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
+  handoffSendArgs, handoffTabArgs, isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress, reopenTarget,
+  landedWeek, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDetail,
-  selectAttempt, selectedCard,
-  selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  selectAttempt, selectedCard, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -869,8 +868,12 @@ export default class AvenKanban extends View {
     return detail;
   }
 
-  // Merge and Ship PR are handoffs: re-read approval now, then open a
-  // task-named tab in the main space. The board never mutates Git itself.
+  // Merge and Ship PR are handoffs into the session that owns the approved
+  // result: the builder for a single-session dispatch or the coordinator for a
+  // worktree epic. Re-read approval now, then send the prompt over hc and focus
+  // that agent. Only when its terminal is gone does the board open a tab in the
+  // task's worktree space. It never starts an agent in the primary checkout and
+  // never mutates Git itself.
   handoff(epic, kind, cx) {
     const identity = `${kind}\u0000${epic.id}`;
     if (!epic.mergeable || this.pendingHandoffs.has(identity)) return;
@@ -878,20 +881,34 @@ export default class AvenKanban extends View {
     cx.spawn(async (taskCx) => {
       const label = kind === "ship" ? "Ship PR" : "Merge";
       try {
-        const root = await this.rootFolder(this.spaceFolder());
-        if (!root) throw new Error("the primary checkout is unavailable");
         const workspace = this.workspace();
+        const cwd = epic.attempt?.worktree || await this.rootFolder(this.spaceFolder());
         // Re-read the exact task now: a cached or stale approval marker must
-        // never open a handoff. The dispatcher journal still validates it.
-        const detail = await this.exactDetail(workspace, epic, root);
+        // never deliver a handoff. The dispatcher journal still validates it.
+        const detail = await this.exactDetail(workspace, epic, cwd);
         const issue = mergeApprovalIssue(detail.task, detail.metadata);
         if (issue) {
           this.details.delete(detailCacheKey(workspace, epic.id));
           throw new Error(`${epic.ref} has no complete durable approval (${issue}); rerun /approve.`);
         }
+        const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
+        const live = liveHandoffTerminal(epic.attempt, agents(), terminals());
+        if (live) {
+          const sent = await hc(handoffSendArgs(live.address, task));
+          if (sent.code !== 0) {
+            throw new Error((sent.stderr || "").trim() || `could not send the ${label.toLowerCase()} prompt to the task agent`);
+          }
+          this.focusAgent(live, false);
+          return;
+        }
+        // The owning session has stopped. Keep the prompt in the task's own
+        // worktree space rather than starting a fresh agent in main.
+        const worktree = epic.attempt?.worktree ?? "";
         const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
-        const target = selectMainSpace(spaces(), root, activeSpaceId, panes());
-        if (!target?.id) throw new Error("no main app space is available");
+        const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes());
+        if (!target?.id) {
+          throw new Error("the task agent terminal and its worktree space are unavailable; open the task agent and retry");
+        }
         const name = kind === "ship" ? shipTabName(epic) : mergeTabName(epic);
         const existing = (target.tabs ?? []).find((tab) => tab.name === name);
         if (existing) {
@@ -902,9 +919,8 @@ export default class AvenKanban extends View {
           return;
         }
         const argv = await this.handoffAgent();
-        const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
-        const result = await exec("herdr-app", mergeTabArgs({
-          name, space: target.id, folder: root, argv, task,
+        const result = await exec("herdr-app", handoffTabArgs({
+          name, space: target.id, folder: worktree, argv, task,
         }));
         if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not open the ${label.toLowerCase()} agent`);
         this.close();
@@ -1300,8 +1316,8 @@ export default class AvenKanban extends View {
         ["o", "open the epic in Aven"],
         ["a", "answer a Needs you card / archive a Done card"],
         ["Shift-A", "archive all visible Done cards"],
-        ["Shift-S", "ship a PR for an approved card"],
-        ["m", "merge an approved card"],
+        ["Shift-S", "ship a PR from the approved card's task agent"],
+        ["m", "merge an approved card in its task agent"],
         ["d", "toggle Dispatch"],
         ["u", "expand or collapse the LLM summary"],
         ["s / p / i", "plan-and-implement / plan / implement"],

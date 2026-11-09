@@ -22,9 +22,10 @@ drops the YAML front matter, fills `$ARGUMENTS`/`{ARGS}`, `{ref}`, and
 All three workflows treat `done` as acceptance, including epic roots. Complete
 implementation finishes through `/approve`: actual tests/review and a clean
 committed final result yield a durable approval, while delivery stays pending.
-`/ha-merge <task-id> [<task-id> ...]` from main is the human integration trigger;
-it resolves conflicts in isolation and automatically closes out children before
-roots. Use the dispatcher commands rather than prose-only promises:
+`/ha-merge <task-id> [<task-id> ...]` from the task's agent session (or main) is
+the human integration trigger; it resolves conflicts in isolation and
+automatically closes out children before roots, keeping follow-up work with the
+session that owns the approved branch. Use the dispatcher commands rather than prose-only promises:
 
 - `aven-dispatch closeout <ref> --project <key>` — read-only delivery
   verification against the configured local target; `--apply` records evidence

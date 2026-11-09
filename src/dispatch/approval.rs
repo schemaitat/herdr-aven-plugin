@@ -510,7 +510,7 @@ pub(crate) fn run(
         &invocation,
         &["note", &approval.task_ref, "--stdin"],
         Some(&format!(
-            "## Approved for merge\n\nCommit: `{}`. Branch: `{}`. Checks passed: {}.\n\nReview: {}\n\nAcceptance is done; delivery is separate. Run `/ha-merge {}` from main.",
+            "## Approved for merge\n\nCommit: `{}`. Branch: `{}`. Checks passed: {}.\n\nReview: {}\n\nAcceptance is done; delivery is separate. Run `/ha-merge {}` from this task's agent session (or main).",
             approval.commit,
             approval.branch,
             approval.checks.join(", "),

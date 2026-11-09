@@ -59,7 +59,8 @@ When the build agent is idle, stalled, unclear, or has a recoverable blocker:
     deterministic `aven-dispatch approve` command). Confirm its durable exact-
     commit approval and pending delivery obligations, then stop supervising
     implementation; do not keep the agent running until main is merged.
-    `/ha-merge <ref>` from main is the separate human integration trigger.
+    `/ha-merge <ref>` from the task's agent session (or main) is the separate
+    human integration trigger.
    Confirm logs close only from proven stopped execution, and use
    `aven-dispatch disposition` for cancellation decisions rather than a bare
    status edit.

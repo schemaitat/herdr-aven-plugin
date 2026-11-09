@@ -7,10 +7,11 @@ import {
   cardArchiveable, cardForEpic, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, detailArgs, detailCacheKey, detailIsCurrent,
   detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
-  obligationListArgs, openObligationIndex, openTaskBlockers,
-  liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
-  mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
-  projectChips, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
+  handoffAgentRun, handoffSendArgs, handoffTabArgs, liveAgentFor, liveHandoffTerminal, markMergedOnMain,
+  mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
+  nextMove, normalizeAttempt, normalizeEpic, obligationListArgs, openObligationIndex, openTaskBlockers, openArgs,
+  projectChips, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard,
+  selectWorktreeSpace, shipPrompt, shipTabName,
   summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -520,70 +521,90 @@ assert.match(kanbanSource, /Reopening \$\{this\.reopening\}'s agent session/, "t
 assert.match(kanbanSource, /this\.open\(card, taskCx\)/, "a failed reopen still falls back to the epic in Aven");
 assert.match(kanbanSource, /attempt\.coordinatorTerminal\?\.address/, "a worktree coordinator terminal is focusable");
 
-// Merge is a task-id prompt launched in the main checkout, never a message to a
-// builder/coordinator pane.
+// Merge and Ship PR are prompts delivered to the task's own agent session.
 const approvedEpic = normalizeEpic(rawEpic("ONE", "done"), detail(rawEpic("ONE", "done"), fullApproval));
 assert.equal(mergePrompt(approvedEpic), `${MERGE_PROMPT} ONE`);
 assert.equal(mergeTabName(approvedEpic), "merge HAP-ONE");
 // Herdr appends the task as a positional argument. OpenCode takes a starting
 // prompt through --prompt; a bare positional is a project directory.
-assert.deepEqual(mergeAgentRun(["opencode"]), ["opencode", "--prompt"]);
-assert.deepEqual(mergeAgentRun(["/opt/opencode/bin/opencode"]), ["/opt/opencode/bin/opencode", "--prompt"]);
-assert.deepEqual(mergeAgentRun(["opencode", "--prompt"]), ["opencode", "--prompt"]);
-assert.deepEqual(mergeAgentRun(["claude"]), ["claude"], "non-OpenCode agents keep positional prompts");
-assert.deepEqual(mergeAgentRun(["opencode", "--model", "x"]), ["opencode", "--model", "x", "--prompt"]);
-assert.deepEqual(mergeTabArgs({
-  name: "merge HAP-ONE", space: "sp-main", folder: "/repo", argv: ["opencode"], task: `${MERGE_PROMPT} ONE`,
+assert.deepEqual(handoffAgentRun(["opencode"]), ["opencode", "--prompt"]);
+assert.deepEqual(handoffAgentRun(["/opt/opencode/bin/opencode"]), ["/opt/opencode/bin/opencode", "--prompt"]);
+assert.deepEqual(handoffAgentRun(["opencode", "--prompt"]), ["opencode", "--prompt"]);
+assert.deepEqual(handoffAgentRun(["claude"]), ["claude"], "non-OpenCode agents keep positional prompts");
+assert.deepEqual(handoffAgentRun(["opencode", "--model", "x"]), ["opencode", "--model", "x", "--prompt"]);
+assert.deepEqual(handoffTabArgs({
+  name: "merge HAP-ONE", space: "sp-task", folder: "/worktrees/task", argv: ["opencode"], task: `${MERGE_PROMPT} ONE`,
 }), [
-  "do", "tab.new", "--name", "merge HAP-ONE", "--space", "sp-main", "--folder", "/repo",
+  "do", "tab.new", "--name", "merge HAP-ONE", "--space", "sp-task", "--folder", "/worktrees/task",
   "--argv", '["opencode","--prompt"]', "--task", `${MERGE_PROMPT} ONE`,
 ]);
-assert.deepEqual(mergeTabArgs({
-  name: "merge HAP-ONE", space: "sp-main", folder: "/repo", argv: ["claude"], task: `${MERGE_PROMPT} ONE`,
-})[9], '["claude"]', "merge args leave a positional-prompt agent unchanged");
-assert.throws(() => mergeTabArgs({ name: "", space: "sp-main", folder: "/repo", argv: ["opencode"], task: "x" }), /needs a name/);
-assert.throws(() => mergeTabArgs({ name: "n", space: "", folder: "/repo", argv: ["opencode"], task: "x" }), /needs a name/);
+assert.deepEqual(handoffTabArgs({
+  name: "merge HAP-ONE", space: "sp-task", folder: "/worktrees/task", argv: ["claude"], task: `${MERGE_PROMPT} ONE`,
+})[9], '["claude"]', "handoff args leave a positional-prompt agent unchanged");
+assert.throws(() => handoffTabArgs({ name: "", space: "sp-task", folder: "/worktrees/task", argv: ["opencode"], task: "x" }), /needs a name/);
+assert.throws(() => handoffTabArgs({ name: "n", space: "", folder: "/worktrees/task", argv: ["opencode"], task: "x" }), /needs a name/);
 assert.throws(() => mergePrompt({}), /No approved task identity/);
 assert.throws(() => mergeTabName({ id: "ONE" }), /No approved task reference/);
 
-// The main space is the visible space for the primary checkout; the active
-// space is only a fallback so a merge tab can still run in the right folder.
-const knownSpaces = [
-  { id: "worktree", folder: "/repo/worktree", name: "task space" },
-  { id: "main", folder: "/repo/", name: "repo" },
-  { id: "main2", folder: "/repo", name: "other" },
-];
-assert.equal(selectMainSpace(knownSpaces, "/repo", "worktree").id, "main", "prefers the space named for the repository");
-assert.equal(selectMainSpace(knownSpaces, "/repo", "main2").id, "main2", "prefers the active matching space");
-assert.equal(selectMainSpace(knownSpaces, "/repo", "missing").id, "main");
-assert.equal(selectMainSpace([{ id: "worktree", folder: "/repo/worktree", name: "task space" }], "/repo", "worktree").id, "worktree", "falls back to the active space");
-assert.equal(selectMainSpace([], "/repo", "worktree"), null);
+// A handoff prompt is typed into the exact live task terminal.
+assert.deepEqual(handoffSendArgs("t-builder", `${MERGE_PROMPT} ONE`), ["send", "t-builder", `${MERGE_PROMPT} ONE`]);
+assert.throws(() => handoffSendArgs("", "prompt"), /live task agent terminal/);
+assert.throws(() => handoffSendArgs("t-builder", ""), /prompt is required/);
 
-// A space's `folder` is only where its new terminals start: the real main
-// space can point at $HOME while another project's space carries a stale
-// folder equal to the checkout. The first tab's live terminal decides.
+// Single-session work prefers its builder; a worktree epic prefers the
+// coordinator that integrated the phases, even when a builder is also live.
+const builderAttempt = normalizeAttempt(attempt("ONE", { execution_mode: "single-session", coordinator_terminal: { address: "", core_id: "", name: "" } }));
+const coordinatorAttempt = normalizeAttempt(attempt("ONE", { execution_mode: "worktrees" }));
+const liveAgents = [
+  { address: "t-builder", space: "sp-task", tab: "tb-builder" },
+  { address: "t-coordinator", space: "sp-task", tab: "tb-coordinator" },
+];
+assert.deepEqual(liveHandoffTerminal(builderAttempt, liveAgents, []),
+  { address: "t-builder", space: "sp-task", tab: "tb-builder" });
+assert.deepEqual(liveHandoffTerminal(coordinatorAttempt, liveAgents, []),
+  { address: "t-coordinator", space: "sp-task", tab: "tb-coordinator" },
+  "worktree epics hand off to the coordinator, not a live builder");
+assert.equal(liveHandoffTerminal(builderAttempt, [{ address: "t-other", space: "sp-other" }], []), null,
+  "an unrelated live agent is never a handoff target");
+assert.deepEqual(liveHandoffTerminal(builderAttempt, [], [
+  { address: "t-builder", state: "live", labels: { "herdr.space": "sp-task", "herdr.tab": "tb-builder" } },
+]), { address: "t-builder", space: "sp-task", tab: "tb-builder" });
+assert.equal(liveHandoffTerminal(builderAttempt, [], [
+  { address: "t-builder", state: "finished", labels: { "herdr.space": "sp-task" } },
+]), null, "a finished terminal address is never used");
+assert.equal(liveHandoffTerminal(normalizeAttempt(attempt("ONE", {
+  terminal: { address: "", core_id: "", name: "" },
+  coordinator_terminal: { address: "", core_id: "", name: "" },
+  terminals: { builder: { address: "t-builder", state: "live" } },
+})), [], [{ address: "t-builder", state: "live", labels: {} }])?.address, "t-builder",
+  "a recorded role observation can still identify the live builder");
+assert.equal(liveHandoffTerminal(null, liveAgents, []), null);
+
+// The fallback tab belongs to the attempt worktree's visible space, never the
+// primary checkout. A live first pane wins over a stale configured folder.
+const taskSpaces = [
+  { id: "task1", folder: "/worktrees/task", name: "task" },
+  { id: "task2", folder: "/worktrees/task", name: "task copy" },
+  { id: "main", folder: "/repo", name: "repo" },
+];
+assert.equal(selectWorktreeSpace(taskSpaces, "/worktrees/task", "", []).id, "task1");
+assert.equal(selectWorktreeSpace(taskSpaces, "/worktrees/task/", "task2", []).id, "task2",
+  "the active matching task space wins");
+assert.equal(selectWorktreeSpace(taskSpaces, "/worktrees/missing", "", []), null,
+  "an unknown worktree never falls back to main");
+assert.equal(selectWorktreeSpace([{ id: "main", folder: "/repo" }], "/worktrees/task", "", []), null);
+assert.equal(selectWorktreeSpace([], "/worktrees/task", "", []), null);
+assert.equal(selectWorktreeSpace(taskSpaces, "", "task1", []), null);
 const liveSpaces = [
-  { id: "worktree", folder: "/worktrees/task", name: "task space", tabs: [{ id: "wt-tab", index: 1 }] },
-  { id: "main", folder: "/home/me", name: "repo", tabs: [{ id: "main-tab-2", index: 2 }, { id: "main-tab-1", index: 1 }] },
-  { id: "other-main", folder: "/repo/other", name: "other", tabs: [{ id: "other-tab", index: 1 }] },
-  { id: "decoy", folder: "/repo", name: "next project", tabs: [{ id: "decoy-tab", index: 1 }] },
+  { id: "task", folder: "/stale", name: "task", tabs: [{ id: "task-tab", index: 1 }] },
+  { id: "main", folder: "/worktrees/task", name: "repo", tabs: [{ id: "main-tab", index: 1 }] },
 ];
 const livePanes = [
-  { tab: "main-tab-2", cwd: "/repo/docs" },
-  { tab: "wt-tab", cwd: "/worktrees/task" },
-  { tab: "decoy-tab", cwd: "/other-repo" },
-  { tab: "main-tab-1", cwd: "/repo" },
-  { tab: "other-tab", cwd: "/repo/sub" },
+  { tab: "main-tab", cwd: "/repo" },
+  { tab: "task-tab", cwd: "/worktrees/task" },
 ];
-assert.equal(selectMainSpace(liveSpaces, "/repo", "worktree", livePanes).id, "main",
-  "the first tab's live folder wins over a decoy space.folder");
-assert.equal(selectMainSpace(liveSpaces, "/repo", "main", livePanes).id, "main",
-  "a board opened in the primary-checkout space stays there");
-assert.equal(selectMainSpace(liveSpaces, "/repo", "other-main", livePanes).id, "other-main",
-  "the active matching space still wins");
-assert.equal(selectMainSpace(liveSpaces, "/repo", "missing", livePanes).id, "main");
-assert.equal(selectMainSpace(liveSpaces, "/elsewhere", "worktree", livePanes).id, "worktree",
-  "an unrelated checkout still falls back to the active space");
+assert.equal(selectWorktreeSpace(liveSpaces, "/worktrees/task", "", livePanes).id, "task",
+  "the first tab's live worktree folder wins over a stale space.folder");
 
 // Board order, per-refresh immutable-ID indexing, keyboard selection, and exact terminal identity.
 const attemptIndex = indexAttempts([attempt("B", { state: "needs-review" }), attempt("OTHER")]);
@@ -722,15 +743,20 @@ const longQuestion = `${"a".repeat(180)}?`;
 assert.equal(lastQuestion(longQuestion).length, 160);
 assert.ok(lastQuestion(longQuestion).endsWith("…"));
 
-// Ship PR is a separate, explicit agent handoff, never a Git mutation.
-assert.match(shipPrompt({ id: "ONE" }), /Aven task ONE/);
-assert.match(shipPrompt({ id: "ONE" }), /pull request/);
-assert.doesNotMatch(shipPrompt({ id: "ONE" }), /\/ha-merge/);
+// Ship PR is a separate, explicit agent handoff in the task's own worktree,
+// never a Git mutation and never a primary-checkout instruction.
+const shipText = shipPrompt({ id: "ONE" });
+assert.match(shipText, /Aven task ONE/);
+assert.match(shipText, /pull request/);
+assert.match(shipText, /task's worktree and branch/);
+assert.match(shipText, /review follow-ups/);
+assert.doesNotMatch(shipText, /primary checkout/);
+assert.doesNotMatch(shipText, /\/ha-merge/);
 assert.equal(shipTabName({ ref: "HAP-ONE" }), "ship HAP-ONE");
 assert.throws(() => shipPrompt({}), /No approved task identity/);
 assert.throws(() => shipTabName({ id: "ONE" }), /No approved task reference/);
-assert.equal(mergeTabArgs({
-  name: shipTabName({ ref: "HAP-ONE" }), space: "sp-main", folder: "/repo",
+assert.equal(handoffTabArgs({
+  name: shipTabName({ ref: "HAP-ONE" }), space: "sp-task", folder: "/worktrees/task",
   argv: ["opencode"], task: shipPrompt({ id: "ONE" }),
 })[0], "do");
 
