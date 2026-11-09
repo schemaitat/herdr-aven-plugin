@@ -159,6 +159,68 @@ after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 assert_eq "$after" "$((before + 2))" 'bulk dispatch admits every selected target independently'
 [ -d "$work/worktrees/repo/app-quoted-task-dispatch-immutable-task" ] || fail 'bulk dispatch creates first selected worktree'
 [ -d "$work/worktrees/repo/app-second-selected-task-dispatch-bulk-task" ] || fail 'bulk dispatch creates second selected worktree'
+sqlite_json "$bulk_store" > "$work/explicit-bulk.json"
+python3 - "$work/explicit-bulk.json" <<'PY'
+import json, sys
+attempts = json.load(open(sys.argv[1]))['attempts']
+assert len(attempts) == 2, attempts
+for attempt in attempts.values():
+    assert (attempt['workflow'], attempt['execution_mode'], attempt['agent'], attempt['model']) == (
+        'implementation', 'single-session', 'build', 'github-copilot/gpt-6.1-terra'), attempt
+PY
+
+# Exercise actual inline mode/agent/model pickers in a pseudo-terminal. The
+# second new attempt must reuse all choices rather than prompting again.
+seed_aven
+printf '%s\n' "$bulk_context" > "$work/bulk-context.json"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/interactive-bulk.out" 2 none "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+sqlite_json "$work/interactive-bulk.sqlite" > "$work/interactive-bulk.json"
+python3 - "$work/interactive-bulk.json" <<'PY'
+import json, sys
+attempts = json.load(open(sys.argv[1]))['attempts']
+assert len(attempts) == 2, attempts
+for attempt in attempts.values():
+    assert (attempt['workflow'], attempt['execution_mode'], attempt['agent'], attempt['model']) == (
+        'implementation', 'subsessions', 'configured-build', 'github-copilot/gpt-6.1-terra'), attempt
+PY
+# Reopening an entirely existing batch asks for no new configuration.
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/existing-bulk.out" 2 existing "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+
+# A dry run still selects the implementation mode only once, without starting
+# agent/model pickers or sessions.
+seed_aven
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/dry-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/dry-bulk.out" 2 dry-run "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --dry-run --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+
+# Reopening a saved single-session attempt does not prompt or seed settings for
+# the new subsession attempt; the explicit mode of the saved attempt survives.
+seed_aven
+mixed_store=$work/mixed-bulk.sqlite
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$mixed_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-sol --mode single-session --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+$context
+EOF
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$mixed_store" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/mixed-bulk.out" 2 none "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+sqlite_json "$mixed_store" > "$work/mixed-bulk.json"
+python3 - "$work/mixed-bulk.json" <<'PY'
+import json, sys
+attempts = json.load(open(sys.argv[1]))['attempts']
+old = attempts['immutable-task:implementation']
+new = attempts['bulk-task:implementation']
+assert (old['execution_mode'], old['agent'], old['model']) == ('single-session', 'build', 'github-copilot/gpt-6.1-sol'), old
+assert (new['execution_mode'], new['agent'], new['model']) == ('subsessions', 'configured-build', 'github-copilot/gpt-6.1-terra'), new
+PY
+
+# Canceling the shared agent choice cannot admit either task.
+seed_aven
+before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/canceled-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/canceled-bulk.out" 1 agent "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+assert_eq "$after" "$before" 'canceling shared configuration admits no task'
+assert_eq "$(sqlite_count "$work/canceled-bulk.sqlite")" 0 'canceled selection removes its reservation'
+seed_aven
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/canceled-model-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/canceled-model-bulk.out" 1 model "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
+assert_eq "$after" "$before" 'canceling shared model admits no task'
+assert_eq "$(sqlite_count "$work/canceled-model-bulk.sqlite")" 0 'canceled model removes its reservation'
 
 # A marked batch is dispatched identically when focus sits on a task that is
 # not marked; the focused selection never takes part in the batch.

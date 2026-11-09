@@ -857,7 +857,11 @@ automatic generation.
 1. Select a task or mark several tasks, then press `z d`. Marked tasks are
    dispatched in visible order with an independent worktree and session each;
    the focused row may be another task and never joins or blocks the batch.
-   When nothing is marked, the focused task is dispatched.
+   When nothing is marked, the focused task is dispatched. A batch uses the
+   selected workflow and asks for implementation mode, agent, and model only
+   once for its new attempts, using the first new worktree for discovery.
+   Existing attempts reopen with their saved configuration without repeated
+   confirmation pickers; they do not determine the new attempts' settings.
 2. Choose an agent by number in the existing Aven terminal, or in a dedicated
    herdr-core picker terminal when dispatched outside Aven. The picker appears
    even with one agent. In the terminal picker, press `/` and type to filter
