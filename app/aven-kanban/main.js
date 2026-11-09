@@ -4,8 +4,9 @@ import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, pane
 import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
   boardStats, buildBoard, cardArchiveable, deleteArgs, deletedTaskIds, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
-  emptyWhenUnknownMetadata, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
+  emptyWhenUnknownMetadata, enrichmentPending, epicArgs, evidenceNeedsRefresh, filterArchived, filterBoardByProject, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   handoffSendArgs, handoffTabArgs, isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress, reopenTarget,
+  boardSourceSignature,
   landedWeek, landedWeekTotal, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDeleteOutcome, safeDetail,
@@ -22,6 +23,9 @@ const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
 const PROGRESS_PUBLISH_MS = 120;
+// Same-second metadata collisions and branch movement are revalidated on this
+// slower tier; ordinary row changes still surface on the next 10-second tick.
+const FULL_REVALIDATE_MS = 60000;
 const ARCHIVE_SHARED = "aven-kanban.archived";
 
 // The reference Board palette lives in the read model so its WCAG contrast is
@@ -95,7 +99,12 @@ export default class AvenKanban extends View {
     this.sources = null;
     this.mainMerged = new Set();
     this.coverageError = "";
+    this.evidenceError = "";
     this.ancestryChecked = false;
+    // The list-read signature and full-revalidation clock decide whether the
+    // expensive detail and ancestry tiers run on a given refresh.
+    this.sourceSignature = "";
+    this.lastFullRefresh = 0;
     // Until the first complete board is published, enrich it progressively.
     // Later refreshes stage everything and replace the board atomically.
     this.hasSettledBoard = false;
@@ -388,24 +397,32 @@ export default class AvenKanban extends View {
   // checked against one resolved local main head; this never mutates Aven or Git.
   // The checks run in the same small bounded pool as metadata reads, and each
   // commit's ancestry is cached for the current main head.
-  async evidenceFromMain(cwd, rows, attemptIndex) {
-    if (!cwd) return { merged: new Set(), error: "Local main is unavailable; delivery ancestry was not checked." };
-    const terminal = [];
-    for (const row of rows) {
+  terminalAttempts(rows, attemptIndex) {
+    const terminals = [];
+    for (const row of rows ?? []) {
       if (row.status !== "done" && row.status !== "canceled") continue;
       const attempt = selectAttempt(attemptIndex.get(row.id) ?? [], row.id).attempt;
-      if (attempt) terminal.push({ row, attempt });
+      if (attempt) terminals.push({ row, attempt });
     }
-    if (!terminal.length) return { merged: new Set(), error: "" };
+    return terminals;
+  }
+
+  async mainHead(cwd) {
+    if (!cwd) return { head: "", error: "Local main is unavailable; delivery ancestry was not checked." };
     const headResult = await exec("git", ["-C", cwd, "rev-parse", "--verify", "main"]);
-    if (headResult.code !== 0) {
-      const detail = String(headResult.stderr ?? "").trim();
-      return { merged: new Set(), error: `Local main is unavailable at ${cwd}; delivery ancestry was not checked${detail ? `: ${detail}` : "."}` };
-    }
-    const head = headResult.stdout.trim();
+    if (headResult.code === 0) return { head: headResult.stdout.trim(), error: "" };
+    const detail = String(headResult.stderr ?? "").trim();
+    return { head: "", error: `Local main is unavailable at ${cwd}; delivery ancestry was not checked${detail ? `: ${detail}` : "."}` };
+  }
+
+  // `head` is resolved by the caller so a cheap refresh can detect a moved main
+  // with one probe and reuse the cached evidence when nothing else changed.
+  async evidenceFromMain(cwd, terminals, head) {
+    if (!terminals.length) return { merged: new Set(), error: "" };
+    if (!cwd || !head) return { merged: new Set(), error: "Local main is unavailable; delivery ancestry was not checked." };
     if (this.mainEvidence.head !== head) this.mainEvidence = { head, entries: new Map() };
     const merged = new Set();
-    await mapLimit(terminal, EVIDENCE_WORKERS, async ({ row, attempt }) => {
+    await mapLimit(terminals, EVIDENCE_WORKERS, async ({ row, attempt }) => {
       const commits = new Set();
       if (attempt.branch) {
         const branch = await exec("git", ["-C", cwd, "rev-parse", "--verify", `${attempt.branch}^{commit}`]);
@@ -441,59 +458,100 @@ export default class AvenKanban extends View {
     cx.spawn(async (taskCx) => {
       try {
         const sources = await this.readSources();
+        const signature = boardSourceSignature({
+          rows: sources.baseRows, attempts: sources.attempts, obligations: sources.obligations,
+        });
+        const changed = Boolean(this.sourceSignature) && signature !== this.sourceSignature;
+        // The cheap tier always runs. Same-second metadata collisions and
+        // branch movement are revalidated on the slower full tier.
+        const full = progressive || Date.now() - this.lastFullRefresh >= FULL_REVALIDATE_MS;
+        this.sourceSignature = signature;
         this.sources = sources;
         if (progressive) {
           this.mainMerged = new Set();
           this.coverageError = "";
         }
-        const needed = sources.baseRows.filter((row) =>
-          detailNeedsRefresh(this.details.get(detailCacheKey(sources.workspace, row.id)), sources.workspace, row)).length;
+        const neededRows = sources.baseRows.filter((row) =>
+          detailNeedsRefresh(
+            this.details.get(detailCacheKey(sources.workspace, row.id)),
+            sources.workspace,
+            row,
+            { revalidate: full },
+          ));
         // Publish provisional cards now; enrichment continues below.
-        if (progressive) this.publishRows(taskCx, { enriching: needed > 0 });
+        if (progressive) this.publishRows(taskCx, { enriching: neededRows.length > 0 });
         let lastProgressPublish = progressive ? Date.now() : 0;
-        const hydration = await hydrateDetails({
-          rows: sources.baseRows,
-          workspace: sources.workspace,
-          limit: READ_WORKERS,
-          cached: (row) => this.details.get(detailCacheKey(sources.workspace, row.id)),
-          read: async (row) => parse(
-            await exec("aven", detailArgs(sources.workspace, row.ref), sources.cwd ? { cwd: sources.cwd } : undefined),
-            `Epic ${row.ref}`,
-          ),
-          publish: (row, snapshot) => {
-            const key = detailCacheKey(sources.workspace, row.id);
-            // A failed read must not leave an older approval marker usable.
-            if (snapshot) this.details.set(key, snapshot);
-            else this.details.delete(key);
-            // Coalesce first-paint repaints; the final publish below is
-            // unconditional, so no hydrated state is lost.
-            if (progressive && progressPublishDue(lastProgressPublish, Date.now(), PROGRESS_PUBLISH_MS)) {
-              lastProgressPublish = Date.now();
-              this.publishRows(taskCx, { enriching: true });
-            }
-          },
-        });
+        const hydration = neededRows.length
+          ? await hydrateDetails({
+              rows: neededRows,
+              workspace: sources.workspace,
+              limit: READ_WORKERS,
+              cached: (row) => this.details.get(detailCacheKey(sources.workspace, row.id)),
+              read: async (row) => parse(
+                await exec("aven", detailArgs(sources.workspace, row.ref), sources.cwd ? { cwd: sources.cwd } : undefined),
+                `Epic ${row.ref}`,
+              ),
+              publish: (row, snapshot) => {
+                const key = detailCacheKey(sources.workspace, row.id);
+                // A failed read must not leave an older approval marker usable.
+                if (snapshot) this.details.set(key, snapshot);
+                else this.details.delete(key);
+                // Coalesce first-paint repaints; the final publish below is
+                // unconditional, so no hydrated state is lost.
+                if (progressive && progressPublishDue(lastProgressPublish, Date.now(), PROGRESS_PUBLISH_MS)) {
+                  lastProgressPublish = Date.now();
+                  this.publishRows(taskCx, { enriching: true });
+                }
+              },
+            })
+          : { needed: 0, failures: [] };
         if (progressive) this.publishRows(taskCx, { evidencePending: true });
-        // The checkout can be briefly unavailable right after the overlay
-        // opens (its space or live pane is still settling). Wait a bounded
-        // moment for a real Git checkout instead of classifying against a
-        // wrong folder, then settle with an explicit error if it never appears.
-        let cwd = sources.cwd;
-        for (let attempt = 0; !cwd && attempt < 25; attempt += 1) {
-          await taskCx.sleep(200);
-          const folder = this.spaceFolder();
-          cwd = folder ? await this.rootFolder(folder) : "";
+
+        const terminals = this.terminalAttempts(this.mergedRows(), sources.attemptIndex);
+        let mainEvidence = { merged: this.mainMerged, error: this.evidenceError };
+        if (!terminals.length) {
+          mainEvidence = { merged: new Set(), error: "" };
+          this.mainEvidence = { head: "", entries: new Map() };
+        } else {
+          // The checkout can be briefly unavailable right after the overlay
+          // opens (its space or live pane is still settling). Pay that bounded
+          // wait only when expensive evidence work is actually due; a steady
+          // refresh of a non-Git space must not stall on it every 10 seconds.
+          let cwd = sources.cwd;
+          const waitForCheckout = full || changed || hydration.needed > 0 || !this.ancestryChecked;
+          if (!cwd && waitForCheckout) {
+            for (let attempt = 0; !cwd && attempt < 25; attempt += 1) {
+              await taskCx.sleep(200);
+              const folder = this.spaceFolder();
+              cwd = folder ? await this.rootFolder(folder) : "";
+            }
+          }
+          const headInfo = await this.mainHead(cwd);
+          const evidenceDue = evidenceNeedsRefresh({
+            full, changed, hydrated: hydration.needed,
+            head: headInfo.head, previousHead: this.mainEvidence.head,
+          });
+          if (evidenceDue) {
+            if (headInfo.error) {
+              mainEvidence = { merged: new Set(), error: headInfo.error };
+              this.mainEvidence = { head: "", entries: new Map() };
+            } else {
+              mainEvidence = await this.evidenceFromMain(cwd, terminals, headInfo.head);
+            }
+          }
         }
-        const mainEvidence = await this.evidenceFromMain(cwd, this.mergedRows(), sources.attemptIndex);
+
         const coverage = [];
         if (hydration.failures.length) coverage.push(`${hydration.failures.length} epic metadata read(s) failed: ${hydration.failures.slice(0, 3).join("; ")}`);
         if (mainEvidence.error) coverage.push(mainEvidence.error);
         // Final state is complete: apply ancestry and publish once.
         this.mainMerged = mainEvidence.merged;
+        this.evidenceError = mainEvidence.error;
         this.ancestryChecked = true;
         this.coverageError = coverage.join("; ");
         this.publishRows(taskCx, {});
         this.hasSettledBoard = true;
+        if (full) this.lastFullRefresh = Date.now();
         this.autoSummarize(taskCx);
       } catch (error) {
         this.state = {

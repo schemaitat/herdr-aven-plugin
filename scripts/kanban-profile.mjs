@@ -25,6 +25,9 @@ function option(name, fallback) {
 
 const workspace = option("--workspace", "default");
 const requestedCwd = option("--cwd", process.cwd());
+// `cheap` models a steady-state refresh with nothing changed; `full` models
+// the periodic revalidation tier (or the first paint).
+const tier = option("--tier", "full");
 const maxBuffer = 64 * 1024 * 1024;
 
 let processes = 0;
@@ -83,25 +86,41 @@ const attempts = parseList(attemptsResult, "Dispatcher attempts");
 // The board always revalidates terminal epics; include only that set here so
 // the number is comparable with the pre-optimization refresh.
 const details = epics.filter((row) => row.status === "done" || row.status === "canceled");
-const detailStarted = performance.now();
-const detailProcessesBefore = processes;
-await mapLimit(details, WORKERS, async (row) => {
-  await spawn("aven", detailArgs(workspace, row.ref), scope?.cwd);
-});
-const detailMs = performance.now() - detailStarted;
-const detailProcesses = processes - detailProcessesBefore;
-
 const terminalIds = new Set(details.map((row) => row.id));
 const evidenceAttempts = attempts.filter((attempt) => terminalIds.has(attempt.task_id));
-const evidenceStarted = performance.now();
-const evidenceProcessesBefore = processes;
-await mapLimit(evidenceAttempts, WORKERS, async (attempt) => {
-  if (attempt.branch) await spawn("git", ["-C", cwd, "rev-parse", "--verify", `${attempt.branch}^{commit}`], cwd);
-  if (attempt.worktree) await spawn("git", ["-C", attempt.worktree, "rev-parse", "HEAD"], cwd);
-});
-const evidenceMs = performance.now() - evidenceStarted;
+
+let detailMs = 0;
+let detailProcesses = 0;
+let evidenceMs = 0;
+let evidenceProcesses = 0;
+if (tier === "full") {
+  const detailStarted = performance.now();
+  const detailProcessesBefore = processes;
+  await mapLimit(details, WORKERS, async (row) => {
+    await spawn("aven", detailArgs(workspace, row.ref), scope?.cwd);
+  });
+  detailMs = performance.now() - detailStarted;
+  detailProcesses = processes - detailProcessesBefore;
+
+  const evidenceStarted = performance.now();
+  const evidenceProcessesBefore = processes;
+  await mapLimit(evidenceAttempts, WORKERS, async (attempt) => {
+    if (attempt.branch) await spawn("git", ["-C", cwd, "rev-parse", "--verify", `${attempt.branch}^{commit}`], cwd);
+    if (attempt.worktree) await spawn("git", ["-C", attempt.worktree, "rev-parse", "HEAD"], cwd);
+  });
+  evidenceMs = performance.now() - evidenceStarted;
+  evidenceProcesses = processes - evidenceProcessesBefore;
+} else if (tier === "cheap") {
+  // The board still probes the main head when terminal attempts exist so a
+  // merge is noticed on the next tick; nothing else is re-read.
+  const cheapEvidenceBefore = processes;
+  if (cwd && evidenceAttempts.length) await spawn("git", ["-C", cwd, "rev-parse", "--verify", "main"], cwd);
+  evidenceProcesses = processes - cheapEvidenceBefore;
+  evidenceMs = 0;
+}
 
 const report = {
+  tier,
   workspace,
   cwd: cwd || null,
   limits: { epics: LIMIT, attempts: ATTEMPT_LIMIT, workers: WORKERS },
@@ -128,7 +147,7 @@ const report = {
   processes: {
     list: listProcesses,
     detail: detailProcesses,
-    evidence: processes - evidenceProcessesBefore,
+    evidence: evidenceProcesses,
     total: processes,
   },
 };

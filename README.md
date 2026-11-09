@@ -743,14 +743,26 @@ and reuses those columns for selection, stats, chips, and the banner; live
 agents, terminals, and tab timers are snapshotted once per frame, and each
 card's related agent is memoized for that snapshot. Needs-you `hc read` probes
 share a three-reader bound, so one blocked terminal does not serialize the
-rest. Full Aven metadata is cached by immutable epic ID
-and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
-the merged epic set, and dispatcher attempts. Dispatcher reads use read-only,
-prompt-free `aven-dispatch list --summary --limit 500`; exceeding a cap is an
-explicit error, not silent truncation. Attempts are indexed once per refresh by
-immutable task ID. Local-main ancestry checks are limited to terminal cards with
-a matching attempt and cached by resolved main head plus commit. An unavailable
-`main` leaves cards in their metadata-derived lifecycle and reports incomplete
+rest. The board reads bounded CLI JSON; it never scans Aven tables. Measured on
+a 105-epic workspace, re-reading every terminal or metadata-sensitive epic and
+probing every terminal attempt on each 10-second tick cost 249 subprocesses and
+about 1.8 s. Refresh is therefore tiered: the cheap tier performs the bounded
+list reads plus one local-main probe and publishes immediately (single-digit
+subprocesses in tens of milliseconds), while epic details are cached by
+immutable epic ID, workspace, and `updated_at` and re-read when the row changes.
+The terminal/approval/delivery/summary set and local-main ancestry are
+revalidated on a 60-second full tier, or immediately when list rows, attempts,
+or the resolved main head change. First-paint hydration coalesces progressive
+repaints to at most one per 120 ms and still publishes the completed board
+once. Because these are bounded JSON reads rather than large-table scans, no
+analytics layer or background sync is involved. Four bounded readers and
+500-item caps apply to each Aven list, the merged epic set, and dispatcher
+attempts. Dispatcher reads use read-only, prompt-free `aven-dispatch list
+--summary --limit 500`; exceeding a cap is an explicit error, not silent
+truncation. Attempts are indexed once per refresh by immutable task ID.
+Local-main ancestry checks are limited to terminal cards with a matching
+attempt and cached by resolved main head plus commit. An unavailable `main`
+leaves cards in their metadata-derived lifecycle and reports incomplete
 evidence instead of asserting delivery. Failed refreshes retain clearly labeled
 stale results; partial metadata failures are not presented as complete coverage.
 
@@ -772,8 +784,10 @@ headless `just test` and cleans up only the app/core/resources it created.
 terminal-epic detail reads, and the terminal-attempt git probes) against the
 current workspace and checkout. It prints row counts, payload bytes, spawned
 process counts, and per-stage timings as JSON and never mutates Aven, Git, or
-the dispatcher store. Run it before and after a refresh change to quantify the
-difference.
+the dispatcher store. `--tier cheap` models a steady-state tick (list reads
+plus one main-head probe); `--tier full` (the default) models the first paint
+or periodic revalidation. Run it before and after a refresh change to quantify
+the difference.
 
 The separate `aven-worktree` pane is retired. Dispatch no longer splits a
 second Aven surface into a worktree space; the **Aven** child of the Aven-right
