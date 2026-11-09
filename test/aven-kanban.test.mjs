@@ -4,7 +4,7 @@ import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, BORDER_CONTRAST_PAIRS, CREATED_FILTERS, DETAIL_METADATA, DISPATCH_ACTIONS, LIMIT,
   MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS, SUMMARY_LABEL, TEXT_CONTRAST_PAIRS, autoSummaryCandidate,
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardStats, buildBoard,
-  cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, deleteArgs, deletedTaskIds,
+  bulkTargets, cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, deleteArgs, deletedTaskIds,
   detailArgs, detailCacheKey, detailIsCurrent,
   detailNeedsRefresh, dispatchTerminalName, emptyWhenUnknownMetadata, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, landedWeekTotal, lastQuestion, mapLimit, safeDeleteOutcome, safeDetail,
@@ -12,7 +12,8 @@ import {
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
   nextMove, normalizeAttempt, normalizeEpic, obligationListArgs, openObligationIndex, openTaskBlockers, openArgs,
   projectChips, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard,
-  selectWorktreeSpace, shipPrompt, shipTabName,
+  selectionAfterClick, selectionCards, selectWorktreeSpace, shipPrompt, shipTabName,
+  pruneSelection, toggleSelection,
   summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -707,6 +708,44 @@ for (const [foreground, background] of BORDER_CONTRAST_PAIRS) {
 
 assert.equal(selectedCard(board, "B").column, "ready");
 assert.equal(selectedCard(board, "missing"), null);
+
+// Multi-select is ordered, additive on Ctrl/Cmd-click, and pruned to the board
+// that was actually drawn. Selection IDs are immutable task IDs.
+assert.deepEqual(toggleSelection([], "A"), ["A"]);
+assert.deepEqual(toggleSelection(["A"], "B"), ["A", "B"], "additive clicks keep click order");
+assert.deepEqual(toggleSelection(["A", "B", "A"], "B"), ["A", "A"], "only the toggled ID is removed");
+assert.deepEqual(toggleSelection(["A"], "A"), [], "a second toggle removes the card");
+assert.deepEqual(toggleSelection(["A"], ""), ["A"], "an empty ID never enters the selection");
+assert.deepEqual(toggleSelection(["A"], "A"), [], "missing selections start empty");
+assert.deepEqual(toggleSelection(["A", "B"], "B"), ["A"]);
+assert.deepEqual(selectionAfterClick(["A", "B"], "C"), ["C"], "a plain click replaces the selection");
+assert.deepEqual(selectionAfterClick(["A", "B"], "C", true), ["A", "B", "C"], "an additive click appends");
+assert.deepEqual(selectionAfterClick(["A", "B"], "A", true), ["B"], "an additive click can remove");
+assert.deepEqual(pruneSelection(["a2", "e1", "gone"], navColumns), ["a2", "e1"]);
+assert.deepEqual(pruneSelection(["gone"], navColumns), []);
+assert.deepEqual(selectionCards(navColumns, ["e1", "a2", "e1", "gone"]).map(({ id }) => id), ["e1", "a2"],
+  "selected cards resolve in click order without duplicating or inventing IDs");
+assert.deepEqual(selectionCards(navColumns, []), []);
+assert.deepEqual(bulkTargets([], "merge"), []);
+const mergeableCard = card("done", { ...fullApproval, "delivery.state": "committed" });
+const ordinaryCard = card("todo");
+const archiveState = { enriching: false, evidencePending: false };
+assert.equal(mergeableCard.mergeable, true);
+assert.deepEqual(bulkTargets([mergeableCard, ordinaryCard], "merge"), [mergeableCard], "only approved selected cards merge");
+assert.deepEqual(bulkTargets([mergeableCard, ordinaryCard], "ship"), [mergeableCard], "ship shares merge validity");
+assert.deepEqual(bulkTargets([mergeableCard, ordinaryCard], "bogus"), [], "unknown bulk actions target nothing");
+assert.deepEqual(bulkTargets([card("done"), ordinaryCard], "archive", archiveState).map(({ id }) => id), ["ONE"],
+  "only fully classified Done cards archive");
+assert.deepEqual(bulkTargets([ordinaryCard], "archive", archiveState), []);
+assert.deepEqual(bulkTargets([card("done")], "archive", { enriching: true }), [], "bulk archive obeys enrichment");
+
+assert.match(kanbanSource, /modifiers\?\.control \|\| event\?\.modifiers\?\.platform/, "cards read Ctrl and platform clicks");
+assert.match(kanbanSource, /selectionAfterClick\(this\.selectedIds, card\.id, additive\)/, "the click path uses the pure selection rule");
+assert.match(kanbanSource, /pruneSelection\(this\.selectedIds, columns\)/, "selection is pruned to the drawn board");
+assert.match(kanbanSource, /this\.selectedIds\.length > 1\) this\.clearSelection/, "Esc clears multi-select before closing");
+assert.match(kanbanSource, /aven-kanban-bulk/, "the board renders the bulk bar");
+assert.match(kanbanSource, /ctrl-click multi-select/, "the footer legend names multi-select");
+assert.match(kanbanSource, /Ctrl\/⌘-click/, "the help panel names additive selection");
 
 // Project narrowing filters the board that was already built, keeping one
 // build as the source of truth for render, stats, and selection.

@@ -9,7 +9,8 @@ import {
   landedWeek, landedWeekTotal, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDeleteOutcome, safeDetail,
-  selectAttempt, selectedCard, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  selectAttempt, selectedCard, selectionAfterClick, selectionCards, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  pruneSelection, bulkTargets,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -126,6 +127,7 @@ export default class AvenKanban extends View {
     const storedArchive = shared(ARCHIVE_SHARED);
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
+    this.selectedIds = [];
     this.summaryCardId = "";
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
@@ -208,7 +210,20 @@ export default class AvenKanban extends View {
     if (this.helpOpen) { this.helpOpen = false; this.notify(cx); }
     else if (this.deleteConfirmId) { this.deleteConfirmId = ""; this.notify(cx); }
     else if (this.dispatchMenuEpicId) { this.dispatchMenuEpicId = null; this.notify(cx); }
+    else if (this.selectedIds.length > 1) this.clearSelection(cx);
     else this.close();
+  }
+
+  // Keyboard focus is always exactly one card, so navigation collapses a
+  // multi-selection back to the card the person is moving through.
+  focusSelection(id) {
+    this.selectedId = String(id ?? "");
+    this.selectedIds = this.selectedId ? [this.selectedId] : [];
+  }
+
+  clearSelection(cx) {
+    this.selectedIds = this.selectedId ? [this.selectedId] : [];
+    this.notify(cx);
   }
 
   toggleHelp(cx) {
@@ -218,21 +233,21 @@ export default class AvenKanban extends View {
   }
 
   selectColumn(delta, cx) {
-    this.selectedId = moveColumn(this.columns(), this.selectedId, delta);
+    this.focusSelection(moveColumn(this.columns(), this.selectedId, delta));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   selectEdge(last, cx) {
-    this.selectedId = moveEdge(this.columns(), this.selectedId, last);
+    this.focusSelection(moveEdge(this.columns(), this.selectedId, last));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   jumpColumn(index, cx) {
-    this.selectedId = jumpToColumn(this.columns(), this.selectedId, index);
+    this.focusSelection(jumpToColumn(this.columns(), this.selectedId, index));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
@@ -374,6 +389,7 @@ export default class AvenKanban extends View {
     for (let index = 0; index < Math.abs(moves); index += 1) {
       this.selectedId = moveSelection(this.columns(), this.selectedId, step);
     }
+    if (moves) this.focusSelection(this.selectedId);
     this.retainSelection(cx);
     if (archiveId) {
       const card = archiveId === "*" ? this.selected() : selectedCard(this.columns(), archiveId);
@@ -515,9 +531,17 @@ export default class AvenKanban extends View {
     return filterBoardByProject(this.boardColumns(), this.projectFilter);
   }
   selected(columns = this.columns()) { return selectedCard(columns, this.selectedId); }
+  selectedCards(columns = this.columns()) { return selectionCards(columns, this.selectedIds); }
   retainSelection(cx) {
     const columns = this.columns();
-    this.selectedId = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
+    // Keep a multi-selection across refreshes, but only for cards the drawn
+    // board still contains. Filters, archives, and deletes prune it here.
+    this.selectedIds = pruneSelection(this.selectedIds, columns);
+    if (!this.selectedIds.length) {
+      const fallback = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
+      this.selectedIds = fallback ? [fallback] : [];
+    }
+    if (!this.selectedIds.includes(this.selectedId)) this.selectedId = this.selectedIds.at(-1) ?? "";
     if (this.deleteConfirmId && !selectedCard(columns, this.deleteConfirmId)) this.deleteConfirmId = "";
     this.notify(cx);
   }
@@ -573,14 +597,18 @@ export default class AvenKanban extends View {
       this.pendingMoves += delta;
       return;
     }
-    this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
+    this.focusSelection(moveSelection(this.columns(), this.selectedId, delta));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
   }
 
-  selectCard(card, cx) {
-    this.selectedId = card.id;
+  selectCard(card, cx, additive = false) {
+    const next = selectionAfterClick(this.selectedIds, card.id, additive);
+    this.selectedIds = next;
+    // The last card toggled on owns keyboard focus; removing it falls back to
+    // the most recently added remaining card.
+    this.selectedId = next.includes(card.id) ? card.id : (next.at(-1) ?? "");
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
@@ -1012,7 +1040,7 @@ export default class AvenKanban extends View {
   // button) deletes. Selection changes, Esc, and opening help disarm it.
   confirmDeleteCard(card, cx) {
     if (!card?.id || this.deleting) return;
-    this.selectedId = card.id;
+    this.focusSelection(card.id);
     this.dispatchMenuEpicId = null;
     this.helpOpen = false;
     if (this.deleteConfirmId === card.id) {
@@ -1044,6 +1072,7 @@ export default class AvenKanban extends View {
         this.forgetDeleted(ids);
         this.state = { ...this.state, rows: this.state.rows.filter((row) => !removed.has(row.id)), error: "" };
         this.selectedId = "";
+        this.selectedIds = [];
         this.notice = `Deleted ${plural(outcome?.tasks.length || ids.length, "task")}${
           outcome?.attemptsRemoved ? ` and removed ${plural(outcome.attemptsRemoved, "dispatch attempt")}` : ""}.`;
         this.retainSelection(taskCx);
@@ -1064,6 +1093,9 @@ export default class AvenKanban extends View {
       this.details.delete(detailCacheKey(workspace, id));
       this.questions.delete(id);
     }
+    const removed = new Set(ids);
+    this.selectedIds = this.selectedIds.filter((id) => !removed.has(id));
+    if (removed.has(this.selectedId)) this.selectedId = this.selectedIds.at(-1) ?? "";
     if (archiveChanged) setShared(ARCHIVE_SHARED, [...this.archived]);
     if (this.summaryCardId && ids.includes(this.summaryCardId)) this.summaryCardId = "";
     if (this.dispatchMenuEpicId && ids.includes(this.dispatchMenuEpicId)) this.dispatchMenuEpicId = null;
@@ -1177,7 +1209,7 @@ export default class AvenKanban extends View {
     }
     if (open) {
       actions.push(this.btn(`aven-kanban-dispatch-${card.id}`, menuOpen ? "Dispatch ⌃" : "Dispatch ⌄", "plain", (clickCx) => {
-        this.selectedId = card.id;
+        this.focusSelection(card.id);
         this.dispatchMenuEpicId = this.dispatchMenuEpicId === card.id ? null : card.id;
         this.notify(clickCx);
       }));
@@ -1188,7 +1220,8 @@ export default class AvenKanban extends View {
   }
 
   card(card, cx) {
-    const selected = card.id === this.selectedId;
+    const selected = this.selectedIds.includes(card.id) || card.id === this.selectedId;
+    const multiSelected = this.selectedIds.length > 1 && this.selectedIds.includes(card.id);
     const summaryOpen = this.summaryCardId === card.id;
     const stop = (_event, clickCx) => clickCx.stop_propagation();
     const columnTone = TONES[BOARD_COLUMNS.find((column) => column.id === card.column)?.tone ?? "dim"] ?? C.dim;
@@ -1196,12 +1229,17 @@ export default class AvenKanban extends View {
     return div().id(`aven-kanban-card-${card.id}`).w_full().flex_none().flex().flex_row().rounded(6).overflow_hidden()
       .bg(card.column === "needs_you" ? C.youCard : C.card).border(1).border_color(selected ? C.accent : C.line)
       .cursor_pointer().hover((style) => style.bg(C.hover))
-      .on_click((_event, clickCx) => this.selectCard(card, clickCx ?? cx))
+      .on_click((event, clickCx) => this.selectCard(
+        card,
+        clickCx ?? cx,
+        Boolean(event?.modifiers?.control || event?.modifiers?.platform),
+      ))
       .child(div().w(3).flex_none().bg(columnTone))
       .child(v_flex().flex_1().min_w(0).px(10).py(8).gap(4)
         .child(h_flex().w_full().gap(6).items_center()
           .child(this.glyph(card))
           .child(this.projectChip(card.project))
+          .when(multiSelected, (el) => el.child(mono(10, C.accent, "✓")))
           .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(10.5).text_color(C.dim).child(card.ref))
           .child(mono(10, whenColor, this.cardWhen(card))))
         .child(div().font_family(SANS).text_size(12.5).text_color(C.text).child(card.title))
@@ -1245,6 +1283,19 @@ export default class AvenKanban extends View {
         .when(card.warnings.length > 0, (el) => el.child(mono(9.5, C.red, card.warnings.join(" "))))
         .child(this.cardActions(card, cx))
         .when(this.dispatchMenuEpicId === card.id, (el) => el.child(this.dispatchMenu(card, cx))));
+  }
+
+  // Multi-select is a board mode, not a hidden modifier: the bar names the
+  // selection and shows only the actions that the existing per-card rules make
+  // applicable. It stays absent for the ordinary single-card workflow.
+  bulkBar(cx) {
+    const cards = this.selectedCards();
+    if (cards.length < 2) return null;
+    return h_flex().id("aven-kanban-bulk").w_full().flex_none().gap(8).items_center().px(10).py(6).rounded(6)
+      .bg(C.raised).border(1).border_color(C.accentDim)
+      .child(mono(10.5, C.accent, `${cards.length} selected`))
+      .child(div().flex_1())
+      .child(this.btn("aven-kanban-bulk-clear", "Clear", "plain", (clickCx) => this.clearSelection(clickCx)));
   }
 
   column(column, cx, focused = false) {
@@ -1365,6 +1416,7 @@ export default class AvenKanban extends View {
     const allStats = boardStats(board);
     const next = nextMove(columns);
     const focusedColumn = this.selected(columns)?.column ?? "";
+    const bulk = this.bulkBar(cx);
     const keyCommands = {
       escape: "close", j: "next", down: "next", k: "previous", up: "previous",
       h: "column-previous", left: "column-previous", l: "column-next", right: "column-next",
@@ -1399,8 +1451,9 @@ export default class AvenKanban extends View {
         .when(this.state.evidencePending, (el) => el.child(mono(9.5, C.dim, "Checking local main for delivered work…")))
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, allStats, cx))
+        .children(bulk ? [bulk] : [])
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, C.dim, "j/k card · h/l column · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · D delete · d dispatch · ? keys"))
+          .child(mono(10, C.dim, "j/k card · h/l column · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · D delete · d dispatch · ctrl-click multi-select · ? keys"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
@@ -1442,6 +1495,7 @@ export default class AvenKanban extends View {
       ["Navigation", [
         ["j / k  ↓ / ↑", "next / previous card in the focused column"],
         ["h / l  ← / →", "previous / next non-empty column"],
+        ["Ctrl/⌘-click", "add or remove a card from the multi-selection"],
         ["g  Home", "jump to the top of the focused column"],
         ["Shift-G  End", "jump to the bottom of the focused column"],
         ["Tab / Shift-Tab", "next / previous column"],
@@ -1455,11 +1509,12 @@ export default class AvenKanban extends View {
         ["Shift-S", "ship a PR from the approved card's task agent"],
         ["Shift-D  Del", "delete the selected epic, its child tasks, and their dispatch state"],
         ["m", "merge an approved card in its task agent"],
+        ["m / Shift-S / x", "bulk merge / ship / archive when several cards are selected"],
         ["d", "toggle Dispatch"],
         ["u", "expand or collapse the LLM summary"],
         ["s / p / i", "plan-and-implement / plan / implement"],
         ["r", "refresh"],
-        ["Esc", "close help, Dispatch, then the board"],
+        ["Esc", "clear a multi-selection, close help or Dispatch, then the board"],
       ]],
     ];
     return v_flex().id("aven-kanban-help").absolute().top(50).right(16).w(520).p(16).gap(10).rounded(8)

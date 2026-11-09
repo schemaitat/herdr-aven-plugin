@@ -1165,6 +1165,56 @@ export function selectedCard(columns, selectedId) {
   return flattenBoard(columns).find((card) => card.id === selectedId) ?? null;
 }
 
+// Multi-select is presentation state keyed by immutable task IDs. Click order
+// is preserved so removing the focused card can fall back to the most recently
+// added remaining card.
+export function toggleSelection(selection, id) {
+  const current = Array.isArray(selection) ? selection : [];
+  const key = String(id ?? "").trim();
+  if (!key) return current.slice();
+  if (current.includes(key)) return current.filter((candidate) => candidate !== key);
+  return [...current, key];
+}
+
+// A plain click replaces the selection; an additive Ctrl/Cmd-click toggles one
+// card without touching the rest.
+export function selectionAfterClick(selection, id, additive = false) {
+  const key = String(id ?? "").trim();
+  if (!key) return [];
+  return additive ? toggleSelection(selection, key) : [key];
+}
+
+// Selection must never outlive the drawn board: archived, deleted, or filtered
+// cards are dropped on every publish.
+export function pruneSelection(selection, columns) {
+  const visible = new Set(flattenBoard(columns).map((card) => card.id));
+  return (Array.isArray(selection) ? selection : []).filter((id) => visible.has(id));
+}
+
+// Resolve selection IDs to the cards the render already classified, preserving
+// selection order. Unknown IDs are ignored rather than invented.
+export function selectionCards(columns, selection) {
+  const byId = new Map(flattenBoard(columns).map((card) => [card.id, card]));
+  const seen = new Set();
+  const cards = [];
+  for (const id of Array.isArray(selection) ? selection : []) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const card = byId.get(id);
+    if (card) cards.push(card);
+  }
+  return cards;
+}
+
+// Bulk actions reuse the exact per-card validity rules. "Where it makes sense"
+// means a bulk press never loosens merge approval or archive readiness.
+export function bulkTargets(cards, kind, state = {}) {
+  const list = Array.isArray(cards) ? cards : [];
+  if (kind === "merge" || kind === "ship") return list.filter((card) => card?.mergeable === true);
+  if (kind === "archive") return list.filter((card) => cardArchiveable(card, state));
+  return [];
+}
+
 function terminalHash(value) {
   let first = 0x811c9dc5, second = 0x9e3779b9;
   for (let index = 0; index < value.length; index += 1) {
