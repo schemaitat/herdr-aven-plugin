@@ -11,7 +11,7 @@ import {
   handoffAgentRun, handoffSendArgs, handoffTabArgs, liveAgentFor, liveHandoffTerminal, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
   nextMove, normalizeAttempt, normalizeEpic, obligationListArgs, openObligationIndex, openTaskBlockers, openArgs,
-  projectChips, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard,
+  projectChips, progressPublishDue, refreshMayPublishProgress, reopenTarget, resolveCurrentProject, selectAttempt, selectedCard,
   selectWorktreeSpace, shipPrompt, shipTabName,
   summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
@@ -38,6 +38,18 @@ assert.match(kanbanSource, /const progressive = refreshMayPublishProgress\(this\
 assert.match(kanbanSource, /if \(progressive\) this\.publishRows/);
 assert.match(kanbanSource, /this\.mainMerged = mainEvidence\.merged;/);
 assert.match(kanbanSource, /this\.hasSettledBoard = true;/);
+
+// Progressive startup hydration must not repaint once per epic. The first
+// detail may publish immediately, bursts are coalesced, and the final
+// post-hydration publish is unconditional.
+assert.equal(progressPublishDue(0, 119, 120), false, "a burst frame inside the interval is coalesced");
+assert.equal(progressPublishDue(0, 120, 120), true, "the first frame after the interval publishes");
+assert.equal(progressPublishDue(1000, 3400, 120), true, "a later frame publishes");
+assert.equal(progressPublishDue(1000, 900, 120), true, "a backwards clock publishes instead of starving");
+assert.match(kanbanSource, /PROGRESS_PUBLISH_MS = 120/);
+assert.match(kanbanSource, /progressPublishDue\(lastProgressPublish, Date\.now\(\), PROGRESS_PUBLISH_MS\)/);
+assert.match(kanbanSource, /const hydration = await hydrateDetails/);
+assert.match(kanbanSource, /if \(progressive\) this\.publishRows\(taskCx, \{ evidencePending: true \}\)/, "the final staged publish still runs");
 
 // One render takes one live snapshot and builds the board once. The drawn,
 // project-filtered columns then drive selection, stats, and chips instead of a

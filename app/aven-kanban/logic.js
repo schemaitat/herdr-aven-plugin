@@ -325,6 +325,18 @@ export function refreshMayPublishProgress(hasSettledBoard) {
   return !hasSettledBoard;
 }
 
+// Progressive hydration can resolve dozens of details in a burst. Repainting
+// the whole board for each one turns startup into visible jank, so publishes
+// are coalesced to a small interval. The final hydrated publish is separate
+// and always runs, so a skipped intermediate frame is never the last word.
+export function progressPublishDue(lastAt, now, intervalMs = 120) {
+  const last = Number(lastAt) || 0;
+  const current = Number(now) || 0;
+  const interval = Math.max(0, Number(intervalMs) || 0);
+  if (current < last) return true;
+  return current - last >= interval;
+}
+
 export function cardArchiveable(card, state) {
   return card?.column === "done" && card?.hydrated === true && !enrichmentPending(state);
 }

@@ -10,6 +10,7 @@ import {
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDeleteOutcome, safeDetail,
   selectAttempt, selectedCard, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  progressPublishDue,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -20,6 +21,7 @@ const QUESTION_WORKERS = 3;
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
+const PROGRESS_PUBLISH_MS = 120;
 const ARCHIVE_SHARED = "aven-kanban.archived";
 
 // The reference Board palette lives in the read model so its WCAG contrast is
@@ -448,6 +450,7 @@ export default class AvenKanban extends View {
           detailNeedsRefresh(this.details.get(detailCacheKey(sources.workspace, row.id)), sources.workspace, row)).length;
         // Publish provisional cards now; enrichment continues below.
         if (progressive) this.publishRows(taskCx, { enriching: needed > 0 });
+        let lastProgressPublish = progressive ? Date.now() : 0;
         const hydration = await hydrateDetails({
           rows: sources.baseRows,
           workspace: sources.workspace,
@@ -462,7 +465,12 @@ export default class AvenKanban extends View {
             // A failed read must not leave an older approval marker usable.
             if (snapshot) this.details.set(key, snapshot);
             else this.details.delete(key);
-            if (progressive) this.publishRows(taskCx, { enriching: true });
+            // Coalesce first-paint repaints; the final publish below is
+            // unconditional, so no hydrated state is lost.
+            if (progressive && progressPublishDue(lastProgressPublish, Date.now(), PROGRESS_PUBLISH_MS)) {
+              lastProgressPublish = Date.now();
+              this.publishRows(taskCx, { enriching: true });
+            }
           },
         });
         if (progressive) this.publishRows(taskCx, { evidencePending: true });
