@@ -221,6 +221,7 @@ pub(crate) fn reopen_existing(
     model: Option<String>,
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
+    confirm_selection: bool,
 ) -> Result<()> {
     // Reopen confirmation uses interactive pickers; release the store
     // lock before starting them and reacquire only to checkpoint state.
@@ -230,10 +231,10 @@ pub(crate) fn reopen_existing(
         &format!("{} {}", existing.task_ref, task_title),
         None,
     )?;
-    if agent.as_deref().is_none_or(|agent| agent == "select") {
+    if confirm_selection && agent.as_deref().is_none_or(|agent| agent == "select") {
         select_agent(&resource.path, &path, Some(&existing.agent), None)?;
     }
-    if model.is_none() {
+    if confirm_selection && model.is_none() {
         select_model(
             &[(
                 format!("Saved model ({})", existing.model),
@@ -853,10 +854,27 @@ pub(crate) fn dispatch(options: DispatchOptions) -> Result<()> {
             Ok((selected, task))
         })
         .collect::<Result<Vec<_>>>()?;
+    let batch = targets.len() > 1;
+    let mut shared = None;
     for (selected, task) in targets {
-        dispatch_one(options.clone(), &context, &selected, task)?;
+        dispatch_one(
+            options.clone(),
+            &context,
+            &selected,
+            task,
+            batch,
+            &mut shared,
+        )?;
     }
     Ok(())
+}
+
+/// Choices from the first new admission, never from an existing attempt.
+#[derive(Clone)]
+struct BatchConfiguration {
+    mode: ExecutionMode,
+    agent: String,
+    model: String,
 }
 
 fn dispatch_one(
@@ -864,6 +882,8 @@ fn dispatch_one(
     context: &CommandContext,
     selected: &Selected,
     _initial_task: Value,
+    batch: bool,
+    shared: &mut Option<BatchConfiguration>,
 ) -> Result<()> {
     let DispatchOptions {
         path,
@@ -974,12 +994,18 @@ fn dispatch_one(
             model,
             skill,
             skills_dir,
+            !batch,
         );
     }
     // Mode and agent/model pickers can wait for user input indefinitely. Do
     // not retain the process-wide store lock while they are visible.
     drop(store);
-    let execution_mode = select_mode(requested_mode, workflow)?;
+    let execution_mode = match shared.as_ref() {
+        Some(config) => config.mode,
+        None => select_mode(requested_mode, workflow)?,
+    };
+    let agent = shared.as_ref().map(|config| config.agent.clone()).or(agent);
+    let model = shared.as_ref().map(|config| config.model.clone()).or(model);
     let orchestrator_model = resolve_orchestrator_model(execution_mode, orchestrator_model);
     let mut attempt = new_attempt(
         selected.task.id.clone(),
@@ -999,6 +1025,13 @@ fn dispatch_one(
         context.invocation.clone(),
     );
     if dry_run {
+        if batch && shared.is_none() {
+            *shared = Some(BatchConfiguration {
+                mode: attempt.execution_mode,
+                agent: attempt.agent.clone(),
+                model: attempt.model.clone(),
+            });
+        }
         println!(
             "would dispatch {} as {} on {}{}",
             attempt.task_ref,
@@ -1030,6 +1063,13 @@ fn dispatch_one(
     drop(store);
     select_primary_agent(&mut attempt, &path, preferred_agent.as_deref())?;
     select_attempt_model(&mut attempt, &path, preferred_model.as_deref())?;
+    if batch && shared.is_none() {
+        *shared = Some(BatchConfiguration {
+            mode: attempt.execution_mode,
+            agent: attempt.agent.clone(),
+            model: attempt.model.clone(),
+        });
+    }
     let mut store = checkpoint_session_pending(&mut attempt, path.clone())?;
     if attempt.execution_mode == ExecutionMode::Worktrees {
         install_global_agent(ORCHESTRATOR_AGENT_ID, ORCHESTRATOR_AGENT)?;
