@@ -845,6 +845,21 @@ export default class AvenKanban extends View {
     this.retainSelection(cx);
   }
 
+  // Keep the refresh control's measured content constant. The spinner slot is
+  // always present; only its visibility and pulse change while a read is in
+  // flight, so the top bar never reflows on a timer or manual refresh.
+  refreshButton(cx) {
+    return h_flex().id("aven-kanban-refresh").flex_none().gap(6).px(9).py(3).rounded(5).items_center()
+      .bg(C.raised).border(1).border_color(C.line2).text_color(C.text)
+      .font_family(SANS).text_size(12).cursor_pointer().hover((style) => style.opacity(0.85))
+      .on_mouse_down("left", (_event, clickCx) => clickCx.stop_propagation())
+      .on_click((_event, clickCx) => { clickCx.stop_propagation(); this.refresh(clickCx); })
+      .child("Refresh")
+      .child(div().id("aven-kanban-refresh-spinner").w(8).h(8).flex_none().rounded(4)
+        .when(this.refreshing, (spinner) => spinner.bg(C.accent)
+          .loop("opacity", { from: 0.3, to: 1, period: 800 })));
+  }
+
   btn(id, label, kind, onClick) {
     const [bg, fg, border] = kind === "you" ? [C.you, "#1a1300", C.you]
       : kind === "land" ? [C.land, "#08180f", C.land]
@@ -1040,7 +1055,7 @@ export default class AvenKanban extends View {
       .child(mono(10, C.dim, `${plural(stats.total, "epic")}`))
       .child(div().flex_1())
       .child(this.btn("aven-kanban-help-toggle", "? Keys", "plain", (clickCx) => this.toggleHelp(clickCx)))
-      .child(this.btn("aven-kanban-refresh", this.refreshing ? "Refreshing…" : "Refresh", "plain", (clickCx) => this.refresh(clickCx)))
+      .child(this.refreshButton(cx))
       .child(mono(10, C.dim, "Esc"));
   }
 

@@ -16,6 +16,15 @@ import {
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
 assert.deepEqual(manifest.overlay, { width: 1, height: 1 }, "the board fills the app window");
 
+// The top-bar refresh control must not change its measured content while a
+// refresh is in flight. Keep the label constant and the spinner slot fixed.
+const kanbanSource = readFileSync(new URL("../app/aven-kanban/main.js", import.meta.url), "utf8");
+assert.equal(kanbanSource.includes("Refreshing…"), false, "refreshing never swaps the button label");
+assert.match(kanbanSource, /refreshButton\(cx\)/, "the top bar uses the stable refresh control");
+assert.match(kanbanSource, /aven-kanban-refresh-spinner/, "the refresh control owns a fixed spinner slot");
+assert.match(kanbanSource, /w\(8\)\.h\(8\)\.flex_none\(\)/, "the spinner slot keeps a constant size");
+assert.match(kanbanSource, /child\("Refresh"\)/, "the refresh label is constant");
+
 const rawEpic = (id, status = "todo", extra = {}) => ({
   id, ref: `HAP-${id}`, title: `Epic ${id}`, project: "herdr-aven-plugin", status,
   is_epic: true, deleted: false, created_at: "2026-01-01T00:00:00Z",

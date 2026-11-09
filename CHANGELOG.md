@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep the Kanban **Refresh** control geometrically stable: the label stays
+  `Refresh` and a fixed-size spinner slot is always reserved, so timer and
+  manual refreshes no longer reflow the top bar or move adjacent text.
 - Stop the Kanban board from auto-summarizing terminal epics. Done and canceled
   cards are final results, so the background `describe --auto` queue now skips
   them instead of refreshing the whole board to summarize each historical epic

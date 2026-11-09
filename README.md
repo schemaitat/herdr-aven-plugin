@@ -679,7 +679,10 @@ pushes, opens a pull request, changes Aven acceptance, applies closeout, or
 closes a space; Merge and Ship PR are agent handoffs that keep the human in
 control.
 
-Refresh is non-overlapping. Full Aven metadata is cached by immutable epic ID
+Refresh is non-overlapping. The top-bar **Refresh** control keeps a constant
+label and a reserved spinner slot, so starting or finishing a refresh never
+reflows the toolbar or moves the adjacent `Esc` hint. Full Aven metadata is
+cached by immutable epic ID
 and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
 the merged epic set, and dispatcher attempts. Dispatcher reads use read-only,
 prompt-free `aven-dispatch list --summary --limit 500`; exceeding a cap is an
