@@ -789,16 +789,49 @@ pub(crate) fn select_mode(
     Ok(ExecutionMode::SingleSession)
 }
 
+// Descriptive branch identity for new dispatch attempts.
+const BRANCH_SLUG_LIMIT: usize = 48;
+
+/// Turn a task reference or title into a bounded, lowercase, hyphen-separated
+/// slug.
+pub(crate) fn branch_slug(value: &str) -> String {
+    let mut slug = String::new();
+    for character in value.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = slug.chars().take(BRANCH_SLUG_LIMIT).collect::<String>();
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "task".into()
+    } else {
+        slug.to_owned()
+    }
+}
+
 /// Branch identity for new dispatch attempts.
 ///
-/// The identifier is the immutable task id, lowercased for Git consistency.
-pub(crate) fn branch(task_id: &str) -> String {
+/// Shape: `feat/<reference-slug>-<title-slug>-dispatch-<immutable task id>`.
+/// The reference and title are cosmetic; the trailing task id keeps the branch
+/// stable and unique across title or reference changes.
+pub(crate) fn branch(reference: &str, task_id: &str, title: &str) -> String {
     let identifier = task_id.trim();
-    if identifier.is_empty() {
-        "feat/task".into()
+    let identifier = if identifier.is_empty() {
+        "task"
     } else {
-        format!("feat/{}", identifier.to_ascii_lowercase())
-    }
+        identifier
+    };
+    format!(
+        "feat/{}-{}-dispatch-{}",
+        branch_slug(reference),
+        branch_slug(title),
+        identifier.to_ascii_lowercase()
+    )
 }
 
 // Admission command orchestration.
@@ -982,7 +1015,11 @@ fn dispatch_one(
         selected.task.id.clone(),
         selected.reference().to_owned(),
         workflow,
-        branch(&selected.task.id),
+        branch(
+            selected.reference(),
+            &selected.task.id,
+            &selected.task.title,
+        ),
         agent,
         model,
         execution_mode,
@@ -1195,7 +1232,7 @@ mod tests {
 
 #[cfg(test)]
 mod moved_owner_tests {
-    use crate::dispatch::{branch, bundled_skill};
+    use crate::dispatch::{branch, branch_slug, bundled_skill};
     use std::fs;
 
     #[test]
@@ -1214,10 +1251,28 @@ mod moved_owner_tests {
         assert!(bundled_skill(Some("aven/../sdd".into()), None).is_err());
     }
     #[test]
-    fn branch_uses_the_immutable_task_identifier() {
-        assert_eq!(branch("ABC123"), "feat/abc123");
-        assert_eq!(branch("FPJSFBF2VH24VNM6"), "feat/fpjsfbf2vh24vnm6");
-        assert_eq!(branch("immutable-task"), "feat/immutable-task");
-        assert_eq!(branch(""), "feat/task");
+    fn branch_combines_reference_slug_and_immutable_id() {
+        assert_eq!(
+            branch("APP", "ABC123", "quoted \"task\""),
+            "feat/app-quoted-task-dispatch-abc123"
+        );
+        assert_eq!(
+            branch("", "ABC123", "Worktree & branch"),
+            "feat/task-worktree-branch-dispatch-abc123"
+        );
+        assert_eq!(
+            branch("HAP-FPJS", "FPJSFBF2VH24VNM6", "branch naming"),
+            "feat/hap-fpjs-branch-naming-dispatch-fpjsfbf2vh24vnm6"
+        );
+    }
+    #[test]
+    fn branch_slug_is_bounded_and_falls_back() {
+        assert_eq!(branch_slug("  "), "task");
+        assert_eq!(branch_slug("---"), "task");
+        assert_eq!(branch_slug("日本語"), "task");
+        assert_eq!(branch_slug("A__b  c--d"), "a-b-c-d");
+        let long = branch_slug(&"x".repeat(80));
+        assert_eq!(long.len(), 48);
+        assert!(!long.ends_with('-'));
     }
 }

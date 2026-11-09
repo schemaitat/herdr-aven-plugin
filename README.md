@@ -928,7 +928,8 @@ integrated. Reopened attempts retain their saved mode rather than silently
 changing topology.
 When `z p` precedes `z i`, planning and implementation retain separate OpenCode
 sessions so they can use different agents/models, but both use the same
-deterministic task worktree branch (`feat/{task-id}`; phase worktrees append
+deterministic task worktree branch
+(`feat/{aven-ref}-{task-slug}-dispatch-{task-id}`; phase worktrees append
 `-phase-NN`).
 
 ## Configuration

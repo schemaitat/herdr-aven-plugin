@@ -128,9 +128,9 @@ EOF
 
 # Worktrees are created only through hc exec/git; the checkout follows the
 # shared ~/.herdr/worktrees convention.
-worktree=$work/worktrees/repo/feat-immutable-task
+worktree=$work/worktrees/repo/feat-app-1-quoted-task-dispatch-immutable-task
 [ -d "$worktree" ] || fail "dispatch did not create the expected worktree"
-[ "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" = "feat/immutable-task" ] || fail "worktree branch"
+[ "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" = "feat/app-1-quoted-task-dispatch-immutable-task" ] || fail "worktree branch"
 assert_file_contains "$log" '"exec"' 'worktree operations use hc exec'
 assert_file_contains "$log" '"worktree", "add"' 'hc exec runs git worktree add'
 assert_file_contains "$log" '"run"' 'agent launch uses hc run'
@@ -157,8 +157,8 @@ $bulk_context
 EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 assert_eq "$after" "$((before + 2))" 'bulk dispatch admits every selected target independently'
-[ -d "$work/worktrees/repo/feat-immutable-task" ] || fail 'bulk dispatch creates first selected worktree'
-[ -d "$work/worktrees/repo/feat-bulk-task" ] || fail 'bulk dispatch creates second selected worktree'
+[ -d "$work/worktrees/repo/feat-app-1-quoted-task-dispatch-immutable-task" ] || fail 'bulk dispatch creates first selected worktree'
+[ -d "$work/worktrees/repo/feat-app-3-second-selected-task-dispatch-bulk-task" ] || fail 'bulk dispatch creates second selected worktree'
 sqlite_json "$bulk_store" > "$work/explicit-bulk.json"
 python3 - "$work/explicit-bulk.json" <<'PY'
 import json, sys
@@ -398,7 +398,7 @@ EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 assert_eq "$after" "$((before + 1))" 'incomplete reservation is discarded and admitted once'
 assert_file_contains "$work/incomplete-retry" 'admitted APP-1' 'incomplete reservation starts a fresh dispatch'
-[ -d "$work/worktrees/repo/feat-immutable-task" ] || fail 'fresh dispatch recreated the worktree'
+[ -d "$work/worktrees/repo/feat-app-1-quoted-task-dispatch-immutable-task" ] || fail 'fresh dispatch recreated the worktree'
 
 # A legacy record is read-only evidence until an explicit relaunch.
 legacy_store=$work/legacy.sqlite
@@ -432,10 +432,10 @@ PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_store" cargo run --quiet -- 
 $cumulative_context
 EOF
 for phase in phase-01 phase-02; do
-  [ -d "$work/worktrees/repo/feat-epic-task-$phase" ] || fail "missing $phase worktree"
+  [ -d "$work/worktrees/repo/feat-app-2-cumulative-epic-dispatch-epic-task-$phase" ] || fail "missing $phase worktree"
 done
-assert_file_contains "$log" 'feat/epic-task-phase-01' 'first phase branch created'
-assert_file_contains "$log" 'feat/epic-task-phase-02' 'second phase branch created'
+assert_file_contains "$log" 'feat/app-2-cumulative-epic-dispatch-epic-task-phase-01' 'first phase branch created'
+assert_file_contains "$log" 'feat/app-2-cumulative-epic-dispatch-epic-task-phase-02' 'second phase branch created'
 assert_contains "$(sqlite_json "$cumulative_store")" '"state": "provisioned"' 'blocked successor stays provisioned'
 assert_contains "$(sqlite_json "$cumulative_store")" '"state": "running"' 'first phase is admitted'
 assert_contains "$(sqlite_json "$cumulative_store")" '"role": "phase"' 'phase terminal ownership persisted'
@@ -446,7 +446,7 @@ grep -F '"agent":"aven-orchestrator","location"' "$work/opencode.log" | tail -n 
   || fail 'worktree coordinator defaults to Luna'
 assert_contains "$(sqlite_json "$cumulative_store")" '"coordinator_model": "github-copilot/gpt-6-luna"' 'default coordinator model persisted'
 for phase in phase-01 phase-02; do
-  grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F "feat-epic-task-$phase" | tail -n 1 | grep -F '"model":{"id":"gpt-6.1-terra","providerID":"github-copilot"}' >/dev/null \
+  grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F "feat-app-2-cumulative-epic-dispatch-epic-task-$phase" | tail -n 1 | grep -F '"model":{"id":"gpt-6.1-terra","providerID":"github-copilot"}' >/dev/null \
     || fail "phase worker $phase keeps the selected worker model"
 done
 
@@ -461,7 +461,7 @@ assert_contains "$(sqlite_json "$orchestrator_store")" '"coordinator_model": "gi
 grep -F '"agent":"aven-orchestrator","location"' "$work/opencode.log" | tail -n 1 | grep -F '"model":{"id":"gpt-5.5","providerID":"github-copilot"}' >/dev/null \
   || fail 'configured coordinator session uses its override'
 for phase in phase-01 phase-02; do
-  grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F "feat-epic-task-$phase" | tail -n 1 | grep -F '"model":{"id":"gpt-6.1-terra","providerID":"github-copilot"}' >/dev/null \
+  grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F "feat-app-2-cumulative-epic-dispatch-epic-task-$phase" | tail -n 1 | grep -F '"model":{"id":"gpt-6.1-terra","providerID":"github-copilot"}' >/dev/null \
     || fail "coordinator override leaves phase worker $phase on the worker model"
 done
 
@@ -513,9 +513,9 @@ FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_worktree_store" cargo ru
 $cumulative_context
 EOF
 assert_file_lacks "$work/app.log" 'pane.split' 'coordinator and phase workers receive no panel pane'
-assert_file_contains "$work/app.log" 'feat-epic-task-phase-01' 'first phase gets a separate worktree space'
-assert_file_contains "$work/app.log" 'feat-epic-task-phase-02' 'second phase gets a separate worktree space'
-assert_file_contains "$work/app.log" 'feat-epic-task' 'coordinator gets its root worktree space'
+assert_file_contains "$work/app.log" 'feat-app-2-cumulative-epic-dispatch-epic-task-phase-01' 'first phase gets a separate worktree space'
+assert_file_contains "$work/app.log" 'feat-app-2-cumulative-epic-dispatch-epic-task-phase-02' 'second phase gets a separate worktree space'
+assert_file_contains "$work/app.log" 'feat-app-2-cumulative-epic-dispatch-epic-task' 'coordinator gets its root worktree space'
 
 # Reset invalidates execution while preserving Aven plan/status.
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reset APP-1 --yes > "$work/reset"
