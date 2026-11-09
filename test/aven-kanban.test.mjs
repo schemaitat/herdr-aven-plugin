@@ -4,9 +4,10 @@ import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, BORDER_CONTRAST_PAIRS, CREATED_FILTERS, DETAIL_METADATA, DISPATCH_ACTIONS, LIMIT,
   MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS, SUMMARY_LABEL, TEXT_CONTRAST_PAIRS, autoSummaryCandidate,
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardStats, buildBoard,
-  cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, detailArgs, detailCacheKey, detailIsCurrent,
+  cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, deleteArgs, deletedTaskIds,
+  detailArgs, detailCacheKey, detailIsCurrent,
   detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
-  hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
+  hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDeleteOutcome, safeDetail,
   handoffAgentRun, handoffSendArgs, handoffTabArgs, liveAgentFor, liveHandoffTerminal, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
   nextMove, normalizeAttempt, normalizeEpic, obligationListArgs, openObligationIndex, openTaskBlockers, openArgs,
@@ -773,6 +774,38 @@ assert.deepEqual(filterArchived([rawEpic("ONE"), rawEpic("TWO")], archived, "def
 assert.deepEqual(filterArchived([rawEpic("ONE")], archived, "other").map(({ id }) => id), ["ONE"], "another workspace is untouched");
 assert.equal(filterArchived([rawEpic("ONE")], new Set(), "default").length, 1);
 assert.equal(filterArchived([rawEpic("ONE")], null, "default").length, 1);
+
+// Delete is one dispatcher cascade contract, not a board-side Aven loop. Local
+// cleanup trusts only completed identities from a successful payload.
+assert.deepEqual(deleteArgs("default", "HAP-ONE"), [
+  "delete", "HAP-ONE", "--workspace", "default", "--apply", "--json",
+]);
+assert.throws(() => deleteArgs("default", " "), /task reference/);
+const deleted = safeDeleteOutcome({
+  applied: true,
+  tasks: [{ ref: "HAP-ONE", id: "ONE", title: "Root" }, { ref: "HAP-CHILD", id: "CHILD" }],
+  attempts_removed: 2,
+  secret: "must not enter the board model",
+});
+assert.deepEqual(deleted, {
+  applied: true,
+  tasks: [{ id: "ONE", ref: "HAP-ONE", title: "Root" }, { id: "CHILD", ref: "HAP-CHILD", title: "" }],
+  attemptsRemoved: 2,
+});
+assert.deepEqual(safeDeleteOutcome({ applied: false, tasks: "nope", attempts_removed: -3 }), {
+  applied: false, tasks: [], attemptsRemoved: 0,
+});
+assert.deepEqual(deletedTaskIds(deleted, ["CHILD", "ROOT", "ROOT"]), ["ONE", "CHILD", "ROOT"]);
+assert.deepEqual(deletedTaskIds(null, ["ONE", "", null, "ONE"]), ["ONE"]);
+
+// The destructive action is discoverable but never fires on the first press.
+assert.match(kanbanSource, /"shift-d": "delete", delete: "delete"/);
+assert.match(kanbanSource, /deleteArgs\(workspace, card\.ref\)/);
+assert.match(kanbanSource, /aven-kanban-delete-confirm/);
+assert.match(kanbanSource, /deleteConfirmId/);
+const keys = JSON.parse(readFileSync(new URL("../app/keys.json", import.meta.url), "utf8"));
+assert.equal(keys["mod:aven-kanban"]["shift-d"], "aven-kanban.delete");
+assert.equal(keys["mod:aven-kanban"]["delete"], "aven-kanban.delete");
 
 // The question parser takes the lowest question, ignores chrome and shortcuts.
 assert.equal(lastQuestion(""), "");

@@ -156,6 +156,15 @@ def main(argv):
         task = find(state, argv[1])
         print(json.dumps(context(state, task)))
         return
+    if command == "delete":
+        task = find(state, argv[1])
+        if os.environ.get("AVEN_FIXTURE_FAIL_DELETE") == task["ref"]:
+            raise SystemExit(f"refusing delete {task['ref']}")
+        task["deleted"] = True
+        task["updated_at"] = "2026-01-02T00:00:00Z"
+        save(state)
+        print(f"deleted {task['ref']}")
+        return
     if command == "list":
         project = None
         metadata = []

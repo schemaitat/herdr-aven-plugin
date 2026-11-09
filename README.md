@@ -637,8 +637,8 @@ identity; repeated activation is deduplicated.
 Navigation follows Aven's columns view: vertical movement wraps inside the
 focused column, horizontal movement skips empty columns and keeps the row, and
 `g`/`G` jump to the top/bottom of the focused column. The app's key map
-normalises shifted letters, so `G`, `S` and `A` are installed as `shift-g`,
-`shift-s` and `shift-a`.
+normalises shifted letters, so `G`, `S`, `A` and `D` are installed as
+`shift-g`, `shift-s`, `shift-a` and `shift-d`.
 
 | Board key | Action |
 | --- | --- |
@@ -652,6 +652,7 @@ normalises shifted letters, so `G`, `S` and `A` are installed as `shift-g`,
 | `o` | Open the selected epic in Aven |
 | `a` | Answer on a Needs you card; Archive on a Done card |
 | `A` (Shift-A) | Archive all visible Done cards |
+| `D` (Shift-D) or `Del` | Delete the selected epic, its child tasks, and their dispatcher state |
 | `S` (Shift-S) | Ship PR for an approved Ready to land card |
 | `d` | Toggle the selected epic's Dispatch menu |
 | `u` | Expand/collapse the selected card's LLM summary |
@@ -703,12 +704,33 @@ Merge is a handoff to the existing
 `/ha-merge` requires a durable `/approve` result and clean worktrees. Its
 invocation is the explicit merge trigger; no second confirmation is required.
 
+**Delete** is a two-step destructive action: `D` / `Delete` arms a confirmation
+panel for the selected epic, and only Confirm (or a second press) runs
+
+```sh
+aven-dispatch delete <task-ref> --workspace <workspace> --apply --json
+```
+
+The dispatcher inventories the root's descendant tasks through Aven
+`epic_children`, deletes leaves before their parent, and only after every Aven
+delete succeeds removes the dispatcher attempt/effect rows for all deleted
+immutable task IDs. Aven's own `delete` is per-task, so this cascade is what
+prevents orphaned phases and execution records. Branches, worktrees, commits,
+OpenCode sessions, and notes are preserved; a live agent is not stopped, and
+the panel says so. `Esc`, Cancel, opening help, or moving the selection disarms
+the confirmation without changing Aven. A plain `aven-dispatch delete <ref>`
+(without `--apply`) is a read-only leaves-first inventory, and `--json` reports
+`{"applied", "tasks", "attempts_removed"}`. A failed child delete stops before
+the root, leaves dispatcher state intact, and names the refused ref; retry is
+idempotent. Individual soft-deleted tasks remain restorable with
+`aven restore`, but the board has no tree restore.
+
 **Archive** and **Archive all** hide Done cards in local shared state keyed by
 workspace and immutable epic ID. They never edit Aven status, metadata, delivery
 or history, and they are per app user. The board itself never commits, merges,
 pushes, opens a pull request, changes Aven acceptance, applies closeout, or
 closes a space; Merge and Ship PR are agent handoffs that keep the human in
-control.
+control. Delete is explicit Aven deletion, not an archive substitute.
 
 Refresh is non-overlapping. The top-bar **Refresh** control keeps a constant
 label and a reserved spinner slot, so starting or finishing a refresh never
@@ -1244,8 +1266,17 @@ aven-dispatch recovery                  # read-only recovery-record inventory
 aven-dispatch recovery --apply --task DR-XXXX --reason "<why>"
 aven-dispatch board --project <key>     # childless/incomplete epic proposals
 aven-dispatch board --project <key> --apply --task HAP-XXXX
+aven-dispatch delete HAP-XXXX           # read-only leaves-first tree inventory
+aven-dispatch delete HAP-XXXX --apply   # cascade delete tasks and dispatcher state
 aven-dispatch audit --project <key>     # read-only lifecycle audit
 ```
+
+`delete` is the board's destructive contract. It discovers descendant tasks
+from Aven `epic_children`, soft-deletes them before the root, and removes
+attempt/effect rows only after every Aven delete succeeds. It is read-only
+without `--apply`, keeps branches/worktrees/commits/sessions/notes, stops before
+the root when a child fails, and is idempotent on retry. Aven history remains
+individually restorable with `aven restore`; there is no tree restore.
 
 `disposition` requires a durable reason and a real successor or explicit
 no-successor decision, preserves branch/worktree/commit/uncommitted artifacts,

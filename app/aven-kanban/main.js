@@ -3,12 +3,12 @@ import { h_flex, v_flex } from "gpui-base";
 import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, panes, props, run, setShared, shared, spaces, terminals } from "herdr";
 import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
-  boardStats, buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
+  boardStats, buildBoard, cardArchiveable, deleteArgs, deletedTaskIds, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
   enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   handoffSendArgs, handoffTabArgs, isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress, reopenTarget,
   landedWeek, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
-  openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDetail,
+  openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDeleteOutcome, safeDetail,
   selectAttempt, selectedCard, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
@@ -126,6 +126,9 @@ export default class AvenKanban extends View {
     this.selectedId = "";
     this.summaryCardId = "";
     this.dispatchMenuEpicId = null;
+    this.deleteConfirmId = "";
+    this.deleting = false;
+    this.notice = "";
     this.helpOpen = false;
     this.folder = String(props()?.cwd ?? "");
     this.handle = cx.focus_handle();
@@ -191,6 +194,7 @@ export default class AvenKanban extends View {
     else if (name === "ship") this.shipSelected(cx);
     else if (name === "archive") this.archiveSelected(cx);
     else if (name === "archive-all") this.archiveAll(cx);
+    else if (name === "delete") this.confirmDeleteSelected(cx);
     else if (name === "dispatch") this.toggleDispatch(cx);
     else if (name === "summary") this.toggleSummary(cx);
     else if (name === "plan" || name === "plan-implement" || name === "implement") this.dispatchSelected(name, cx);
@@ -200,30 +204,35 @@ export default class AvenKanban extends View {
 
   escape(cx) {
     if (this.helpOpen) { this.helpOpen = false; this.notify(cx); }
+    else if (this.deleteConfirmId) { this.deleteConfirmId = ""; this.notify(cx); }
     else if (this.dispatchMenuEpicId) { this.dispatchMenuEpicId = null; this.notify(cx); }
     else this.close();
   }
 
   toggleHelp(cx) {
     this.helpOpen = !this.helpOpen;
+    if (this.helpOpen) this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   selectColumn(delta, cx) {
     this.selectedId = moveColumn(this.columns(), this.selectedId, delta);
     this.dispatchMenuEpicId = null;
+    this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   selectEdge(last, cx) {
     this.selectedId = moveEdge(this.columns(), this.selectedId, last);
     this.dispatchMenuEpicId = null;
+    this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   jumpColumn(index, cx) {
     this.selectedId = jumpToColumn(this.columns(), this.selectedId, index);
     this.dispatchMenuEpicId = null;
+    this.deleteConfirmId = "";
     this.notify(cx);
   }
 
@@ -506,7 +515,8 @@ export default class AvenKanban extends View {
   selected(columns = this.columns()) { return selectedCard(columns, this.selectedId); }
   retainSelection(cx) {
     const columns = this.columns();
-    this.selectedId = this.selected(columns)?.id ?? moveSelection(columns, "", 1);
+    this.selectedId = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
+    if (this.deleteConfirmId && !selectedCard(columns, this.deleteConfirmId)) this.deleteConfirmId = "";
     this.notify(cx);
   }
 
@@ -563,12 +573,14 @@ export default class AvenKanban extends View {
     }
     this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
     this.dispatchMenuEpicId = null;
+    this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   selectCard(card, cx) {
     this.selectedId = card.id;
     this.dispatchMenuEpicId = null;
+    this.deleteConfirmId = "";
     this.notify(cx);
   }
 
@@ -989,6 +1001,72 @@ export default class AvenKanban extends View {
     this.retainSelection(cx);
   }
 
+  confirmDeleteSelected(cx) {
+    const card = this.selected();
+    if (!card) { this.notify(cx); return; }
+    this.confirmDeleteCard(card, cx);
+  }
+  // The first deliberate press arms the panel; a second one (or its Confirm
+  // button) deletes. Selection changes, Esc, and opening help disarm it.
+  confirmDeleteCard(card, cx) {
+    if (!card?.id || this.deleting) return;
+    this.selectedId = card.id;
+    this.dispatchMenuEpicId = null;
+    this.helpOpen = false;
+    if (this.deleteConfirmId === card.id) {
+      this.deleteEpic(card, cx);
+      return;
+    }
+    this.deleteConfirmId = card.id;
+    this.notify(cx);
+  }
+  // The dispatcher owns the cascade and state cleanup. The board never removes
+  // the card or local keys until the command exits successfully.
+  deleteEpic(card, cx) {
+    if (this.deleting || !card?.ref) return;
+    this.deleting = true;
+    this.deleteConfirmId = "";
+    this.notice = "";
+    const workspace = this.workspace();
+    const fallback = card.taskIds ?? [card.id];
+    cx.spawn(async (taskCx) => {
+      try {
+        const cwd = await this.rootFolder(this.spaceFolder());
+        const result = await exec("aven-dispatch", deleteArgs(workspace, card.ref), cwd ? { cwd } : undefined);
+        if (result.code !== 0) throw new Error((result.stderr || "").trim() || `delete exited ${result.code}`);
+        let outcome = null;
+        try { outcome = safeDeleteOutcome(JSON.parse(result.stdout || "null")); } catch {}
+        if (outcome && outcome.applied !== true) throw new Error("the dispatcher reported an inventory-only run");
+        const ids = deletedTaskIds(outcome, fallback);
+        const removed = new Set(ids);
+        this.forgetDeleted(ids);
+        this.state = { ...this.state, rows: this.state.rows.filter((row) => !removed.has(row.id)), error: "" };
+        this.selectedId = "";
+        this.notice = `Deleted ${plural(outcome?.tasks.length || ids.length, "task")}${
+          outcome?.attemptsRemoved ? ` and removed ${plural(outcome.attemptsRemoved, "dispatch attempt")}` : ""}.`;
+        this.retainSelection(taskCx);
+        this.refresh(taskCx);
+      } catch (error) {
+        this.state = { ...this.state, error: `Delete failed: ${message(error)}` };
+      } finally {
+        this.deleting = false;
+        this.notify(taskCx);
+      }
+    });
+  }
+  forgetDeleted(ids) {
+    const workspace = this.workspace();
+    let archiveChanged = false;
+    for (const id of ids) {
+      archiveChanged = this.archived.delete(archiveKey(workspace, id)) || archiveChanged;
+      this.details.delete(detailCacheKey(workspace, id));
+      this.questions.delete(id);
+    }
+    if (archiveChanged) setShared(ARCHIVE_SHARED, [...this.archived]);
+    if (this.summaryCardId && ids.includes(this.summaryCardId)) this.summaryCardId = "";
+    if (this.dispatchMenuEpicId && ids.includes(this.dispatchMenuEpicId)) this.dispatchMenuEpicId = null;
+  }
+
   // Keep the refresh control's measured content constant. The spinner slot is
   // always present; only its visibility and pulse change while a read is in
   // flight, so the top bar never reflows on a timer or manual refresh.
@@ -1008,7 +1086,8 @@ export default class AvenKanban extends View {
     const [bg, fg, border] = kind === "you" ? [C.you, "#1a1300", C.you]
       : kind === "land" ? [C.land, "#08180f", C.land]
         : kind === "on" ? [C.you, "#1a1300", C.you]
-          : [C.raised, C.text, C.line2];
+          : kind === "danger" ? [C.red, "#1a0d10", C.red]
+            : [C.raised, C.text, C.line2];
     return div().id(id).flex_none().px(9).py(3).rounded(5).bg(bg).border(1).border_color(border).text_color(fg)
       .font_family(SANS).text_size(12).cursor_pointer().hover((style) => style.opacity(0.85))
       .on_mouse_down("left", (_event, clickCx) => clickCx.stop_propagation())
@@ -1066,18 +1145,25 @@ export default class AvenKanban extends View {
         .child(div().flex_1().min_w(0).text_size(9.5).text_color(C.text).child(action.description))));
   }
 
+  deleteButton(card) {
+    return this.btn(`aven-kanban-delete-${card.id}`, "Delete", "danger",
+      (clickCx) => this.confirmDeleteCard(card, clickCx));
+  }
+
   cardActions(card, cx) {
     const open = card.status !== "done" && card.status !== "canceled";
     const menuOpen = this.dispatchMenuEpicId === card.id;
     if (card.column === "needs_you") {
       return h_flex().flex_wrap().gap(6)
         .child(this.btn(`aven-kanban-answer-${card.id}`, "Answer", "you", () => this.answer(card)))
-        .child(this.btn(`aven-kanban-go-${card.id}`, "Go to agent", "plain", (clickCx) => this.go(card, clickCx)));
+        .child(this.btn(`aven-kanban-go-${card.id}`, "Go to agent", "plain", (clickCx) => this.go(card, clickCx)))
+        .child(this.deleteButton(card));
     }
     if (card.column === "done") {
       return h_flex().flex_wrap().gap(6)
         .when(cardArchiveable(card, this.state), (el) => el.child(
-          this.btn(`aven-kanban-archive-${card.id}`, "Archive", "plain", (clickCx) => this.archive(card, clickCx))));
+          this.btn(`aven-kanban-archive-${card.id}`, "Archive", "plain", (clickCx) => this.archive(card, clickCx))))
+        .child(this.deleteButton(card));
     }
     const actions = [];
     if (card.mergeable) {
@@ -1095,6 +1181,7 @@ export default class AvenKanban extends View {
       }));
     }
     actions.push(this.btn(`aven-kanban-open-${card.id}`, "Open", "plain", (clickCx) => this.open(card, clickCx)));
+    actions.push(this.deleteButton(card));
     return h_flex().flex_wrap().gap(6).children(actions);
   }
 
@@ -1280,10 +1367,11 @@ export default class AvenKanban extends View {
       g: "first", "shift-g": "last", G: "last", home: "first", end: "last",
       1: "column-1", 2: "column-2", 3: "column-3", 4: "column-4", 5: "column-5",
       enter: "go", o: "open", a: "answer", "shift-a": "archive-all", A: "archive-all",
-      "shift-s": "ship", S: "ship", x: "archive",
+      "shift-s": "ship", S: "ship", x: "archive", "shift-d": "delete", delete: "delete",
       d: "dispatch", s: "plan-implement", p: "plan", i: "implement", m: "merge", r: "refresh",
       u: "summary", "?": "help", "shift-/": "help",
     };
+    const pendingDelete = this.deleteConfirmId ? this.deletePanel(cx) : null;
     return v_flex().id("aven-kanban").relative().size_full().min_h(0).bg(C.main).text_color(C.text)
       .track_focus(this.handle)
       .on_size_change((_size, sizeCx) => { if (!this.closed) { this.handle.focus(); this.notify(sizeCx); } })
@@ -1299,6 +1387,7 @@ export default class AvenKanban extends View {
         .child(this.strip(stats))
         .children(next ? [this.banner(next, cx)] : [])
         .when(Boolean(this.state.error), (el) => el.child(mono(10, C.red, `Aven: ${this.state.error}`)))
+        .when(Boolean(this.notice), (el) => el.child(mono(10, C.land, this.notice)))
         .when(Boolean(this.state.coverageError), (el) => el.child(mono(10, C.red, `Incomplete metadata: ${this.state.coverageError}`)))
         .when(Boolean(this.reopening), (el) => el.child(mono(9.5, C.dim, `Reopening ${this.reopening}'s agent session…`)))
         .when(this.state.enriching, (el) => el.child(mono(9.5, C.dim, "Cards are visible now; loading epic metadata and plan badges…")))
@@ -1306,7 +1395,7 @@ export default class AvenKanban extends View {
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, allStats, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, C.dim, "j/k card · h/l column · g/G top/bottom · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · d dispatch · ? keys"))
+          .child(mono(10, C.dim, "j/k card · h/l column · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · D delete · d dispatch · ? keys"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
@@ -1316,7 +1405,31 @@ export default class AvenKanban extends View {
             .child(allStats.total ? "No epics match this filter." : "No epics in this workspace.")))
           .when(!this.state.loading && columns.some((column) => column.cards.length > 0),
             (el) => el.children(columns.map((column) => this.column(column, cx, column.id === focusedColumn))))))
+      .children(pendingDelete ? [pendingDelete] : [])
       .when(this.helpOpen, (el) => el.child(this.helpPanel(cx)));
+  }
+
+  deletePanel(cx) {
+    const card = selectedCard(this.columns(), this.deleteConfirmId);
+    if (!card) return null;
+    const children = card.phases?.total ?? 0;
+    return v_flex().id("aven-kanban-delete-confirm").absolute().top(50).right(16).w(520).p(16).gap(10).rounded(8)
+      .bg(C.card).border(1).border_color(C.red)
+      .child(h_flex().w_full().items_center()
+        .child(div().flex_1().min_w(0).font_family(SANS).text_size(14).font_semibold().text_color(C.text)
+          .child(`Delete ${card.ref}?`))
+        .child(this.btn("aven-kanban-delete-cancel", "Cancel  Esc", "plain", (clickCx) => {
+          this.deleteConfirmId = "";
+          this.notify(clickCx);
+        })))
+      .child(div().whitespace_normal().font_family(SANS).text_size(12).text_color(C.soft)
+        .child(`“${card.title}”${children > 0 ? ` and its ${plural(children, "child task")}` : " and any child tasks"} will be deleted.`))
+      .child(mono(10, C.muted, "Dispatcher attempt/effect records are removed. Branches, worktrees, commits, sessions, and notes are kept."))
+      .when(card.agentActive, (el) => el.child(mono(10, C.you, "A live agent is still working; its session is not stopped.")))
+      .child(h_flex().gap(8).items_center()
+        .child(this.btn("aven-kanban-delete-confirm", this.deleting ? "Deleting…" : "Delete permanently", "danger",
+          (clickCx) => this.deleteEpic(card, clickCx)))
+        .child(mono(10, C.dim, "Not restorable as a tree from the board.")));
   }
 
   helpPanel(cx) {
@@ -1335,6 +1448,7 @@ export default class AvenKanban extends View {
         ["a", "answer a Needs you card / archive a Done card"],
         ["Shift-A", "archive all visible Done cards"],
         ["Shift-S", "ship a PR from the approved card's task agent"],
+        ["Shift-D  Del", "delete the selected epic, its child tasks, and their dispatch state"],
         ["m", "merge an approved card in its task agent"],
         ["d", "toggle Dispatch"],
         ["u", "expand or collapse the LLM summary"],

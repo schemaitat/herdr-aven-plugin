@@ -37,6 +37,11 @@ test-lifecycle:
     cargo build --workspace
     sh test/lifecycle.test.sh
 
+# Root-epic cascade deletion, leaves-first order, and dispatcher state cleanup.
+test-board-delete:
+    cargo build --workspace
+    sh test/board-delete.test.sh
+
 # Read-only lifecycle audit. Exit: 0 clean, 1 violations, 2 incomplete source.
 tasks-audit *args:
     cargo run -- audit {{args}}

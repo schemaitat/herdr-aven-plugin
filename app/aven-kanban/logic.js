@@ -996,6 +996,48 @@ export function filterArchived(rows, archived, workspace) {
   return list.filter((row) => !archived.has(archiveKey(workspace, canonicalId(row))));
 }
 
+// Delete is a dispatcher contract, never a board-side Aven loop: the command
+// discovers the epic tree, deletes descendants before the root, and then
+// removes their attempt/effect records. --apply keeps the default inventory
+// path available to CLI users.
+export function deleteArgs(workspace, ref) {
+  const reference = String(ref ?? "").trim();
+  if (!reference) throw new Error("Delete needs a task reference.");
+  return ["delete", reference, "--workspace", String(workspace ?? "default"), "--apply", "--json"];
+}
+
+// Never trust the command payload as board evidence. Keep only the completed
+// identity fields the local caches need and a bounded attempt count.
+export function safeDeleteOutcome(payload) {
+  const tasks = (Array.isArray(payload?.tasks) ? payload.tasks : []).map((task) => ({
+    id: String(task?.id ?? "").trim(),
+    ref: String(task?.ref ?? "").trim(),
+    title: String(task?.title ?? ""),
+  })).filter((task) => task.id);
+  const attempts = Number(payload?.attempts_removed ?? 0);
+  return {
+    applied: payload?.applied === true,
+    tasks,
+    attemptsRemoved: Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 0,
+  };
+}
+
+// Cleanup is keyed by immutable ID. The outcome is authoritative when present;
+// the card's known task IDs are a bounded fallback after a successful command
+// whose payload could not be parsed.
+export function deletedTaskIds(outcome, fallbackIds = []) {
+  const ids = [];
+  const seen = new Set();
+  const candidates = [...(outcome?.tasks ?? []).map((task) => task?.id), ...(fallbackIds ?? [])];
+  for (const candidate of candidates) {
+    const id = String(candidate ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
 // The lowest line on a blocked agent's screen that asks a question. The same
 // rule as the reference board: ignore chrome, shortcuts and bare prompts.
 export function lastQuestion(screen) {
