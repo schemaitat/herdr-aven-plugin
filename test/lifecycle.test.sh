@@ -139,7 +139,7 @@ EOF
   assert_eq "$after" "$before" "invalid mixed batch has no OpenCode side effects ($order)"
 done
 [ ! -e "$store" ] || fail "invalid mixed batches must not create the dispatcher store"
-[ ! -e "$work/worktrees/repo/app-t-dispatch-id-app-open" ] || fail "invalid mixed batches must not create a worktree"
+[ ! -e "$work/worktrees/repo/feat-app-open-t-dispatch-id-app-open" ] || fail "invalid mixed batches must not create a worktree"
 
 for ref in APP-DELETED APP-WEIRD; do
   set +e

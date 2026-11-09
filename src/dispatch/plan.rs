@@ -10,11 +10,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 pub(crate) fn phase_branch(root_branch: &str, position: usize) -> String {
-    let phase = format!("phase-{position:02}");
-    match root_branch.rsplit_once("-dispatch-") {
-        Some((prefix, dispatch)) => format!("{prefix}-{phase}-dispatch-{dispatch}"),
-        None => format!("{root_branch}-{phase}"),
-    }
+    format!("{root_branch}-phase-{position:02}")
 }
 pub(crate) fn epic_phases(task: &Value) -> Result<Vec<EpicPhase>> {
     let children = task
@@ -272,21 +268,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn phase_branch_inserts_the_phase_before_the_dispatch_id() {
+    fn phase_branch_appends_the_phase_to_a_feat_branch() {
         assert_eq!(
-            phase_branch("app/quoted-task-dispatch-abc123", 1),
-            "app/quoted-task-phase-01-dispatch-abc123"
+            phase_branch("feat/hap-fpjs-branch-naming-dispatch-fpjsfbf2vh24vnm6", 1),
+            "feat/hap-fpjs-branch-naming-dispatch-fpjsfbf2vh24vnm6-phase-01"
         );
         assert_eq!(
-            phase_branch("app/quoted-task-dispatch-abc123", 12),
-            "app/quoted-task-phase-12-dispatch-abc123"
+            phase_branch("feat/app-cumulative-epic-dispatch-epic-task", 12),
+            "feat/app-cumulative-epic-dispatch-epic-task-phase-12"
         );
     }
     #[test]
     fn phase_branch_keeps_a_legacy_root_usable() {
         assert_eq!(
-            phase_branch("app/dispatch-legacy", 2),
-            "app/dispatch-legacy-phase-02"
+            phase_branch("app/quoted-task-dispatch-abc123", 1),
+            "app/quoted-task-dispatch-abc123-phase-01"
         );
         assert_eq!(
             phase_branch("app/legacy-branch", 3),

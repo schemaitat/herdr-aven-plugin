@@ -733,11 +733,6 @@ pub(crate) fn selected_target(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let project = task
-        .pointer("/project/key")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
     Ok((
         Selected {
             reference: target.reference().to_owned(),
@@ -746,7 +741,6 @@ pub(crate) fn selected_target(
                 id: target.id.clone(),
                 title,
             },
-            project: crate::model::Project { key: project },
         },
         task,
     ))
@@ -801,12 +795,11 @@ pub(crate) fn select_mode(
 // Descriptive branch identity for new dispatch attempts.
 const BRANCH_SLUG_LIMIT: usize = 48;
 
-/// Turn a task title into a bounded, lowercase, hyphen-separated branch slug.
-///
-/// The slug is cosmetic: branch identity still ends with the immutable task id.
-pub(crate) fn branch_slug(title: &str) -> String {
+/// Turn a task reference or title into a bounded, lowercase, hyphen-separated
+/// slug.
+pub(crate) fn branch_slug(value: &str) -> String {
     let mut slug = String::new();
-    for character in title.chars() {
+    for character in value.chars() {
         let character = character.to_ascii_lowercase();
         if character.is_ascii_alphanumeric() {
             slug.push(character);
@@ -824,12 +817,23 @@ pub(crate) fn branch_slug(title: &str) -> String {
     }
 }
 
-pub(crate) fn branch(project: &str, task_id: &str, title: &str) -> String {
+/// Branch identity for new dispatch attempts.
+///
+/// Shape: `feat/<reference-slug>-<title-slug>-dispatch-<immutable task id>`.
+/// The reference and title are cosmetic; the trailing task id keeps the branch
+/// stable and unique across title or reference changes.
+pub(crate) fn branch(reference: &str, task_id: &str, title: &str) -> String {
+    let identifier = task_id.trim();
+    let identifier = if identifier.is_empty() {
+        "task"
+    } else {
+        identifier
+    };
     format!(
-        "{}/{}-dispatch-{}",
-        if project.is_empty() { "task" } else { project },
+        "feat/{}-{}-dispatch-{}",
+        branch_slug(reference),
         branch_slug(title),
-        task_id.to_ascii_lowercase()
+        identifier.to_ascii_lowercase()
     )
 }
 
@@ -1017,7 +1021,7 @@ fn dispatch_one(
         selected.reference().to_owned(),
         workflow,
         branch(
-            &selected.project.key,
+            selected.reference(),
             &selected.task.id,
             &selected.task.title,
         ),
@@ -1268,14 +1272,18 @@ mod moved_owner_tests {
         assert!(bundled_skill(Some("aven/../sdd".into()), None).is_err());
     }
     #[test]
-    fn branch_uses_task_slug_before_immutable_id() {
+    fn branch_combines_reference_slug_and_immutable_id() {
         assert_eq!(
             branch("APP", "ABC123", "quoted \"task\""),
-            "APP/quoted-task-dispatch-abc123"
+            "feat/app-quoted-task-dispatch-abc123"
         );
         assert_eq!(
             branch("", "ABC123", "Worktree & branch"),
-            "task/worktree-branch-dispatch-abc123"
+            "feat/task-worktree-branch-dispatch-abc123"
+        );
+        assert_eq!(
+            branch("HAP-FPJS", "FPJSFBF2VH24VNM6", "branch naming"),
+            "feat/hap-fpjs-branch-naming-dispatch-fpjsfbf2vh24vnm6"
         );
     }
     #[test]
