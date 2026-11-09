@@ -36,6 +36,8 @@
     "a": "aven-kanban.answer",
     "shift-a": "aven-kanban.archive-all",
     "shift-s": "aven-kanban.ship",
+    "shift-d": "aven-kanban.delete",
+    "delete": "aven-kanban.delete",
     "x": "aven-kanban.archive",
     "d": "aven-kanban.dispatch",
     "u": "aven-kanban.summary",
