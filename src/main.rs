@@ -21,7 +21,7 @@ mod worktrees;
 use dispatch::DispatchOptions;
 use dispatch::reset::reset;
 use dispatch::supervision::{
-    interrupt, list, log_event, message, reconcile, status, watch_command,
+    interrupt, list, log_event, message, reconcile, reopen, status, watch_command,
 };
 use model::ExecutionMode;
 #[cfg(test)]
@@ -92,6 +92,16 @@ enum Commands {
         /// Explicit workflow selector when a task has more than one attempt.
         #[arg(long)]
         workflow: Option<String>,
+    },
+    /// Reopen a saved attempt's worktree and OpenCode session without prompting.
+    Reopen {
+        task: String,
+        /// Explicit workflow selector when a task has more than one attempt.
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Print the reopened attempt and terminal identity as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Inspect persisted state and the authoritative OpenCode snapshot.
     Status {
@@ -442,6 +452,11 @@ fn main() -> Result<()> {
             relaunch,
         }),
         Commands::Resume { task, workflow } => reconcile(path, &task, workflow.as_deref()),
+        Commands::Reopen {
+            task,
+            workflow,
+            json,
+        } => reopen(path, &task, workflow.as_deref(), json),
         Commands::Status { task, workflow } => status(path, &task, workflow.as_deref()),
         Commands::List {
             running,

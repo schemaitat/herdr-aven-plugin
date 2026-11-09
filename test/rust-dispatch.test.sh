@@ -266,6 +266,51 @@ assert_file_contains "$work/reopen" 'reopened APP-1' 're-dispatch reopens the du
 runs=$(grep -c '"run"' "$log")
 [ "$runs" -ge 1 ] || fail 'reopen should have a persisted terminal'
 
+# The Kanban Enter action reopens a closed worktree non-interactively. Killing
+# the saved terminal simulates a closed space; reopen must relaunch the same
+# durable OpenCode session and report the new terminal instead of prompting.
+sqlite_json "$store" > "$work/before-explicit-reopen.json"
+old_terminal=$(python3 - "$work/before-explicit-reopen.json" <<'PY'
+import json, sys
+attempt = json.load(open(sys.argv[1]))['attempts']['immutable-task:implementation']
+print(attempt['terminal']['address'])
+PY
+)
+[ -n "$old_terminal" ] || fail 'the saved attempt has a terminal to close'
+"$HC_BIN" kill "$old_terminal" >/dev/null
+sessions_before=$(grep -c -- '--session' "$log" || true)
+runs_before=$(grep -c '"run"' "$log" || true)
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reopen APP-1 --json > "$work/reopen-json"
+python3 - "$work/reopen-json" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+assert payload['task_ref'] == 'APP-1', payload
+assert payload['workflow'] == 'implementation', payload
+assert payload['session_id'].startswith('ses_'), payload
+assert payload['worktree'].endswith('app-quoted-task-dispatch-immutable-task'), payload
+assert payload['terminal'], payload
+PY
+assert_eq "$(grep -c -- '--session' "$log" || true)" "$((sessions_before + 1))" 'reopen relaunches the saved OpenCode session'
+assert_eq "$(grep -c '"run"' "$log" || true)" "$((runs_before + 1))" 'reopen launches exactly one replacement terminal'
+new_terminal=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["terminal"])' "$work/reopen-json")
+[ "$new_terminal" != "$old_terminal" ] || fail 'reopen reports the replacement terminal, not the closed one'
+grep -F -- '"--session"' "$log" >/dev/null || fail 'reopen passes the durable session id to OpenCode'
+# Accepted or canceled tasks are inert: reopen must never restart their agent.
+python3 - "$AVEN_FIXTURE_STATE" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+state['tasks']['APP-1']['status'] = 'done'
+json.dump(state, open(sys.argv[1], 'w'), indent=2, sort_keys=True)
+PY
+before_failed=$(grep -c '"run"' "$log")
+set +e
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reopen APP-1 --json > "$work/reopen-terminal.out" 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" 'reopen refuses a terminal task'
+assert_file_contains "$work/reopen-terminal.out" 'terminal tasks are inert' 'terminal reopen explains the refusal'
+assert_eq "$(grep -c '"run"' "$log")" "$before_failed" 'refused reopen launches no terminal'
+
 # Babysitting is opt-in: a second API session and a separate owned terminal.
 seed_aven
 babysitter_store=$work/babysitter.sqlite

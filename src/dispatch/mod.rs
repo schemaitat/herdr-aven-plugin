@@ -222,7 +222,8 @@ pub(crate) fn reopen_existing(
     skill: Option<String>,
     skills_dir: Option<PathBuf>,
     confirm_selection: bool,
-) -> Result<()> {
+    announce: bool,
+) -> Result<String> {
     // Reopen confirmation uses interactive pickers; release the store
     // lock before starting them and reacquire only to checkpoint state.
     let resource = create_worktree(
@@ -374,11 +375,13 @@ pub(crate) fn reopen_existing(
         reopened.coordinator_terminal.address.clone()
     };
     focus_terminal(&focused);
-    println!(
-        "reopened {} in OpenCode session {} (attempt {})",
-        reopened.task_ref, reopened.session_id, reopened.attempt_id
-    );
-    Ok(())
+    if announce {
+        println!(
+            "reopened {} in OpenCode session {} (attempt {})",
+            reopened.task_ref, reopened.session_id, reopened.attempt_id
+        );
+    }
+    Ok(focused)
 }
 
 /// Construct the durable attempt before any reservation or external effect.
@@ -995,7 +998,9 @@ fn dispatch_one(
             skill,
             skills_dir,
             !batch,
-        );
+            true,
+        )
+        .map(|_| ());
     }
     // Mode and agent/model pickers can wait for user input indefinitely. Do
     // not retain the process-wide store lock while they are visible.
@@ -1148,6 +1153,22 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Status { workflow: Some(ref workflow), .. } if workflow == "implementation"
+        ));
+    }
+    #[test]
+    fn reopen_accepts_workflow_and_json_selector() {
+        let cli = Cli::try_parse_from([
+            "aven-dispatch",
+            "reopen",
+            "APP-1",
+            "--workflow",
+            "implementation",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Reopen { json: true, workflow: Some(ref workflow), .. } if workflow == "implementation"
         ));
     }
     #[test]

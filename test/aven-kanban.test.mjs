@@ -9,7 +9,7 @@ import {
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
-  projectChips, refreshMayPublishProgress, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
+  projectChips, refreshMayPublishProgress, reopenTarget, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
   summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
@@ -425,6 +425,38 @@ assert.equal(duplicate.ambiguous, false, "duplicate observations of one attempt 
 const safeAttempt = normalizeAttempt(attempt("ONE"));
 assert.equal("pending_prompt" in safeAttempt, false);
 assert.equal("prompt" in safeAttempt, false);
+assert.equal(normalizeAttempt(attempt("ONE", { session_id: "ses-one" })).sessionId, "ses-one",
+  "the durable OpenCode session id is available to the reopen decision");
+assert.equal(normalizeAttempt(attempt("ONE", { sessionId: "ses-camel" })).sessionId, "ses-camel");
+assert.equal(normalizeAttempt(attempt("ONE", { session_id: "" })).sessionId, "");
+
+// Enter reopens only a non-terminal card that still owns a durable attempt.
+const runningCard = card("active", {}, [attempt("ONE", { session_id: "ses-one" })]);
+assert.deepEqual(reopenTarget(runningCard), {
+  ref: "HAP-ONE", workflow: "implementation", attemptId: "att-ONE",
+}, "a running attempt with a worktree and session is reopenable");
+assert.deepEqual(reopenTarget(card("backlog", {}, [attempt("ONE", { execution_mode: "worktrees", session_id: "ses-c", worktree: "/repo/coord" })])),
+  { ref: "HAP-ONE", workflow: "implementation", attemptId: "att-ONE" },
+  "an attempt without a live terminal still offers reopen from any open card column");
+assert.equal(reopenTarget(card("active", {}, [])), null, "no attempt keeps the Aven fallback");
+assert.equal(reopenTarget(card("active", {}, [attempt("ONE", { session_id: "" })])), null,
+  "an attempt without a durable session is not reopened");
+assert.equal(reopenTarget(card("active", {}, [attempt("ONE", { worktree: "" })])), null,
+  "an attempt without a worktree is not reopened");
+assert.equal(reopenTarget(card("done", {}, [attempt("ONE", { session_id: "ses-one" })])), null,
+  "accepted work is never restarted");
+assert.equal(reopenTarget(card("canceled", {}, [attempt("ONE", { session_id: "ses-one" })])), null,
+  "canceled work is never restarted");
+assert.equal(reopenTarget(null), null);
+
+// The board must actually use that decision and never start a terminal itself.
+assert.match(kanbanSource, /reopenAgent\(card, cx\)/, "Enter routes to the reopen action");
+assert.match(kanbanSource, /exec\("aven-dispatch", args\)/, "the board asks the dispatcher to reopen");
+assert.match(kanbanSource, /\["reopen", target\.ref, "--json"\]/, "reopen is non-interactive and machine-readable");
+assert.match(kanbanSource, /pendingLaunches\.has\(identity\)/, "duplicate reopen launches are suppressed");
+assert.match(kanbanSource, /Reopening \$\{this\.reopening\}'s agent session/, "the board shows the reopen in progress");
+assert.match(kanbanSource, /this\.open\(card, taskCx\)/, "a failed reopen still falls back to the epic in Aven");
+assert.match(kanbanSource, /attempt\.coordinatorTerminal\?\.address/, "a worktree coordinator terminal is focusable");
 
 // Merge is a task-id prompt launched in the main checkout, never a message to a
 // builder/coordinator pane.

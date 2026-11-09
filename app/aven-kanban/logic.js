@@ -486,6 +486,7 @@ export function normalizeAttempt(attempt) {
     executionMode: String(attempt?.execution_mode ?? attempt?.executionMode ?? "single-session"),
     worktree: String(attempt?.worktree ?? ""),
     branch: String(attempt?.branch ?? ""),
+    sessionId: String(attempt?.session_id ?? attempt?.sessionId ?? ""),
     observation: String(attempt?.lifecycle?.observation ?? attempt?.observation ?? ""),
     contradiction: String(attempt?.lifecycle?.contradiction ?? attempt?.contradiction ?? ""),
     terminals: terminalObservations(attempt?.terminals ?? attempt?.terminal_observations),
@@ -738,6 +739,21 @@ export function cardForEpic(epic, attemptSelection, relatedAttempts = [], liveAg
     mergeable: readyToMerge,
     agentActive,
     warnings,
+  };
+}
+
+// Enter opens the card's current agent. A live terminal is focused directly;
+// otherwise a durable attempt is reopened from its saved worktree and session.
+// Terminal cards and cards without an attempt keep the plain Aven-open fallback
+// and never restart work.
+export function reopenTarget(card) {
+  if (!card || card.status === "done" || card.status === "canceled") return null;
+  const attempt = card.attempt;
+  if (!attempt || !attempt.attemptId || !attempt.sessionId || !attempt.worktree) return null;
+  return {
+    ref: card.ref,
+    workflow: String(attempt.workflow ?? ""),
+    attemptId: attempt.attemptId,
   };
 }
 
