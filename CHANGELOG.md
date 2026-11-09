@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add `aven-dispatch work`, a read-only, prompt-free lifecycle projection for
+  central automation. It reports ready-to-land work (`done` + commit-bound
+  approval + unsettled delivery, action `merge`), review work, ready-to-dispatch
+  work from Aven's authoritative ready list, planning work, in-flight attempts,
+  waiting root epics with open phases, blocked work with a reason, and settled
+  or canceled work. Output is a grouped human view or the stable
+  `aven-dispatch-work/v1` JSON contract with scope, bounded limits, per-stage
+  counts, explicit truncation, source health and warnings. Every card carries a
+  `stage`, an `action`, and the Kanban-compatible `column` (`backlog`, `working`,
+  `ready`, `done`). The projection reuses the inspector's scoped Aven/store read,
+  hydrates approved-done tasks and epics on a prioritized second pass, and never
+  mutates Aven, dispatcher state, sessions or Git. Live agent presence remains a
+  Kanban-only fact; `needs_you` is not derived by this command.
+
 - Show the remaining open tasks that block a Kanban card from becoming done.
   Ready-to-land cards list the root's open delivery obligation, the open
   delivery obligations of its accepted child phases, and any open child phases

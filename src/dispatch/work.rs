@@ -44,7 +44,7 @@ const WORKING_STATES: [&str; 10] = [
     "babysitter-prompt-pending",
 ];
 const REVIEW_STATES: [&str; 2] = ["needs-review", "completed"];
-const STOPPED_FAILURE_STATES: [&str; 3] = ["failed", "interrupted", "reconciled"];
+const STOPPED_FAILURE_STATES: [&str; 2] = ["failed", "interrupted"];
 const TERMINAL_STATUSES: [&str; 2] = ["done", "canceled"];
 const SETTLED_DELIVERY_STATES: [&str; 4] = ["merged", "not-applicable", "superseded", "waived"];
 
@@ -399,7 +399,7 @@ pub(crate) fn classify(
                 WorkAction::Approve,
                 "approval_missing",
                 format!(
-                    "{} finished but no commit-bound approval is recorded",
+                    "{}; no commit-bound approval is recorded",
                     attempt_detail(attempt)
                 ),
             );
@@ -641,16 +641,11 @@ pub(crate) fn build_report(
     stages: &[WorkStage],
     limit: usize,
 ) -> WorkReport {
-    let selected = if stages.is_empty() {
-        WorkStage::ALL.to_vec()
-    } else {
-        let mut seen = BTreeSet::new();
-        stages
-            .iter()
-            .copied()
-            .filter(|stage| seen.insert(*stage))
-            .collect()
-    };
+    let selected = WorkStage::ALL
+        .iter()
+        .copied()
+        .filter(|stage| stages.is_empty() || stages.contains(stage))
+        .collect::<Vec<_>>();
     let tasks_by_id = base
         .tasks
         .iter()

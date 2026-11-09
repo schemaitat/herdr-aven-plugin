@@ -148,7 +148,7 @@ assert report["counts"] == {"land": 1}, report["counts"]
 assert report["stages"][0]["cards"][0]["ref"] == "APP-SHIP"
 PY
 
-run_work --stage dispatch --stage plan --json > "$work/multi.json"
+run_work --stage plan --stage dispatch --json > "$work/multi.json"
 python3 - "$work/multi.json" <<'PY'
 import json, sys
 report = json.load(open(sys.argv[1], encoding="utf-8"))
