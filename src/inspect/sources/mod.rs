@@ -36,8 +36,11 @@ pub(crate) struct Options {
     /// Hydrated Aven contexts reused across base-lane cycles; cleared with the
     /// process, never persisted.
     pub(crate) context_cache: aven::ContextCache,
-    /// Selected immutable task id to hydrate first in the next bounded cycle.
-    pub(crate) priority_task: Option<String>,
+    /// Immutable task ids to hydrate first in the next bounded cycle.
+    pub(crate) priority_tasks: Vec<String>,
+    /// Contexts admitted per read. The inspector keeps the shared default; a
+    /// one-shot work-queue read may request a wider, still bounded window.
+    pub(crate) context_admission: Option<usize>,
     /// Callers that own live OpenCode activity (the dashboard) skip the
     /// inspector's one-shot API read.
     pub(crate) skip_api: bool,
@@ -73,7 +76,8 @@ pub(crate) fn read_base(options: &Options) -> Result<BaseRead> {
     let (tasks, contexts, aven_health) = aven::read_aven(
         &scope,
         &options.context_cache,
-        options.priority_task.as_deref(),
+        &options.priority_tasks,
+        options.context_admission,
         &secrets,
     )?;
     let (attempts, store_health) = dispatcher::read_attempts(&options.store, &contexts, &secrets);
@@ -132,6 +136,14 @@ pub(crate) fn assemble(base: &BaseRead, live: &LiveRead) -> Snapshot {
 pub(crate) fn read_ready_ids(scope: &Scope) -> Result<Vec<String>> {
     let secrets = configured_secrets();
     aven::read_ready_ids(scope, &secrets)
+}
+
+/// Approved done tasks are the only done tasks that can enter the ship queue.
+/// Reading their immutable ids lets a one-shot work read hydrate exactly that
+/// priority tier instead of relying on the incremental admission order.
+pub(crate) fn read_approved_done_ids(scope: &Scope) -> Result<Vec<String>> {
+    let secrets = configured_secrets();
+    aven::read_approved_done_ids(scope, &secrets)
 }
 
 pub(crate) fn collect(options: &Options) -> Result<Snapshot> {

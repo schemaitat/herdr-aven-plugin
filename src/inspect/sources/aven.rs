@@ -257,7 +257,8 @@ impl ContextCache {
 pub(super) fn read_aven(
     scope: &Scope,
     cache: &ContextCache,
-    priority_task: Option<&str>,
+    priority_tasks: &[String],
+    context_admission: Option<usize>,
     secrets: &[String],
 ) -> Result<(Vec<TaskRecord>, ContextMap, SourceHealth)> {
     let (available, upcoming) = thread::scope(|threads| {
@@ -305,8 +306,14 @@ pub(super) fn read_aven(
     let tasks = list_tasks.into_values().collect::<Vec<_>>();
     let total = tasks.len();
     retain_live(cache, &tasks);
-    let (contexts, hydration_failed, hydration_capped) =
-        hydrate_contexts(&tasks, scope, cache, priority_task, secrets);
+    let (contexts, hydration_failed, hydration_capped) = hydrate_contexts(
+        &tasks,
+        scope,
+        cache,
+        priority_tasks,
+        context_admission,
+        secrets,
+    );
     let aven_read = AvenRead {
         tasks: build_task_records(&tasks, &contexts, secrets),
         contexts,
@@ -389,6 +396,42 @@ pub(super) fn read_ready_ids(scope: &Scope, secrets: &[String]) -> Result<Vec<St
         .collect())
 }
 
+/// Read the immutable ids of done tasks carrying an approval marker.
+///
+/// Only approved done work can enter the ship queue. A one-shot work read uses
+/// this bounded list to prioritize the exact context hydration it needs instead
+/// of relying on the incremental admission order of a large project.
+pub(super) fn read_approved_done_ids(scope: &Scope, secrets: &[String]) -> Result<Vec<String>> {
+    let output = aven_read(
+        &[
+            "list".into(),
+            "--project".into(),
+            scope.project.clone(),
+            "--workspace".into(),
+            scope.workspace.clone(),
+            "--status".into(),
+            "done".into(),
+            "--metadata".into(),
+            "approval.state=approved".into(),
+            "--limit".into(),
+            AVEN_LIST_LIMIT.to_string(),
+            "--json".into(),
+        ],
+        Path::new(&scope.cwd),
+        secrets,
+    )?;
+    let tasks: Vec<AvenTask> = serde_json::from_str(&output)
+        .context("Aven approved-done list returned an unsupported payload")?;
+    if tasks.len() > AVEN_LIST_LIMIT {
+        bail!("Aven approved-done list exceeded the {AVEN_LIST_LIMIT}-task limit");
+    }
+    Ok(tasks
+        .into_iter()
+        .map(|task| task.id)
+        .filter(|id| valid_identifier(id))
+        .collect())
+}
+
 /// Drop cached contexts for tasks that left the scoped list so the map stays
 /// bounded by live coverage.
 fn retain_live(cache: &ContextCache, tasks: &[AvenTask]) {
@@ -409,7 +452,7 @@ fn pending_tasks<'a>(
     tasks: &'a [AvenTask],
     entries: &BTreeMap<String, CachedContext>,
     now_ms: u64,
-    priority_task: Option<&str>,
+    priority_tasks: &[String],
 ) -> Vec<&'a AvenTask> {
     let mut uncovered = Vec::new();
     let mut stale = Vec::new();
@@ -437,13 +480,18 @@ fn pending_tasks<'a>(
     });
     let mut ordered = uncovered;
     ordered.extend(stale);
-    if let Some(priority) = priority_task
-        && let Some(index) = ordered
-            .iter()
-            .position(|task| task.id == priority || task.reference == priority)
-    {
-        let task = ordered.remove(index);
-        ordered.insert(0, task);
+    if !priority_tasks.is_empty() {
+        let mut pinned = Vec::with_capacity(priority_tasks.len());
+        for priority in priority_tasks {
+            if let Some(index) = ordered
+                .iter()
+                .position(|task| task.id == *priority || task.reference == *priority)
+            {
+                pinned.push(ordered.remove(index));
+            }
+        }
+        pinned.append(&mut ordered);
+        ordered = pinned;
     }
     ordered
 }
@@ -465,16 +513,18 @@ fn hydrate_contexts(
     tasks: &[AvenTask],
     scope: &Scope,
     cache: &ContextCache,
-    priority_task: Option<&str>,
+    priority_tasks: &[String],
+    context_admission: Option<usize>,
     secrets: &[String],
 ) -> (ContextMap, bool, bool) {
+    let admission = context_admission.unwrap_or(CONTEXT_ADMISSION_LIMIT).max(1);
     let (selected, capped) = {
         let entries = cache.lock();
-        let pending = pending_tasks(tasks, &entries, now(), priority_task);
-        let capped = pending.len() > CONTEXT_ADMISSION_LIMIT;
+        let pending = pending_tasks(tasks, &entries, now(), priority_tasks);
+        let capped = pending.len() > admission;
         let selected = pending
             .into_iter()
-            .take(CONTEXT_ADMISSION_LIMIT)
+            .take(admission)
             .cloned()
             .collect::<Vec<_>>();
         (selected, capped)
@@ -867,7 +917,7 @@ mod tests {
             ("task-a".to_owned(), cached("2026-01-01T00:00:00Z", 1_000)),
             ("task-b".to_owned(), cached("2026-01-02T00:00:00Z", 2_000)),
         ]);
-        assert!(pending_tasks(&tasks, &entries, 1_000 + CONTEXT_CACHE_TTL_MS - 1, None).is_empty());
+        assert!(pending_tasks(&tasks, &entries, 1_000 + CONTEXT_CACHE_TTL_MS - 1, &[]).is_empty());
         assert_eq!(cached_contexts(&tasks, &entries).len(), 2);
     }
 
@@ -882,7 +932,7 @@ mod tests {
             ("task-b".to_owned(), cached("2026-01-02T00:00:00Z", 1_000)),
         ]);
         assert_eq!(
-            ids(pending_tasks(&tasks, &entries, 1_500, None)),
+            ids(pending_tasks(&tasks, &entries, 1_500, &[])),
             vec!["task-a"]
         );
         let contexts = cached_contexts(&tasks, &entries);
@@ -898,13 +948,13 @@ mod tests {
         let tasks = vec![task("task-a", "APP-1", "2026-01-01T00:00:00Z")];
         let entries =
             BTreeMap::from([("task-a".to_owned(), cached("2026-01-01T00:00:00Z", 1_000))]);
-        assert!(pending_tasks(&tasks, &entries, 1_000 + CONTEXT_CACHE_TTL_MS - 1, None).is_empty());
+        assert!(pending_tasks(&tasks, &entries, 1_000 + CONTEXT_CACHE_TTL_MS - 1, &[]).is_empty());
         assert_eq!(
             ids(pending_tasks(
                 &tasks,
                 &entries,
                 1_000 + CONTEXT_CACHE_TTL_MS,
-                None
+                &[]
             )),
             vec!["task-a"]
         );
@@ -918,7 +968,7 @@ mod tests {
         ];
         let entries = BTreeMap::new();
         assert_eq!(
-            ids(pending_tasks(&tasks, &entries, 1_000, Some("APP-2"))),
+            ids(pending_tasks(&tasks, &entries, 1_000, &["APP-2".into()])),
             vec!["task-b", "task-a"]
         );
     }
@@ -939,7 +989,7 @@ mod tests {
         while cached_contexts(&tasks, &entries).len() < tasks.len() {
             rounds += 1;
             let observed_at = rounds as u64 * 1_000;
-            let selected = pending_tasks(&tasks, &entries, observed_at, None)
+            let selected = pending_tasks(&tasks, &entries, observed_at, &[])
                 .into_iter()
                 .take(CONTEXT_ADMISSION_LIMIT)
                 .cloned()

@@ -526,6 +526,8 @@ mod tests {
             created_at_ms: 1,
             state: "running".into(),
             execution_mode: "worktrees".into(),
+            observation: String::new(),
+            contradiction: String::new(),
             backend: "hc".into(),
             core_id: "core".into(),
             terminal: link("w1:p1"),

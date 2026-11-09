@@ -15,6 +15,7 @@ pub(crate) mod reset;
 pub(crate) mod runtime;
 pub(crate) mod summary;
 pub(crate) mod supervision;
+pub(crate) mod work;
 
 use self::runtime::{
     admit_babysitter, create_worktree, focus_terminal, launch_and_record,

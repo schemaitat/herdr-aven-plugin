@@ -367,6 +367,8 @@ pub(crate) struct AttemptRecord {
     pub(crate) created_at_ms: u64,
     pub(crate) state: String,
     pub(crate) execution_mode: String,
+    pub(crate) observation: String,
+    pub(crate) contradiction: String,
     pub(crate) backend: String,
     pub(crate) core_id: String,
     pub(crate) terminal: TerminalLink,
