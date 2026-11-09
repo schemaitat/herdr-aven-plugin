@@ -39,11 +39,10 @@
   showing **generating…**, and exposing `AVEN_DISPATCH_SUMMARY_AUTO=0` as a kill
   switch. Kanban cards keep the title as the primary content and expand their
   LLM summary from a clickable **LLM SUMMARY** chip or `l`.
-- Make dispatcher branch names self-describing: new branches are
-  `{project}/{task-slug}-dispatch-{task-id}` and phase branches are
-  `{project}/{task-slug}-phase-NN-dispatch-{task-id}`, so the derived worktree
-  directory can be filtered by task title. The immutable task id stays the
-  final segment, and existing recorded branches/worktrees are not renamed.
+- Use the conventional `feat/{task-id}` shape for new dispatcher branches, with
+  phase branches appending `-phase-NN`. Worktree directories continue to derive
+  from the branch (`<repo>-feat-<task-id>`). Existing recorded branches and
+  worktrees are not renamed.
 - Keep the native Kanban E2E from polluting the real Aven config: the test now
   sets `AVEN_CONFIG_DIR` alongside its isolated database, so
   `aven project create --path` can no longer map the checkout to the disposable

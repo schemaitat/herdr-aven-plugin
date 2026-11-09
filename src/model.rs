@@ -61,8 +61,6 @@ pub(crate) struct Selected {
     #[serde(rename = "ref", default)]
     pub(crate) short_ref: String,
     pub(crate) task: SelectedTask,
-    #[serde(default)]
-    pub(crate) project: Project,
 }
 impl Selected {
     pub(crate) fn reference(&self) -> &str {
@@ -79,12 +77,6 @@ pub(crate) struct SelectedTask {
     #[serde(default)]
     pub(crate) title: String,
 }
-#[derive(Debug, Deserialize, Default)]
-pub(crate) struct Project {
-    #[serde(default)]
-    pub(crate) key: String,
-}
-
 /// Where an attempt's OpenCode terminal lives. `address` is only durable
 /// together with `core_id`: terminal addresses restart with a new core, and a
 /// bare `t7` is never proof that a terminal this attempt owns still exists.

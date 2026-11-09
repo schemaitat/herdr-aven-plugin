@@ -272,6 +272,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn phase_branch_appends_the_phase_to_a_feat_branch() {
+        assert_eq!(phase_branch("feat/abc123", 1), "feat/abc123-phase-01");
+        assert_eq!(phase_branch("feat/abc123", 12), "feat/abc123-phase-12");
+    }
+    #[test]
     fn phase_branch_inserts_the_phase_before_the_dispatch_id() {
         assert_eq!(
             phase_branch("app/quoted-task-dispatch-abc123", 1),
