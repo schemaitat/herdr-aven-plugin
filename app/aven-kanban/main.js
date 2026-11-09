@@ -4,7 +4,7 @@ import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, pane
 import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
   boardStats, buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
-  enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
+  enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard,
@@ -447,15 +447,11 @@ export default class AvenKanban extends View {
   createdRows() {
     return filterArchived(filterRowsByCreated(this.state.rows, this.createdFilter), this.archived, this.workspace());
   }
-  visibleRows() {
-    const rows = this.createdRows();
-    return this.projectFilter ? rows.filter((row) => row.project === this.projectFilter) : rows;
-  }
   boardColumns() {
     return buildBoard({ rows: this.createdRows(), attemptIndex: this.state.attemptIndex, liveAgents: this.state.liveAgents ?? [] });
   }
   columns() {
-    return buildBoard({ rows: this.visibleRows(), attemptIndex: this.state.attemptIndex, liveAgents: this.state.liveAgents ?? [] });
+    return filterBoardByProject(this.boardColumns(), this.projectFilter);
   }
   selected() { return selectedCard(this.columns(), this.selectedId); }
   retainSelection(cx) {
