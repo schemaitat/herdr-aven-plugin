@@ -560,7 +560,7 @@ dispatcher list reads finish. Epic details and the read-only local-main
 ancestry check then enrich the same cards in the background through a
 four-worker limit; a note above the columns says when metadata or delivery
 evidence is still loading. **Merge** and **Ship PR** still re-read the exact
-approval before opening a handoff, and **Archive** stays closed until the board
+approval before delivering a handoff, and **Archive** stays closed until the board
 and card are fully classified, so a provisional column can never hide work that
 enrichment would reclassify. The ancestry check waits briefly for the space's
 live checkout, and navigation or archive presses made while the board is still
@@ -634,7 +634,7 @@ normalises shifted letters, so `G`, `S` and `A` are installed as `shift-g`,
 | `d` | Toggle the selected epic's Dispatch menu |
 | `u` | Expand/collapse the selected card's LLM summary |
 | `s`, `p`, `i` | Plan-and-implement, plan, or implement the selected epic |
-| `m` | Open `/ha-merge` for an approved Ready to land epic in the main space |
+| `m` | Merge an approved Ready to land epic in its task agent |
 | `?` | Open the in-board keyboard reference |
 | `r` | Refresh |
 | `Esc` | Close help, a Dispatch menu, then the board |
@@ -653,20 +653,24 @@ a complete durable approval (`approval.state=approved` plus `approval.id`,
 either handoff. Cards without approval say **awaiting approval** and have no
 handoff buttons.
 
-**Merge** opens a tab named `merge <task-ref>` in the main app space and starts
-the user's installed agent with `/ha-merge <immutable-task-id>`. **Ship PR**
-opens a tab named `ship <task-ref>` with a separate explicit prompt to push only
-the approved task branch, open a pull request following repository conventions,
-and not merge, force-push, rewrite history, or change Aven acceptance. Both
-re-read the exact durable approval before opening a tab. OpenCode is launched
-with its `--prompt` flag because Herdr appends the first message as a positional
+**Merge** delivers `/ha-merge <immutable-task-id>` to the agent session that
+owns the approved result: the builder terminal for a single-session dispatch,
+or the coordinator terminal for a cumulative-worktree epic. **Ship PR** delivers
+a separate explicit prompt to the same session to push only the approved task
+branch, open a pull request following repository conventions, and keep review
+follow-ups there; it never merges, force-pushes, rewrites history or changes
+Aven acceptance. Both re-read the exact durable approval before sending
+anything. The prompt is typed with `hc send` into the recorded live terminal and
+the board focuses that agent, so post-PR changes stay in the session that owns
+the branch. Finished, removed or unrelated terminals are never used. If the
+recorded terminal is gone, the board opens one task-named tab in the attempt's
+own worktree space instead; if that space is also unavailable it reports an
+actionable error and does nothing. It never starts an agent in the
+primary-checkout/main space. Clicking again while a handoff is in flight does
+not send a second prompt. For the tab fallback, OpenCode is launched with its
+`--prompt` flag because Herdr appends the first message as a positional
 argument and a bare OpenCode positional is a project directory; other selected
-agents keep their existing first-message behavior. The main space is the visible
-space whose first tab's terminal lives in the repository's primary checkout (the
-parent of the Git common directory), because a space's configured folder is only
-where its new terminals start and can point at `$HOME` or a stale checkout; if
-no space matches, the active space is used and the tab still starts in that
-primary checkout. Clicking again reuses the task-named tab.
+agents keep their existing first-message behavior.
 Merge is a handoff to the existing
 [finish workflow](#finish-a-dispatched-worktree), not a one-click Git mutation:
 `/ha-merge` requires a durable `/approve` result and clean worktrees. Its
@@ -699,10 +703,11 @@ stale results; partial metadata failures are not presented as complete coverage.
 For native verification, `just app-test-e2e` creates an isolated app home, core
 session, Aven DB, dispatcher store, and six dummy epics. It opens the board
 full-window, moves through columns with the vim commands, opens and closes the
-`?` reference, asserts that Merge launches a main-space tab with the exact
-`/ha-merge <immutable-task-id>` prompt, asserts that Ship PR launches a separate
-task-named tab with its ship prompt, and asserts that Archive and Archive all
-persist both Done IDs without editing Aven. It retains `kanban-board.png`,
+`?` reference, asserts that Merge sends the exact `/ha-merge
+<immutable-task-id>` prompt to the fixture's recorded task terminal and opens no
+merge tab, asserts that Ship PR sends its ship prompt to that same task terminal
+and opens no ship tab, and asserts that Archive and Archive all persist both
+Done IDs without editing Aven. It retains `kanban-board.png`,
 `kanban-navigation.png`, `kanban-keys.png`, `kanban-handoff.png`,
 `kanban-ship.png`, and `kanban-archive.png` under
 `/tmp/opencode/aven-kanban-e2e.*` for visual inspection. The test needs
@@ -1044,9 +1049,11 @@ The finish workflow has two checkpoints:
    checkpoint automatically after implementation; the slash command also works
    as an explicit final-worktree action. Stale session badges do not grant or
    revoke approval.
-2. **From the main checkout:** run `/ha-merge <task-id>` or
-   `/ha-merge <task-id> <task-id> ...`. Qualified refs and immutable IDs both work;
-   bracketed/comma-separated lists are accepted by the command prompt. This is
+2. **From the approved task's agent session (or the main checkout):** run
+   `/ha-merge <task-id>` or `/ha-merge <task-id> <task-id> ...`. Qualified refs
+   and immutable IDs both work; bracketed/comma-separated lists are accepted by
+   the command prompt. Running it in the task session keeps conflict resolution
+   and any follow-up changes with the worktree that owns the result. This is
    the human merge trigger, with no second merge/PR confirmation. All supplied
    approvals are validated before preparation. The dispatcher merges their exact
    source commits, in order, into an isolated integration worktree. The agent

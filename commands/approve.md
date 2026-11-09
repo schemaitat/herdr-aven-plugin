@@ -50,6 +50,9 @@ Follow the active Git/GitHub, conventional-commit and Aven instructions.
    pending child delivery obligations automatically. Do not manually fabricate
    `approval.*` or `dispatch.*` metadata. A nonzero result is not an approval.
 6. Report the exact approved commit and task ID, and tell the user to run
-   `/ha-merge <task-id>` from main when they want integration. No extra acceptance
-   confirmation is needed. Do not merge, push, close a space, or delete a Git
-   worktree or branch. If blocked, preserve artifacts and report the exact blocker.
+   `/ha-merge <task-id>` from this task's agent session (or main) when they want
+   integration. Keeping it in this session leaves conflict resolution and
+   follow-up changes with the worktree that owns the approved result. No extra
+   acceptance confirmation is needed. Do not merge, push, close a space, or
+   delete a Git worktree or branch. If blocked, preserve artifacts and report
+   the exact blocker.

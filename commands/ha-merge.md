@@ -17,8 +17,10 @@ teardown. Follow the active Git/GitHub, conventional-commit and Aven instruction
 
 ## Prepare in isolation
 
-1. This command works from the main checkout (or another checkout of the same
-   repository); it does not require a live builder/coordinator terminal. Read
+1. This command works from the approved task's agent session/worktree, the main
+   checkout, or another checkout of the same repository; it does not require a live builder/coordinator terminal.
+   Running it in the task session keeps conflict resolution and follow-up
+   changes with the worktree that owns the approved result. Read
    `aven context <task-ref> --full` for each supplied ID and review the approved
    specifications and acceptance evidence. Do not infer a different task from
    focus, a branch name, or the newest attempt.

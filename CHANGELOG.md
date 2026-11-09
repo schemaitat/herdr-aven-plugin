@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Send the Kanban **Merge** and **Ship PR** handoffs to the task's own agent
+  session instead of opening a fresh agent in the primary-checkout main space.
+  Merge and Ship PR still re-read the exact durable approval, then type the
+  prompt into the recorded builder terminal (or the coordinator terminal for a
+  cumulative-worktree epic) with `hc send`, focus that agent, and close the
+  board. Post-PR review changes therefore stay in the session that owns the
+  approved branch. Finished or unrelated terminals are never used; when the
+  recorded terminal is gone, a single task-named tab opens in the attempt's
+  worktree space, and a missing worktree space fails closed. The Ship PR prompt
+  now works from the task's own worktree/branch and keeps review follow-ups
+  there. The board still never pushes, merges, commits, opens a PR or edits Aven.
 - Make Kanban refreshes atomic once the board is visible: hydration and
   local-main delivery evidence are staged off-screen and the board is replaced
   in one publish, so **on main** badges and columns no longer flicker while a

@@ -114,8 +114,8 @@ aven-dispatch approve <root-ref> --workflow <workflow> \
 The CLI reruns checks, binds approval to the exact commit/specification/attempt,
 marks the root done as accepted, and records pending delivery obligations. Never
 fabricate approval metadata or manually mark the root done before this succeeds.
-Report the approved SHA and `/ha-merge <root-ref>` from main, then stop; do not
-wait for delivery or automatically merge. A human invocation of `/ha-merge` is
+Report the approved SHA and `/ha-merge <root-ref>` from the task's agent session
+(or main), then stop; do not wait for delivery or automatically merge. A human invocation of `/ha-merge` is
 the integration trigger; it resolves conflicts in isolation and automatically
 verifies/records delivery child-first. An open PR, green session or branch name
 is never delivery evidence. Explicit no-code, waiver and supersession decisions

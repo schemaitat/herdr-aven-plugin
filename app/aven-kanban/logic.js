@@ -535,10 +535,11 @@ export function mergeTabName(epic) {
 }
 
 // Ship PR is a separate agent handoff, like Merge: the board never pushes or
-// opens a pull request itself.
+// opens a pull request itself. It runs in the task's own session, so follow-up
+// review changes stay with the worktree that owns the approved branch.
 export function shipPrompt(epic) {
   if (!epic?.id) throw new Error("No approved task identity is available.");
-  return `Ship the approved result for Aven task ${epic.id} as a pull request. Work from the primary checkout. Push only the approved task branch, open a pull request following the repository conventions, and do not merge, force-push, rewrite history, or change Aven acceptance. Report the pull request URL.`;
+  return `Ship the approved result for Aven task ${epic.id} as a pull request from this task's worktree and branch. Push only the approved task branch, open a pull request following the repository conventions, and keep any review follow-ups in this session. Do not merge, force-push, rewrite history, or change Aven acceptance. Report the pull request URL.`;
 }
 
 export function shipTabName(epic) {
@@ -549,28 +550,61 @@ export function shipTabName(epic) {
 // Herdr appends a tab's first message to the agent argv as its last token.
 // OpenCode treats a bare positional argument as a project directory, so give
 // it the supported --prompt flag for that trailing message instead.
-export function mergeAgentRun(argv) {
+export function handoffAgentRun(argv) {
   const run = Array.isArray(argv) ? argv : [];
   const program = String(run[0] ?? "").split(/[\\/]/).pop();
   if (program !== "opencode" || run.includes("--prompt")) return run;
   return [...run, "--prompt"];
 }
 
-export function mergeTabArgs({ name, space, folder, argv, task }) {
+export function handoffTabArgs({ name, space, folder, argv, task }) {
   if (!name || !space || !folder || !Array.isArray(argv) || argv.length === 0 || !task) {
-    throw new Error("A main-space merge tab needs a name, space, folder, agent, and prompt.");
+    throw new Error("A task-space handoff tab needs a name, space, folder, agent, and prompt.");
   }
   return ["do", "tab.new", "--name", name, "--space", space, "--folder", folder,
-    "--argv", JSON.stringify(mergeAgentRun(argv)), "--task", task];
+    "--argv", JSON.stringify(handoffAgentRun(argv)), "--task", task];
+}
+
+// The live task terminal is the session that owns the approved result. For a
+// cumulative-worktree epic the coordinator integrated the phases, so prefer it
+// over any builder terminal; every other topology prefers the builder.
+export function liveHandoffTerminal(attempt, liveAgents = [], terminals = []) {
+  if (!attempt) return null;
+  const refs = attempt.executionMode === "worktrees"
+    ? [attempt.coordinatorTerminal, attempt.terminal]
+    : [attempt.terminal, attempt.coordinatorTerminal];
+  const observed = (attempt.terminals ?? [])
+    .filter((item) => item?.role === "builder" || item?.role === "coordinator")
+    .map((item) => item.address);
+  const addresses = [...new Set([...refs.map((ref) => String(ref?.address ?? "")), ...observed].filter(Boolean))];
+  // A live agent list is current evidence and already carries its space/tab.
+  for (const address of addresses) {
+    const agent = (liveAgents ?? []).find((candidate) => String(candidate?.address ?? "") === address);
+    if (agent) return { address, space: String(agent.space ?? ""), tab: String(agent.tab ?? "") };
+  }
+  // A live terminal observation also carries the app placement labels. A
+  // finished or removed terminal is never a valid handoff target.
+  for (const address of addresses) {
+    const terminal = (terminals ?? []).find((candidate) =>
+      String(candidate?.address ?? "") === address && String(candidate?.state ?? "") === "live");
+    if (terminal) return {
+      address,
+      space: String(terminal.labels?.["herdr.space"] ?? ""),
+      tab: String(terminal.labels?.["herdr.tab"] ?? ""),
+    };
+  }
+  return null;
+}
+
+export function handoffSendArgs(address, task) {
+  const terminal = String(address ?? "");
+  if (!terminal) throw new Error("A live task agent terminal is required.");
+  if (!task) throw new Error("A handoff prompt is required.");
+  return ["send", terminal, task];
 }
 
 function normalizedPath(value) {
   return String(value ?? "").replace(/\/+$/, "");
-}
-
-function insideFolder(value, folder) {
-  const path = normalizedPath(value);
-  return Boolean(path) && Boolean(folder) && (path === folder || path.startsWith(`${folder}/`));
 }
 
 // A space's `folder` is only where new terminals start, so it can point at
@@ -588,28 +622,19 @@ export function firstPaneFolder(space, panes) {
   return "";
 }
 
-// Integration belongs in the primary checkout, not in whichever worktree space
-// the board was opened from. Prefer the visible space whose first tab actually
-// lives there; `space.folder` is only a fallback when no live pane data exists.
-// If no space matches, fall back to the active space and run the tab there.
-export function selectMainSpace(spaces, root, activeSpaceId = "", panes = []) {
+// A handoff belongs to the task's own worktree space, never the primary
+// checkout. Prefer the visible space whose first tab actually lives in that
+// worktree; `space.folder` is only a fallback when no live pane data exists.
+// A missing task space fails closed rather than guessing another space.
+export function selectWorktreeSpace(spaces, worktree, activeSpaceId = "", panes = []) {
   const list = spaces ?? [];
-  const folder = normalizedPath(root);
-  const live = folder
-    ? list.filter((space) => insideFolder(firstPaneFolder(space, panes), folder))
-    : [];
-  const candidates = live.length
-    ? live
-    : folder
-      ? list.filter((space) => normalizedPath(space?.folder) === folder)
-      : [];
-  const active = candidates.find((space) => space?.id === activeSpaceId);
-  if (active) return active;
-  const repository = folder.split("/").filter(Boolean).pop() ?? "";
-  const named = candidates.find((space) => String(space?.name ?? "") === repository);
-  if (named) return named;
-  if (candidates.length) return candidates[0];
-  return list.find((space) => space?.id === activeSpaceId) ?? null;
+  const folder = normalizedPath(worktree);
+  if (!folder) return null;
+  const live = list.filter((space) => normalizedPath(firstPaneFolder(space, panes)) === folder);
+  const configured = list.filter((space) => normalizedPath(space?.folder) === folder);
+  const candidates = live.length ? live : configured;
+  if (!candidates.length) return null;
+  return candidates.find((space) => space?.id === activeSpaceId) ?? candidates[0];
 }
 
 function executionState(attempt) {

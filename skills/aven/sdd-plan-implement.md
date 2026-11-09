@@ -239,8 +239,8 @@ aven-dispatch approve {ref} --workflow <workflow> \
 This reruns checks, records exact commit-bound approval, marks the root accepted,
 and publishes pending delivery obligations. Do not fabricate approval metadata
 or manually close the root without a successful approval. Stop at that accepted
-result and report `/ha-merge {ref}` from main as the human merge trigger; do not
-wait for delivery or merge automatically. `/ha-merge` resolves conflicts in
+result and report `/ha-merge {ref}` from the task's agent session (or main) as
+the human merge trigger; do not wait for delivery or merge automatically. `/ha-merge` resolves conflicts in
 isolation and verifies/records delivery child-first without manual status repair.
 An incomplete plan, unverified code, a green session, a branch name or an open PR
 is not approval/delivery. Planning-only/no-code work needs an explicit

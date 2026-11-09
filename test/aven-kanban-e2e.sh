@@ -75,9 +75,9 @@ esac
 EOF
 chmod +x "$root/bin/aven-dispatch"
 
-# Keep the merge tab's program harmless. The isolated app may not have a real
-# agent installed, so the tab falls back to a shell; the test reads the typed
-# prompt from that terminal rather than running a real merge.
+# The fixture's task terminal runs a harmless sleep. Merge and Ship PR now
+# deliver their prompts to that exact terminal over hc, so the test can read the
+# echoed prompt without starting a real agent or performing a merge.
 
 # Keep board Git evidence inside this isolated test root. The sandbox may not
 # expose the personal local-main checkout to a spawned app even when the real
@@ -157,25 +157,21 @@ while [ "$count" -lt 100 ]; do
   count=$((count + 1))
 done
 [ "$ready" = yes ] || fail "isolated herdr-app did not become ready: $(cat "$root/status-error.log")"
+# The isolated app opens its first-run welcome dialog. Dismiss it so the
+# handoff and ship screenshots show the task terminal instead of the dialog.
+herdr-app do overlay.close >/dev/null 2>&1 || true
 
 # Give the board an explicit repository folder so its read-only local-main
 # evidence check has deterministic scope in the isolated app. A space's
-# `folder` is only where its first terminal started, so build the real main
-# space with its shown tab in the checkout, then add a decoy space whose stale
-# folder is the checkout while its first tab lives elsewhere.
-mkdir -p "$root/main-start" "$root/decoy"
+# `folder` is only where its first terminal started, so build the main space
+# with its shown tab in the checkout.
+mkdir -p "$root/main-start"
 herdr-app do space.new --name "kanban e2e" --folder "$root/main-start" > "$root/space.json"
 space_id=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/space.json")
 herdr-app ls > "$root/ls-initial.json"
 first_tab=$(node -e 'const fs = require("node:fs"); const [file, spaceId] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); process.stdout.write((data.spaces || []).find((entry) => entry.id === spaceId)?.tabs?.[0]?.id ?? "");' "$root/ls-initial.json" "$space_id")
 herdr-app do tab.new --name "main checkout" --space "$space_id" --folder "$repo" >/dev/null
 herdr-app do tab.close --id "$first_tab" --confirmed true >/dev/null
-herdr-app do space.new --name "next project" --folder "$repo" > "$root/decoy-space.json"
-decoy_space=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/decoy-space.json")
-herdr-app ls > "$root/ls-decoy.json"
-decoy_first_tab=$(node -e 'const fs = require("node:fs"); const [file, spaceId] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); process.stdout.write((data.spaces || []).find((entry) => entry.id === spaceId)?.tabs?.[0]?.id ?? "");' "$root/ls-decoy.json" "$decoy_space")
-herdr-app do tab.new --name "decoy checkout" --space "$decoy_space" --folder "$root/decoy" >/dev/null
-herdr-app do tab.close --id "$decoy_first_tab" --confirmed true >/dev/null
 herdr-app do space.select --id "$space_id" >/dev/null
 herdr-app do mod.open --name aven-kanban > "$root/open.json"
 # The local fixture normally hydrates in milliseconds. Allow the first native
@@ -184,31 +180,24 @@ sleep 3
 herdr-app shot "$root/kanban-board.png" >/dev/null
 [ -s "$root/kanban-board.png" ] || fail 'board screenshot was not written'
 
-# The board hydrates approval metadata asynchronously, so a merge/ship command
-# sent before that read finishes is a silent no-op. Re-send the command while
-# polling for its tab; a successful handoff closes the board and later sends
-# are ignored.
-wait_for_tab() {
-  wait_command=$1
-  wait_space=$2
-  wait_name=$3
-  wait_file=$4
-  wait_found=
-  wait_attempt=0
-  while [ -z "$wait_found" ] && [ "$wait_attempt" -lt 10 ]; do
-    herdr-app do "$wait_command" >/dev/null 2>&1 || true
-    wait_count=0
-    while [ -z "$wait_found" ] && [ "$wait_count" -lt 20 ]; do
-      if herdr-app ls > "$wait_file" 2>/dev/null; then
-        wait_found=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); const tab = (space?.tabs || []).find((entry) => entry.name === name); const terminal = tab?.terminals?.[0]?.terminal; if (terminal) process.stdout.write(terminal);' "$wait_file" "$wait_space" "$wait_name")
-      fi
-      [ -n "$wait_found" ] && break
-      sleep 0.1
-      wait_count=$((wait_count + 1))
-    done
-    wait_attempt=$((wait_attempt + 1))
+# The board hydrates approval metadata asynchronously. A successful Merge or
+# Ship PR handoff sends its prompt over hc to the fixture's recorded task
+# terminal, which echoes it; the board then closes. Poll that terminal instead
+# of waiting for a new tab.
+task_terminal=$terminal
+wait_for_handoff_prompt() {
+  want=$1
+  wait_count=0
+  while [ "$wait_count" -lt 150 ]; do
+    if hc read "$task_terminal" 2>/dev/null | grep -Fq -- "$want"; then return 0; fi
+    sleep 0.1
+    wait_count=$((wait_count + 1))
   done
-  printf '%s' "$wait_found"
+  return 1
+}
+handoff_tab_absent() {
+  herdr-app ls > "$root/ls-handoff.json" 2>/dev/null || return 1
+  node -e 'const fs = require("node:fs"); const [file, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); process.exit((data.spaces || []).some((space) => (space.tabs || []).some((tab) => tab.name === name)) ? 1 : 0);' "$root/ls-handoff.json" "$1"
 }
 
 # Vim navigation: jump to Working, walk right and back, then select its last
@@ -229,50 +218,35 @@ herdr-app shot "$root/kanban-keys.png" >/dev/null
 herdr-app do aven-kanban.close >/dev/null
 sleep 1
 
-# Column 4 (Ready to land) selects its sole approved review card.
+# Column 4 (Ready to land) selects its sole approved review card. Merge
+# re-reads the durable approval and sends /ha-merge to the recorded task agent
+# terminal; it never opens a main-space merge tab or messages the dispatcher.
 herdr-app do aven-kanban.column-4 >/dev/null
-space_id=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).space)' "$root/space.json")
-address=$(wait_for_tab aven-kanban.merge "$space_id" "merge $review_ref" "$root/ls.json")
-if [ -z "$address" ]; then
+herdr-app do aven-kanban.merge >/dev/null
+if ! wait_for_handoff_prompt "/ha-merge $review_id"; then
   herdr-app status > "$root/failure-status.json" || true
   herdr-app shot "$root/kanban-failure.png" >/dev/null || true
-  fail 'Merge into main did not open the main-space merge tab'
+  fail 'Merge did not deliver /ha-merge to the task agent terminal'
 fi
-herdr-app ls > "$root/ls-after-merge.json"
-decoy_merge=$(node -e 'const fs = require("node:fs"); const [file, spaceId, name] = process.argv.slice(1); const data = JSON.parse(fs.readFileSync(file, "utf8")); const space = (data.spaces || []).find((entry) => entry.id === spaceId); process.stdout.write((space?.tabs || []).some((entry) => entry.name === name) ? "yes" : "");' "$root/ls-after-merge.json" "$decoy_space" "merge $review_ref")
-[ -z "$decoy_merge" ] || fail 'Merge opened in the decoy space whose stale folder matches the checkout'
-count=0
-prompt_seen=no
-while [ "$prompt_seen" = no ] && [ "$count" -lt 100 ]; do
-  if hc read "$address" 2>/dev/null | grep -Fq -- "/ha-merge $review_id"; then
-    prompt_seen=yes
-    break
-  fi
-  sleep 0.1
-  count=$((count + 1))
-done
-[ "$prompt_seen" = yes ] || fail 'merge tab did not receive the /ha-merge prompt'
+handoff_tab_absent "merge $review_ref" || fail 'Merge opened a merge tab instead of using the task agent'
 [ ! -e "$root/unexpected-message.log" ] || fail 'merge must not message a builder or coordinator terminal'
 sleep 1
 herdr-app shot "$root/kanban-handoff.png" >/dev/null
 [ -s "$root/kanban-handoff.png" ] || fail 'handoff screenshot was not written'
 
-# Ship PR is a separate handoff: the board opens a task-named tab with an
-# explicit ship prompt and never runs Git itself.
+# Ship PR is a separate handoff in the same task session: the board sends the
+# explicit ship prompt to the task terminal and never runs Git itself.
 herdr-app do mod.open --name aven-kanban >/dev/null
 sleep 2
 herdr-app do aven-kanban.column-4 >/dev/null
-ship_address=$(wait_for_tab aven-kanban.ship "$space_id" "ship $review_ref" "$root/ls-ship.json")
-[ -n "$ship_address" ] || fail 'Ship PR did not open the main-space ship tab'
-count=0
-ship_seen=no
-while [ "$ship_seen" = no ] && [ "$count" -lt 100 ]; do
-  if hc read "$ship_address" 2>/dev/null | grep -Fq -- "$review_id"; then ship_seen=yes; break; fi
-  sleep 0.1
-  count=$((count + 1))
-done
-[ "$ship_seen" = yes ] || fail 'ship tab did not receive the ship prompt'
-hc read "$ship_address" 2>/dev/null | grep -Fq -- 'pull request' || fail 'ship prompt did not ask for a pull request'
+herdr-app do aven-kanban.ship >/dev/null
+if ! wait_for_handoff_prompt "Ship the approved result for Aven task $review_id"; then
+  herdr-app status > "$root/failure-status.json" || true
+  herdr-app shot "$root/kanban-failure.png" >/dev/null || true
+  fail 'Ship PR did not deliver the ship prompt to the task agent terminal'
+fi
+hc read "$task_terminal" 2>/dev/null | grep -Fq -- 'pull request' || fail 'ship prompt did not ask for a pull request'
+handoff_tab_absent "ship $review_ref" || fail 'Ship PR opened a ship tab instead of using the task agent'
 sleep 1
 herdr-app shot "$root/kanban-ship.png" >/dev/null
 [ -s "$root/kanban-ship.png" ] || fail 'ship screenshot was not written'

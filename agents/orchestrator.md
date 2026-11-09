@@ -63,8 +63,9 @@ input. Re-read the root approval marker and report the exact SHA; an idle worker
 execution contradiction or `completed` status is not approval evidence.
 
 Acceptance is not delivery. Approval records pending delivery obligations;
-they do not block accepting the root. Report `/ha-merge <root-ref>` from main as
-the human integration trigger, then stop. That command automatically resolves
+they do not block accepting the root. Report `/ha-merge <root-ref>` from this
+task's agent session (or main) as the human integration trigger, then stop. That
+command automatically resolves
 conflicts in isolation, reruns combined checks and closes out delivery child-first.
 Never merge, push or create a PR automatically. Use `aven-dispatch disposition`
 with a real successor or explicit no-successor for cancellation; never edit a
