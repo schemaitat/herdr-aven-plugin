@@ -7,7 +7,8 @@ import {
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
-  mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, safeDetail, selectAttempt, selectedCard,
+  mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, automaticProjectFilter, currentProjectArgs,
+  resolveCurrentProject, safeDetail, selectAttempt, selectedCard,
   selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
@@ -41,6 +42,14 @@ function parseList(result, label) {
   const value = parse(result, label);
   if (!Array.isArray(value)) throw new Error(`${label}: expected a JSON list`);
   return value;
+}
+// Project resolution is a hint, never a reason to fail the board: an
+// unavailable checkout or unknown project simply leaves the filter on all.
+function projectRows(result) {
+  try {
+    const value = JSON.parse(result?.stdout || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
 }
 const firstLine = (value) => ((value ?? "").split("\n").map((line) => line.trim()).find(Boolean) ?? "").slice(0, 160);
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -104,6 +113,10 @@ export default class AvenKanban extends View {
     const storedFilter = String(shared("aven-kanban.created-filter") ?? "");
     this.createdFilter = CREATED_FILTERS.some((filter) => filter.id === storedFilter) ? storedFilter : "all";
     this.projectFilter = String(shared("aven-kanban.project-filter") ?? "");
+    // Automatic resolution is the default; an explicit chip press, including
+    // "all", is persisted separately so a later open never overrides it.
+    this.projectAuto = shared("aven-kanban.project-auto") !== false;
+    this.resolvedProject = "";
     const storedArchive = shared(ARCHIVE_SHARED);
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
@@ -245,22 +258,29 @@ export default class AvenKanban extends View {
     // Never guess a checkout from the app's own cwd: a wrong repository would
     // silently mark another project's work as delivered.
     const cwd = folder ? await this.rootFolder(folder) : "";
-    const [availableResult, upcomingResult, attemptsResult] = await Promise.all([
+    // A non-Git folder can still be mapped to a project by Aven path mappings,
+    // so let Aven see the space folder when there is no Git checkout.
+    const projectCwd = cwd || folder;
+    const [availableResult, upcomingResult, attemptsResult, projectResult] = await Promise.all([
       exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
+      projectCwd ? exec("aven", currentProjectArgs(workspace), { cwd: projectCwd }).catch(() => null) : Promise.resolve(null),
     ]);
     const available = parseList(availableResult, "Epics");
     const upcoming = parseList(upcomingResult, "Upcoming epics");
     assertBoardCoverage({ available: available.length, upcoming: upcoming.length });
     const rawAttempts = parseList(attemptsResult, "Dispatcher attempts");
     assertBoardCoverage({ attempts: rawAttempts.length });
+    const resolvedProject = projectResult?.code === 0
+      ? resolveCurrentProject(projectRows(projectResult), projectResult.stderr)
+      : "";
     const baseRows = mergeEpicRows({ available, upcoming });
     assertBoardCoverage({ epics: baseRows.length });
     const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
     for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
     const attemptIndex = indexAttempts(rawAttempts);
-    return { workspace, cwd, available, upcoming, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
+    return { workspace, cwd, resolvedProject, available, upcoming, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
   }
 
   mergedRows() {
@@ -280,9 +300,15 @@ export default class AvenKanban extends View {
   publishRows(cx, flags = {}) {
     if (!this.sources || this.closed) return;
     const rows = this.mergedRows();
-    // A project filter that no longer matches any epic is cleared rather than
-    // presenting an unexplained empty board.
-    if (this.projectFilter && !rows.some((row) => row.project === this.projectFilter)) {
+    this.resolvedProject = this.sources.resolvedProject;
+    if (this.projectAuto) {
+      // Automatic scope follows the selected space's project, but only while
+      // that project has a card the current view can actually show.
+      const visible = filterArchived(filterRowsByCreated(rows, this.createdFilter), this.archived, this.workspace());
+      this.projectFilter = automaticProjectFilter(this.resolvedProject, visible);
+    } else if (this.projectFilter && !rows.some((row) => row.project === this.projectFilter)) {
+      // An explicit filter that no longer matches any epic is cleared rather
+      // than presenting an unexplained empty board.
       this.projectFilter = "";
       setShared("aven-kanban.project-filter", "");
     }
@@ -499,8 +525,13 @@ export default class AvenKanban extends View {
     this.retainSelection(cx);
   }
   setProject(id, cx) {
-    this.projectFilter = this.projectFilter === id ? "" : id;
-    setShared("aven-kanban.project-filter", this.projectFilter);
+    const next = this.projectFilter === id ? "" : id;
+    this.projectFilter = next;
+    // Every chip press is an explicit choice, including "all" (""), so later
+    // automatic resolution must not override it.
+    this.projectAuto = false;
+    setShared("aven-kanban.project-filter", next);
+    setShared("aven-kanban.project-auto", false);
     this.retainSelection(cx);
   }
 

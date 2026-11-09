@@ -134,6 +134,36 @@ export function detailArgs(workspace, ref) {
   return ["show", ref, "--workspace", workspace, "--full", "--json"];
 }
 
+// The board's list reads stay workspace-wide, but its initial chip should name
+// the project the selected Herdr space/worktree belongs to. Let Aven infer that
+// project from the checkout instead of guessing from the folder name: linked
+// worktrees, project path mappings, and same-named projects resolve exactly as
+// they do for any other Aven command.
+export function currentProjectArgs(workspace) {
+  return ["list", "--workspace", workspace, "--limit", "1", "--json"];
+}
+
+// JSON rows are authoritative; Aven also prints its resolved scope on stderr
+// when the bounded list is empty (for example a project with no tasks yet).
+export function resolveCurrentProject(rows, stderr = "") {
+  const keys = new Set((rows ?? [])
+    .map((row) => String(row?.project?.key ?? row?.project ?? "").trim())
+    .filter(Boolean));
+  if (keys.size === 1) return [...keys][0];
+  if (keys.size > 1) return "";
+  const match = String(stderr ?? "").match(/^scope:\s*project\s+(\S+)\s+\(from /m);
+  return match ? match[1] : "";
+}
+
+// Automatic selection never invents an empty board: a resolved project keeps
+// the chip only while it has a card in the current view. Otherwise the board
+// falls back to all, which still shows every workspace project.
+export function automaticProjectFilter(project, rows) {
+  const key = String(project ?? "").trim();
+  if (!key) return "";
+  return (rows ?? []).some((row) => String(row?.project ?? "").trim() === key) ? key : "";
+}
+
 // Metadata that gates approval, delivery, or plan badges, plus the LLM summary
 // contract the board renders. Everything else in an `aven show --full` payload
 // stays outside the board model.

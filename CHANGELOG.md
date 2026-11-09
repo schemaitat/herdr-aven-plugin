@@ -24,6 +24,13 @@
   pass `aven list --all-projects`, so the board holds every epic in its explicit
   workspace and the project chips (including **all**) genuinely narrow and widen
   the set instead of re-rendering a single inferred project.
+- Resolve the Kanban board's initial project from the selected Herdr
+  space/worktree using Aven's own checkout inference (linked worktrees and
+  project path mappings included). The board starts on that project's chip when
+  it has visible cards, keeps **all** as a one-click widening, and remembers an
+  explicit chip choice, including **all**, across overlay openings. Automatic
+  resolution is never persisted and falls back to **all** when no project or
+  visible card resolves.
 - Add on-demand LLM summaries for long task descriptions. `d l` (or `z l`) in
   Aven runs `aven-dispatch describe --llm`, which summarizes the focused task
   and up to 20 long phase descriptions with the installed OpenCode CLI and
