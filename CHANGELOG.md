@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add explicit Kanban deletion. `D` (Shift-D) or `Delete` arms a confirmation
+  panel for the selected root epic, then runs `aven-dispatch delete <ref>
+  --apply --json`. Aven's `delete` handles one task at a time, so the new
+  dispatcher command inventories the epic tree, deletes descendants before
+  their parent, and removes attempt/effect rows for every deleted immutable task
+  ID only after all Aven deletes succeed. The default CLI invocation is a
+  read-only leaves-first inventory; `--apply` performs the cascade. Branches,
+  worktrees, commits, OpenCode sessions, and notes are preserved, a failed child
+  stops before the root, and individual soft-deleted tasks remain restorable
+  with `aven restore`.
 - Make Kanban refreshes atomic once the board is visible: hydration and
   local-main delivery evidence are staged off-screen and the board is replaced
   in one publish, so **on main** badges and columns no longer flicker while a
