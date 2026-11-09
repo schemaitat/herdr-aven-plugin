@@ -37,6 +37,11 @@ test-lifecycle:
     cargo build --workspace
     sh test/lifecycle.test.sh
 
+# Read-only work-queue contract: stage classification, filtering, truncation.
+test-work:
+    cargo build --workspace
+    sh test/work.test.sh
+
 # Root-epic cascade deletion, leaves-first order, and dispatcher state cleanup.
 test-board-delete:
     cargo build --workspace

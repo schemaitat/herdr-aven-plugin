@@ -61,7 +61,19 @@ def open_dependencies(state, task):
     )
 
 
+def ref_summary(state, task):
+    return {
+        "id": task["id"],
+        "ref": task["ref"],
+        "display_ref": task["ref"],
+        "title": task["title"],
+        "status": task["status"],
+    }
+
+
 def task_summary(state, task):
+    parent_ref = task.get("epic_parent")
+    parent = state["tasks"].get(parent_ref) if parent_ref else None
     return {
         "id": task["id"],
         "ref": task["ref"],
@@ -79,6 +91,12 @@ def task_summary(state, task):
             for other in state["tasks"].values()
             if task["ref"] in other.get("depends_on", [])
         ),
+        "epic_parent": ref_summary(state, parent) if parent else None,
+        "epic_children": [
+            ref_summary(state, child)
+            for child in state["tasks"].values()
+            if child.get("epic_parent") == task["ref"]
+        ],
         "updated_at": task.get("updated_at", "2026-01-01T00:00:00Z"),
     }
 
@@ -165,6 +183,20 @@ def main(argv):
         if len(argv) >= 3 and argv[1] == "create":
             state["projects"].setdefault(argv[2].lower().replace(" ", "-"), argv[2])
             save(state)
+            return
+        if len(argv) >= 2 and argv[1] == "list":
+            projects = sorted(
+                {
+                    task.get("project", "")
+                    for task in state["tasks"].values()
+                    if task.get("project", "")
+                }
+            )
+            if "--json" in argv:
+                print(json.dumps([{"key": project, "name": project} for project in projects]))
+            else:
+                for project in projects:
+                    print(project)
         return
     if command == "context":
         task = find(state, argv[1])
