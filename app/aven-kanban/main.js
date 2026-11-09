@@ -101,6 +101,7 @@ export default class AvenKanban extends View {
     this.renderTimes = new Map();
     this.renderAgents = [];
     this.renderTerminals = [];
+    this.relatedAgentCache = new Map();
     const storedFilter = String(shared("aven-kanban.created-filter") ?? "");
     this.createdFilter = CREATED_FILTERS.some((filter) => filter.id === storedFilter) ? storedFilter : "all";
     this.projectFilter = String(shared("aven-kanban.project-filter") ?? "");
@@ -453,10 +454,10 @@ export default class AvenKanban extends View {
   columns() {
     return filterBoardByProject(this.boardColumns(), this.projectFilter);
   }
-  selected() { return selectedCard(this.columns(), this.selectedId); }
+  selected(columns = this.columns()) { return selectedCard(columns, this.selectedId); }
   retainSelection(cx) {
     const columns = this.columns();
-    this.selectedId = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
+    this.selectedId = this.selected(columns)?.id ?? moveSelection(columns, "", 1);
     this.notify(cx);
   }
 
@@ -465,8 +466,9 @@ export default class AvenKanban extends View {
   // the same task; this queue only bounds the board's own launches.
   autoSummarize(cx) {
     if (this.autoBusy || this.closed) return;
-    const selected = this.selected();
-    const cards = flattenBoard(this.columns());
+    const columns = this.columns();
+    const selected = this.selected(columns);
+    const cards = flattenBoard(columns);
     const ordered = [selected, ...cards].filter(Boolean);
     const card = ordered.find((candidate) => candidate.summaryAuto
       && !this.autoRequests.has(candidate.ref)
@@ -516,11 +518,22 @@ export default class AvenKanban extends View {
     this.notify(cx);
   }
 
-  times() {
+  // Live app reads leave the JS sandbox, so one render takes one snapshot of
+  // agents, terminals, and tab timers. Clearing the related-agent memo with the
+  // snapshot keeps a later classification from reusing an old agent.
+  snapshotLive() {
+    const liveAgents = agents() ?? [];
+    this.renderAgents = liveAgents;
+    this.renderTerminals = terminals() ?? [];
+    this.renderTimes = this.times(liveAgents);
+    this.relatedAgentCache = new Map();
+  }
+
+  times(liveAgents = agents()) {
     const tabs = new Map();
     for (const space of spaces()) for (const tab of space.tabs ?? []) tabs.set(tab.id, tab);
     const out = new Map();
-    for (const agent of agents()) {
+    for (const agent of liveAgents ?? []) {
       const tab = tabs.get(agent.tab);
       if (tab) out.set(agent.address, { changed: tab.changed_at, working: tab.working_since });
     }
@@ -528,6 +541,14 @@ export default class AvenKanban extends View {
   }
 
   relatedAgent(card) {
+    const key = `${card?.column ?? ""}\u0000${card?.id ?? ""}`;
+    if (this.relatedAgentCache.has(key)) return this.relatedAgentCache.get(key);
+    const agent = this.findRelatedAgent(card);
+    this.relatedAgentCache.set(key, agent);
+    return agent;
+  }
+
+  findRelatedAgent(card) {
     const attempts = card.relatedAttempts?.length ? card.relatedAttempts : (card.attempt ? [card.attempt] : []);
     const addresses = card.column === "needs_you"
       ? [blockedAddress(attempts, this.state.liveAgents)].filter(Boolean)
@@ -560,8 +581,7 @@ export default class AvenKanban extends View {
 
   async readQuestions(cx) {
     if (this.asking || this.closed) return;
-    this.renderAgents = agents();
-    this.renderTerminals = terminals();
+    this.snapshotLive();
     const cards = this.columns().find((column) => column.id === "needs_you")?.cards ?? [];
     if (!cards.length) {
       if (this.questions.size) { this.questions.clear(); this.notify(cx); }
@@ -900,7 +920,7 @@ export default class AvenKanban extends View {
 
   cardWhen(card) {
     const agent = this.relatedAgent(card);
-    const tab = agent ? (this.renderTimes.get(agent.address) ?? this.times().get(agent.address)) : null;
+    const tab = agent ? this.renderTimes?.get(agent.address) : null;
     if (card.column === "needs_you") return tab?.changed ? `waiting ${dur(this.now - tab.changed)}` : "waiting";
     if (card.column === "working") return card.agentActive ? (tab?.working ? dur(this.now - tab.working) : "working") : card.status;
     if (card.column === "ready") return "ready";
@@ -1105,10 +1125,8 @@ export default class AvenKanban extends View {
       .when(alert, (el) => el.child(div().w(6).h(6).rounded(3).bg(C.you)));
   }
 
-  chips(board, cx) {
-    const cards = board.flatMap((column) => column.cards);
-    const projects = projectChips(cards);
-    const stats = boardStats(board);
+  chips(board, stats, cx) {
+    const projects = projectChips(flattenBoard(board));
     return h_flex().w_full().flex_none().flex_wrap().gap(6).items_center()
       .child(this.filterChip("", "all", stats.total, stats.needsYou > 0, cx))
       .children(projects.map((project) => this.filterChip(project.id, project.label, project.count, project.needsYou, cx)))
@@ -1122,19 +1140,15 @@ export default class AvenKanban extends View {
   }
 
   render(cx) {
-    this.renderAgents = agents();
-    this.renderTerminals = terminals();
-    this.renderTimes = this.times();
-    // Build the board once; the project filter only narrows the cards, it does
-    // not need a second pass over every epic and live agent.
+    this.snapshotLive();
+    // Build the board once; the project filter only narrows the cards, and the
+    // same columns drive selection, stats, chips, and the banner.
     const board = this.boardColumns();
-    const columns = this.projectFilter
-      ? board.map((column) => ({ ...column, cards: column.cards.filter((card) => card.project === this.projectFilter) }))
-      : board;
+    const columns = filterBoardByProject(board, this.projectFilter);
     const stats = boardStats(columns);
     const allStats = boardStats(board);
     const next = nextMove(columns);
-    const focusedColumn = this.selected()?.column ?? "";
+    const focusedColumn = this.selected(columns)?.column ?? "";
     const keyCommands = {
       escape: "close", j: "next", down: "next", k: "previous", up: "previous",
       h: "column-previous", left: "column-previous", l: "column-next", right: "column-next",
@@ -1165,7 +1179,7 @@ export default class AvenKanban extends View {
         .when(this.state.enriching, (el) => el.child(mono(9.5, C.dim, "Cards are visible now; loading epic metadata and plan badges…")))
         .when(this.state.evidencePending, (el) => el.child(mono(9.5, C.dim, "Checking local main for delivered work…")))
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
-        .child(this.chips(board, cx))
+        .child(this.chips(board, allStats, cx))
         .child(h_flex().w_full().flex_none().gap(8).items_center()
           .child(mono(10, C.dim, "j/k card · h/l column · g/G top/bottom · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · d dispatch · ? keys"))
           .child(div().flex_1())

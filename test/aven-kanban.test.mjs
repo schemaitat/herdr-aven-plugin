@@ -34,6 +34,16 @@ assert.match(kanbanSource, /if \(progressive\) this\.publishRows/);
 assert.match(kanbanSource, /this\.mainMerged = mainEvidence\.merged;/);
 assert.match(kanbanSource, /this\.hasSettledBoard = true;/);
 
+// One render takes one live snapshot and builds the board once. The drawn,
+// project-filtered columns then drive selection, stats, and chips instead of a
+// second build or a per-card live lookup.
+assert.match(kanbanSource, /snapshotLive\(\)/, "a render snapshots live agents, terminals, and tab times once");
+assert.match(kanbanSource, /relatedAgentCache = new Map\(\)/, "each snapshot clears the related-agent memo");
+assert.match(kanbanSource, /this\.selected\(columns\)/, "render reuses the drawn board for selection");
+assert.match(kanbanSource, /const columns = filterBoardByProject\(board, this\.projectFilter\)/, "the project filter narrows the one built board");
+assert.match(kanbanSource, /chips\(board, allStats, cx\)/, "chips reuse the stats the render already computed");
+assert.doesNotMatch(kanbanSource, /this\.times\(\)\.get\(/, "no card falls back to a live tab-time read");
+
 const rawEpic = (id, status = "todo", extra = {}) => ({
   id, ref: `HAP-${id}`, title: `Epic ${id}`, project: "herdr-aven-plugin", status,
   is_epic: true, deleted: false, created_at: "2026-01-01T00:00:00Z",
