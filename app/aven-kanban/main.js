@@ -4,7 +4,7 @@ import { agents, closeOverlay, exec, focused, hc, knownAgents, nextCommand, pane
 import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
   boardStats, buildBoard, cardArchiveable, deleteArgs, deletedTaskIds, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
-  enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
+  emptyWhenUnknownMetadata, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   handoffSendArgs, handoffTabArgs, isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress, reopenTarget,
   landedWeek, landedWeekTotal, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
@@ -281,7 +281,7 @@ export default class AvenKanban extends View {
       exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
       projectCwd ? exec("aven", currentProjectArgs(workspace), { cwd: projectCwd }).catch(() => null) : Promise.resolve(null),
-      exec("aven", obligationListArgs(workspace), cwd ? { cwd } : undefined),
+      exec("aven", obligationListArgs(workspace), cwd ? { cwd } : undefined).then(emptyWhenUnknownMetadata),
     ]);
     const available = parseList(availableResult, "Epics");
     const upcoming = parseList(upcomingResult, "Upcoming epics");

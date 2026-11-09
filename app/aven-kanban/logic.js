@@ -172,6 +172,15 @@ export function obligationListArgs(workspace) {
     "--has-metadata", "delivery.obligation-for", "--limit", String(LIMIT), "--json"];
 }
 
+// Aven rejects a metadata filter whose field has never been recorded instead of
+// treating it as an empty match. A workspace where no task ever carried a
+// delivery obligation has none, so that read must not fail the whole board.
+export function emptyWhenUnknownMetadata(result) {
+  if (result?.code === 0) return result;
+  if (!/unknown-metadata-field/.test(String(result?.stderr ?? ""))) return result;
+  return { ...result, code: 0, stdout: "[]", stderr: "" };
+}
+
 // Metadata that gates approval, delivery, or plan badges, plus the LLM summary
 // contract the board renders. Everything else in an `aven show --full` payload
 // stays outside the board model.

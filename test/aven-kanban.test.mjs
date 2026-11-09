@@ -6,7 +6,7 @@ import {
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardStats, buildBoard,
   cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, deleteArgs, deletedTaskIds,
   detailArgs, detailCacheKey, detailIsCurrent,
-  detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
+  detailNeedsRefresh, dispatchTerminalName, emptyWhenUnknownMetadata, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, landedWeekTotal, lastQuestion, mapLimit, safeDeleteOutcome, safeDetail,
   handoffAgentRun, handoffSendArgs, handoffTabArgs, liveAgentFor, liveHandoffTerminal, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
@@ -852,6 +852,13 @@ assert.deepEqual(obligationListArgs("default"), [
   "list", "--workspace", "default", "--all-projects", "--open",
   "--has-metadata", "delivery.obligation-for", "--limit", String(LIMIT), "--json",
 ]);
+const unknownField = { code: 1, stdout: "", stderr: "error unknown-metadata-field: delivery.obligation-for" };
+assert.deepEqual(emptyWhenUnknownMetadata(unknownField), { ...unknownField, code: 0, stdout: "[]", stderr: "" },
+  "a workspace that never recorded an obligation has no obligations");
+const failedRead = { code: 1, stdout: "", stderr: "error database is locked" };
+assert.equal(emptyWhenUnknownMetadata(failedRead), failedRead, "unrelated read failures stay visible");
+const okRead = { code: 0, stdout: "[]", stderr: "" };
+assert.equal(emptyWhenUnknownMetadata(okRead), okRead);
 const sanitized = safeDetail({
   task: {
     id: "ONE", ref: "HAP-ONE", title: "Epic", status: "done", is_epic: true,

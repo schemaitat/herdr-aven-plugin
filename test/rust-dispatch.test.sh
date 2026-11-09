@@ -287,7 +287,7 @@ payload = json.load(open(sys.argv[1]))
 assert payload['task_ref'] == 'APP-1', payload
 assert payload['workflow'] == 'implementation', payload
 assert payload['session_id'].startswith('ses_'), payload
-assert payload['worktree'].endswith('app-quoted-task-dispatch-immutable-task'), payload
+assert payload['worktree'].endswith('feat-app-1-quoted-task-dispatch-immutable-task'), payload
 assert payload['terminal'], payload
 PY
 assert_eq "$(grep -c -- '--session' "$log" || true)" "$((sessions_before + 1))" 'reopen relaunches the saved OpenCode session'
