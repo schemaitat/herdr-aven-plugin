@@ -21,26 +21,53 @@ install-commands *args:
 # Isolated approval, batch merge/conflict, stale-evidence and closeout contracts.
 test-approval:
     cargo build --workspace
-    sh test/approval.test.sh
+    sh test/run.sh approval
 
 install-app-mod:
     sh scripts/install-app-mod.sh
 
-# TEST_JOBS and APPROVAL_TEST_JOBS bound the parallel pools (default: CPU count).
+# Default fast tier: Rust unit tests plus unit/contract suites, budgeted at 20s.
 test:
     cargo test --workspace
     cargo build --workspace
-    sh test/run.sh
+    TEST_BUDGET_SECONDS=${TEST_BUDGET_SECONDS:-20} sh test/run.sh unit
+
+# Explicit alias for the default fast tier.
+test-unit: test
+
+# Heavy approval, dispatch and lifecycle fixtures; opt in when needed.
+test-integration:
+    cargo build --workspace
+    sh test/run.sh integration
+
+# Every local Rust and shell suite: unit tier first, then integration.
+test-all:
+    cargo test --workspace
+    cargo build --workspace
+    sh test/run.sh all
+
+# Rust unit tests scoped by module/test name, e.g. `just test-rust dispatch::plan`.
+test-rust *filter:
+    cargo test --workspace {{filter}}
+
+# Named use-case suites, e.g. `just test-suite lifecycle` or `just test-suite install`.
+test-suite *names:
+    cargo build --workspace
+    sh test/run.sh {{names}}
+
+# Discover suite names, tiers, dependencies and files.
+test-list:
+    sh test/run.sh --list
 
 # Lifecycle isolation, delivery/closeout, cancellation and audit contracts.
 test-lifecycle:
     cargo build --workspace
-    sh test/lifecycle.test.sh
+    sh test/run.sh lifecycle
 
 # Root-epic cascade deletion, leaves-first order, and dispatcher state cleanup.
 test-board-delete:
     cargo build --workspace
-    sh test/board-delete.test.sh
+    sh test/run.sh board-delete
 
 # Read-only lifecycle audit. Exit: 0 clean, 1 violations, 2 incomplete source.
 tasks-audit *args:
@@ -57,7 +84,7 @@ inspect *args:
 # Real herdr-core + fake OpenCode/Aven processes in an isolated HC_SESSION.
 test-e2e:
     cargo build --workspace
-    sh test/rust-dispatch.test.sh
+    sh test/run.sh dispatch
 
 check:
     cargo check --workspace

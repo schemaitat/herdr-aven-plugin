@@ -3,9 +3,15 @@
 set -eu
 . "$(dirname "$0")/helpers.sh"
 
-for entry in install install-app-mod test test-e2e check fmt doctor watch watch-status watch-stop app-check ui-install ui-check ui-test ui-build; do
-  grep -q "^$entry:" "$PLUGIN_ROOT/justfile" || fail "missing just entrypoint $entry"
+for entry in install install-app-mod test test-unit test-integration test-all test-rust test-suite test-list test-e2e check fmt doctor watch watch-status watch-stop app-check ui-install ui-check ui-test ui-build; do
+  grep -Eq "^$entry(:|[[:space:]])" "$PLUGIN_ROOT/justfile" || fail "missing just entrypoint $entry"
 done
+
+# The default test tier is fast, manifest-driven and budgeted at 20 seconds.
+assert_file_contains "$PLUGIN_ROOT/justfile" 'sh test/run.sh unit' 'default test tier'
+assert_file_contains "$PLUGIN_ROOT/justfile" 'TEST_BUDGET_SECONDS=${TEST_BUDGET_SECONDS:-20}' 'default test budget'
+assert_file_contains "$PLUGIN_ROOT/test/suites.txt" 'approval|integration||approval.test.sh' 'heavy approval suite is opt-in'
+assert_file_contains "$PLUGIN_ROOT/test/suites.txt" 'dispatch|integration||rust-dispatch.test.sh' 'dispatch process fixture is opt-in'
 
 for script in scripts/doctor.sh scripts/install-aven-command.sh scripts/install-app-mod.sh; do
   [ -f "$PLUGIN_ROOT/$script" ] || fail "missing $script"

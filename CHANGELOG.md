@@ -223,6 +223,15 @@
   `OPENCODE_BIN`, the first `opencode` on `PATH`, `~/.opencode/bin`,
   `~/.local/bin`, standard bin directories, and reports those locations if none
   exist.
+- Split the test entrypoints into a fast default tier and opt-in scoped suites.
+  `just test` now runs Rust unit tests plus the `unit` suites from
+  `test/suites.txt` and fails if suite execution exceeds 20 seconds after the
+  binary is built. The heavy `approval`, `dispatch` and `lifecycle` fixtures are
+  `integration` suites reachable through `just test-integration`,
+  `just test-all`, their focused recipes, or `just test-suite <name>`.
+  `just test-rust <filter>` scopes Rust tests by module/test name, and
+  `test/suites.test.sh` keeps every `test/*.test.sh` classified exactly once
+  while validating the dependency graph.
 
 ## 1.0.0
 
