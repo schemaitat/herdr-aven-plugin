@@ -768,6 +768,13 @@ Done IDs without editing Aven. It retains `kanban-board.png`,
 herdr-app, herdr-core, Aven, and a display; it is intentionally separate from
 headless `just test` and cleans up only the app/core/resources it created.
 
+`just board-profile` replays the board's bounded reads (the list reads, the
+terminal-epic detail reads, and the terminal-attempt git probes) against the
+current workspace and checkout. It prints row counts, payload bytes, spawned
+process counts, and per-stage timings as JSON and never mutates Aven, Git, or
+the dispatcher store. Run it before and after a refresh change to quantify the
+difference.
+
 The separate `aven-worktree` pane is retired. Dispatch no longer splits a
 second Aven surface into a worktree space; the **Aven** child of the Aven-right
 layout describes the focused dispatched worktree instead (see below).

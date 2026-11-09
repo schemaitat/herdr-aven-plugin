@@ -95,6 +95,11 @@ app-test:
     node test/aven-panel.test.mjs
     node test/aven-panel-tabs.test.mjs
 
+# Read-only replay of the Kanban board's bounded reads: row counts, bytes,
+# spawned processes, and per-stage timings as JSON. Never mutates Aven or Git.
+board-profile *args:
+    node scripts/kanban-profile.mjs {{args}}
+
 # Real isolated herdr-app/core, dummy Aven epics, merge-handoff assertion and screenshots.
 app-test-e2e:
     sh test/aven-kanban-e2e.sh
