@@ -747,6 +747,22 @@ assert.match(kanbanSource, /aven-kanban-bulk/, "the board renders the bulk bar")
 assert.match(kanbanSource, /ctrl-click multi-select/, "the footer legend names multi-select");
 assert.match(kanbanSource, /Ctrl\/⌘-click/, "the help panel names additive selection");
 
+// Bulk actions reuse the per-card validity rules and keep the board open while
+// each target is delivered. A failure is collected, not thrown out of the loop.
+assert.match(kanbanSource, /bulkBar\(cx\)/, "the render includes a bulk action bar");
+assert.match(kanbanSource, /aven-kanban-bulk-merge/, "the bulk bar offers merge");
+assert.match(kanbanSource, /aven-kanban-bulk-ship/, "the bulk bar offers Ship PR");
+assert.match(kanbanSource, /aven-kanban-bulk-archive/, "the bulk bar offers archive");
+assert.match(kanbanSource, /bulkTargets\(cards, "merge", this\.state\)/, "bulk merge reuses merge validity");
+assert.match(kanbanSource, /bulkTargets\(cards, "archive", this\.state\)/, "bulk archive reuses archive validity");
+assert.match(kanbanSource, /this\.handoffOne\(card, kind, false\)/, "bulk handoffs do not steal focus");
+assert.match(kanbanSource, /if \(focus\) this\.focusAgent\(live, false\)/, "single-card merge still focuses the task agent");
+assert.match(kanbanSource, /errors\.push\(`\$\{card\.ref\}: \$\{result\.error\}`\)/, "a failed target is reported by ref");
+assert.match(kanbanSource, /if \(cards\.length > 1\) \{ this\.handoffCards\(cards, "merge", cx\); return; \}/, "m uses the bulk merge path");
+assert.match(kanbanSource, /if \(cards\.length > 1\) \{ this\.handoffCards\(cards, "ship", cx\); return; \}/, "Shift-S uses the bulk ship path");
+assert.match(kanbanSource, /if \(cards\.length > 1\) \{ this\.archiveCards\(cards, cx\); return; \}/, "x uses the bulk archive path");
+assert.match(kanbanSource, /m \/ Shift-S \/ x/, "the help panel documents bulk keyboard actions");
+
 // Project narrowing filters the board that was already built, keeping one
 // build as the source of truth for render, stats, and selection.
 const projectBoard = buildBoard({

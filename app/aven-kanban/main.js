@@ -783,8 +783,15 @@ export default class AvenKanban extends View {
     const card = this.selected();
     if (card) this.go(card, cx);
   }
-  shipSelected(cx) { const card = this.selected(); if (card) this.ship(card, cx); }
+  shipSelected(cx) {
+    const cards = this.selectedCards();
+    if (cards.length > 1) { this.handoffCards(cards, "ship", cx); return; }
+    const card = this.selected();
+    if (card) this.ship(card, cx);
+  }
   archiveSelected(cx) {
+    const cards = this.selectedCards();
+    if (cards.length > 1) { this.archiveCards(cards, cx); return; }
     if (!this.settled()) {
       // The moves that precede this press are still queued; archive whatever
       // the authoritative board selects after replaying them.
@@ -808,7 +815,12 @@ export default class AvenKanban extends View {
     const action = DISPATCH_ACTIONS.find((candidate) => candidate.id === actionId);
     if (card && action) this.dispatch(card, action, cx);
   }
-  mergeSelected(cx) { const card = this.selected(); if (card) this.merge(card, cx); }
+  mergeSelected(cx) {
+    const cards = this.selectedCards();
+    if (cards.length > 1) { this.handoffCards(cards, "merge", cx); return; }
+    const card = this.selected();
+    if (card) this.merge(card, cx);
+  }
   toggleDispatch(cx) {
     const card = this.selected();
     if (!card || card.status === "done" || card.status === "canceled") return;
@@ -940,64 +952,107 @@ export default class AvenKanban extends View {
   // that agent. Only when its terminal is gone does the board open a tab in the
   // task's worktree space. It never starts an agent in the primary checkout and
   // never mutates Git itself.
-  handoff(epic, kind, cx) {
+  //
+  // `focus` is false for a bulk batch: the prompts still go to each owning
+  // session, but the board stays open instead of jumping to the first one.
+  async handoffOne(epic, kind, focus = true) {
+    if (!epic?.mergeable) return { ok: false, skipped: true };
     const identity = `${kind}\u0000${epic.id}`;
-    if (!epic.mergeable || this.pendingHandoffs.has(identity)) return;
+    if (this.pendingHandoffs.has(identity)) return { ok: false, skipped: true };
     this.pendingHandoffs.add(identity);
-    cx.spawn(async (taskCx) => {
-      const label = kind === "ship" ? "Ship PR" : "Merge";
-      try {
-        const workspace = this.workspace();
-        const cwd = epic.attempt?.worktree || await this.rootFolder(this.spaceFolder());
-        // Re-read the exact task now: a cached or stale approval marker must
-        // never deliver a handoff. The dispatcher journal still validates it.
-        const detail = await this.exactDetail(workspace, epic, cwd);
-        const issue = mergeApprovalIssue(detail.task, detail.metadata);
-        if (issue) {
-          this.details.delete(detailCacheKey(workspace, epic.id));
-          throw new Error(`${epic.ref} has no complete durable approval (${issue}); rerun /approve.`);
-        }
-        const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
-        const live = liveHandoffTerminal(epic.attempt, agents(), terminals());
-        if (live) {
-          const sent = await hc(handoffSendArgs(live.address, task));
-          if (sent.code !== 0) {
-            throw new Error((sent.stderr || "").trim() || `could not send the ${label.toLowerCase()} prompt to the task agent`);
-          }
-          this.focusAgent(live, false);
-          return;
-        }
-        // The owning session has stopped. Keep the prompt in the task's own
-        // worktree space rather than starting a fresh agent in main.
-        const worktree = epic.attempt?.worktree ?? "";
-        const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
-        const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes());
-        if (!target?.id) {
-          throw new Error("the task agent terminal and its worktree space are unavailable; open the task agent and retry");
-        }
-        const name = kind === "ship" ? shipTabName(epic) : mergeTabName(epic);
-        const existing = (target.tabs ?? []).find((tab) => tab.name === name);
-        if (existing) {
-          run("tab.select", { id: existing.id });
-          const agent = agents().find((candidate) => candidate.tab === existing.id);
-          if (agent?.address) run("agent.focus", { terminal: agent.address });
-          this.close();
-          return;
-        }
-        const argv = await this.handoffAgent();
-        const result = await exec("herdr-app", handoffTabArgs({
-          name, space: target.id, folder: worktree, argv, task,
-        }));
-        if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not open the ${label.toLowerCase()} agent`);
-        this.close();
-      } catch (error) {
-        this.state = { ...this.state, error: `${label} handoff failed: ${message(error)}` };
-      } finally {
-        this.pendingHandoffs.delete(identity);
-        this.notify(taskCx);
+    const label = kind === "ship" ? "Ship PR" : "Merge";
+    try {
+      const workspace = this.workspace();
+      const cwd = epic.attempt?.worktree || await this.rootFolder(this.spaceFolder());
+      // Re-read the exact task now: a cached or stale approval marker must
+      // never deliver a handoff. The dispatcher journal still validates it.
+      const detail = await this.exactDetail(workspace, epic, cwd);
+      const issue = mergeApprovalIssue(detail.task, detail.metadata);
+      if (issue) {
+        this.details.delete(detailCacheKey(workspace, epic.id));
+        throw new Error(`no complete durable approval (${issue}); rerun /approve`);
       }
+      const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
+      const live = liveHandoffTerminal(epic.attempt, agents(), terminals());
+      if (live) {
+        const sent = await hc(handoffSendArgs(live.address, task));
+        if (sent.code !== 0) {
+          throw new Error((sent.stderr || "").trim() || `could not send the ${label.toLowerCase()} prompt to the task agent`);
+        }
+        if (focus) this.focusAgent(live, false);
+        return { ok: true };
+      }
+      // The owning session has stopped. Keep the prompt in the task's own
+      // worktree space rather than starting a fresh agent in main.
+      const worktree = epic.attempt?.worktree ?? "";
+      const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
+      const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes());
+      if (!target?.id) {
+        throw new Error("the task agent terminal and its worktree space are unavailable; open the task agent and retry");
+      }
+      const name = kind === "ship" ? shipTabName(epic) : mergeTabName(epic);
+      const existing = (target.tabs ?? []).find((tab) => tab.name === name);
+      if (existing) {
+        // A prior handoff already owns this tab. Bulk never steals focus or
+        // re-sends a possibly running prompt; report it as already open.
+        if (!focus) return { ok: false, skipped: true };
+        run("tab.select", { id: existing.id });
+        const agent = agents().find((candidate) => candidate.tab === existing.id);
+        if (agent?.address) run("agent.focus", { terminal: agent.address });
+        this.close();
+        return { ok: true };
+      }
+      const argv = await this.handoffAgent();
+      const result = await exec("herdr-app", handoffTabArgs({
+        name, space: target.id, folder: worktree, argv, task,
+      }));
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not open the ${label.toLowerCase()} agent`);
+      if (focus) this.close();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: message(error) };
+    } finally {
+      this.pendingHandoffs.delete(identity);
+    }
+  }
+
+  handoff(epic, kind, cx, focus = true) {
+    if (!epic?.mergeable) return;
+    const identity = `${kind}\u0000${epic.id}`;
+    if (this.pendingHandoffs.has(identity)) return;
+    const label = kind === "ship" ? "Ship PR" : "Merge";
+    cx.spawn(async (taskCx) => {
+      const result = await this.handoffOne(epic, kind, focus);
+      if (result.error) this.state = { ...this.state, error: `${label} handoff failed for ${epic.ref}: ${result.error}` };
+      this.notify(taskCx);
     });
   }
+
+  // Bulk merge/ship validates and delivers each card independently. One stale
+  // approval or stopped session must not stop the rest of the selection.
+  handoffCards(cards, kind, cx) {
+    const targets = bulkTargets(cards, kind, this.state);
+    if (!targets.length) { this.notify(cx); return; }
+    const label = kind === "ship" ? "Ship PR" : "Merge";
+    cx.spawn(async (taskCx) => {
+      let sent = 0;
+      let skipped = 0;
+      const errors = [];
+      for (const card of targets) {
+        const result = await this.handoffOne(card, kind, false);
+        if (result.ok) sent += 1;
+        else if (result.skipped) skipped += 1;
+        else if (result.error) errors.push(`${card.ref}: ${result.error}`);
+      }
+      const parts = [`Sent ${sent} ${label} handoff${sent === 1 ? "" : "s"}`];
+      if (skipped) parts.push(`${skipped} skipped`);
+      if (errors.length) parts.push(`${errors.length} failed`);
+      this.notice = `${parts.join("; ")}.`;
+      if (errors.length) this.state = { ...this.state, error: `${label} handoff: ${errors.slice(0, 2).join("; ")}` };
+      this.notify(taskCx);
+    });
+  }
+
   merge(epic, cx) { this.handoff(epic, "merge", cx); }
   ship(epic, cx) { this.handoff(epic, "ship", cx); }
 
@@ -1013,6 +1068,20 @@ export default class AvenKanban extends View {
     this.archived.add(archiveKey(this.workspace(), card.id));
     setShared(ARCHIVE_SHARED, [...this.archived]);
     this.questions.delete(card.id);
+    this.retainSelection(cx);
+  }
+  // Bulk archive reuses the single-card predicate and archive key. A card that
+  // is not fully classified Done stays visible instead of disappearing under a
+  // provisional classification.
+  archiveCards(cards, cx) {
+    const targets = bulkTargets(cards, "archive", this.state);
+    if (!targets.length) { this.notify(cx); return; }
+    for (const card of targets) {
+      this.archived.add(archiveKey(this.workspace(), card.id));
+      this.questions.delete(card.id);
+    }
+    setShared(ARCHIVE_SHARED, [...this.archived]);
+    this.notice = `Archived ${plural(targets.length, "card")}.`;
     this.retainSelection(cx);
   }
   archiveAll(cx) {
@@ -1291,9 +1360,21 @@ export default class AvenKanban extends View {
   bulkBar(cx) {
     const cards = this.selectedCards();
     if (cards.length < 2) return null;
+    const merge = bulkTargets(cards, "merge", this.state);
+    const ship = bulkTargets(cards, "ship", this.state);
+    const archive = bulkTargets(cards, "archive", this.state);
     return h_flex().id("aven-kanban-bulk").w_full().flex_none().gap(8).items_center().px(10).py(6).rounded(6)
       .bg(C.raised).border(1).border_color(C.accentDim)
       .child(mono(10.5, C.accent, `${cards.length} selected`))
+      .when(merge.length > 0, (el) => el.child(this.btn(
+        "aven-kanban-bulk-merge", `Merge ${merge.length}`, "land",
+        (clickCx) => this.handoffCards(this.selectedCards(), "merge", clickCx))))
+      .when(ship.length > 0, (el) => el.child(this.btn(
+        "aven-kanban-bulk-ship", `Ship ${ship.length} PR${ship.length === 1 ? "" : "s"}`, "plain",
+        (clickCx) => this.handoffCards(this.selectedCards(), "ship", clickCx))))
+      .when(archive.length > 0, (el) => el.child(this.btn(
+        "aven-kanban-bulk-archive", `Archive ${archive.length}`, "plain",
+        (clickCx) => this.archiveCards(this.selectedCards(), clickCx))))
       .child(div().flex_1())
       .child(this.btn("aven-kanban-bulk-clear", "Clear", "plain", (clickCx) => this.clearSelection(clickCx)));
   }
