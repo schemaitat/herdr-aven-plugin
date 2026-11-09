@@ -648,7 +648,7 @@ normalises shifted letters, so `G`, `S` and `A` are installed as `shift-g`,
 | `G` (Shift-G) or `End` | Jump to the bottom of the focused column |
 | `Tab` / `Shift-Tab` | Next / previous column |
 | `1`–`5` | Jump to a column (the nearest non-empty one) |
-| `Enter` | Jump to the epic's live agent (open the epic when none) |
+| `Enter` | Focus the epic's agent; reopen a closed worktree from its saved session; open the epic when neither exists |
 | `o` | Open the selected epic in Aven |
 | `a` | Answer on a Needs you card; Archive on a Done card |
 | `A` (Shift-A) | Archive all visible Done cards |
@@ -664,9 +664,14 @@ normalises shifted letters, so `G`, `S` and `A` are installed as `shift-g`,
 The footer names the core keys. 
 
 **Answer** focuses the blocked agent's exact terminal (and its pane) so the
-question can be answered immediately. **Go to agent** selects the agent's space
-and tab and focuses it; when no live agent exists, `Enter`/`o` falls back to the
-epic's Aven TUI.
+question can be answered immediately. **Go to agent** selects the live agent's
+space and tab and focuses it. When the worktree space/tab or terminal was
+closed, `Enter`/**Go to agent** calls `aven-dispatch reopen` for the card's
+saved attempt: the dispatcher reuses or recreates the branch worktree,
+relaunches the same OpenCode session in a core terminal, reveals it, and focuses
+it without agent/model pickers or a duplicate prompt. Cards with no saved
+attempt still fall back to the epic's Aven TUI. Done and canceled cards never
+restart an agent.
 
 An approved Ready to land card shows a green **✓ ready to merge** check and
 offers **Merge** and **Ship PR**. Approval means the root task metadata contains
@@ -1143,12 +1148,16 @@ aven-dispatch list --running
 aven-dispatch list --summary --limit 500  # bounded read-only, prompt-free JSON
 aven-dispatch status HAP-XXXX
 aven-dispatch reconcile HAP-XXXX
+aven-dispatch reopen HAP-XXXX --json
 aven-dispatch interrupt HAP-XXXX
 aven-dispatch reset HAP-XXXX --dry-run
 aven-dispatch reset HAP-XXXX --yes
 ```
 
 `status` includes pending permissions and questions without approving them.
+`reopen` reuses or recreates the saved attempt's worktree and relaunches its
+durable OpenCode session without agent/model pickers; `--json` reports the
+focused terminal so the Kanban board can reveal it.
 `interrupt` stops execution without marking the task done. For direct dispatch,
 pass Aven's versioned command context on stdin; opt-in babysitting uses
 `aven-dispatch dispatch --agent select --babysitter`.

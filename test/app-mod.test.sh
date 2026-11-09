@@ -68,7 +68,7 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'jumpToColumn' 'the
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'contrastRatio' 'the board palette is contrast-tested'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'aven-kanban-help' 'the board draws a keyboard reference'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'jump to the top of the focused column' 'g is documented as the column top'
-assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'jump to the epic' 'Enter is documented as the live-agent jump'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'reopen, or open the epic' 'Enter is documented as focus, reopen, then Aven fallback'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'open the epic in Aven' 'o is documented as the explicit Aven open action'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'focused ? C.accent : C.line' 'the focused column is marked'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'agent.focus' 'Enter can focus a live agent'

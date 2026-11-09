@@ -7,7 +7,9 @@ use crate::{
             ensure_attempt_current, ensure_log_task, refresh_task_by_ref, write_aven_links,
             write_debug_event,
         },
+        lifecycle::{ensure_pending_admission_open, validate_dispatch_target},
         phases::advance_worktree_phases,
+        reopen_existing,
         reset::{
             attempt_session_ids, interrupt_and_drain_sessions, refresh_attempt_execution_state,
         },
@@ -66,6 +68,80 @@ pub(crate) fn status(path: PathBuf, task: &str, workflow: Option<&str>) -> Resul
             &json!({"attempt": attempt, "session": snapshot, "pending_permissions": permissions, "pending_forms": forms})
         )?
     );
+    Ok(())
+}
+
+/// Reopen a saved attempt's detached worktree and OpenCode session without
+/// running the interactive agent/model pickers. The caller is responsible for
+/// user intent; every identity and lifecycle fence still runs here.
+pub(crate) fn reopen(path: PathBuf, task: &str, workflow: Option<&str>, json: bool) -> Result<()> {
+    let existing = {
+        let store = LockedStore::open(path.clone())?;
+        find_attempt(&store, task, workflow)?.clone()
+    };
+    if attempt_is_legacy(&existing) {
+        bail!(
+            "attempt {} was created by the retired herdr runtime; run `aven-dispatch dispatch --relaunch` to move its durable OpenCode session to herdr-core",
+            existing.attempt_id
+        );
+    }
+    if existing.session_id.is_empty() {
+        bail!(
+            "attempt {} has no durable OpenCode session to reopen",
+            existing.attempt_id
+        );
+    }
+    let origin = if existing.aven.origin_cwd.is_empty() {
+        existing.worktree.clone()
+    } else {
+        existing.aven.origin_cwd.clone()
+    };
+    if origin.is_empty() {
+        bail!(
+            "attempt {} has no origin checkout to reopen its worktree from",
+            existing.attempt_id
+        );
+    }
+    let task_json = refresh_task_by_ref(&existing.aven, &existing.task_ref)?;
+    validate_dispatch_target(&task_json, &existing.task_id, &existing.aven)?;
+    ensure_attempt_current(&task_json, &existing)?;
+    ensure_pending_admission_open(&task_json, &existing)?;
+    let title = task_json
+        .pointer("/task/title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let terminal = reopen_existing(
+        existing,
+        &task_json,
+        &origin,
+        &title,
+        path.clone(),
+        None,
+        None,
+        None,
+        None,
+        false,
+        !json,
+    )?;
+    if json {
+        let reopened = {
+            let store = LockedStore::open(path)?;
+            find_attempt(&store, task, workflow)?.clone()
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "task_id": reopened.task_id,
+                "task_ref": reopened.task_ref,
+                "attempt_id": reopened.attempt_id,
+                "workflow": reopened.workflow,
+                "worktree": reopened.worktree,
+                "session_id": reopened.session_id,
+                "terminal": terminal,
+            }))?
+        );
+    }
     Ok(())
 }
 

@@ -5,7 +5,7 @@ import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, CREATED_FILTERS, DISPATCH_ACTIONS, SUMMARY_LABEL, archiveKey, assertBoardCoverage, blockedAddress,
   boardStats, buildBoard, cardArchiveable, detailArgs, detailCacheKey, detailIsCurrent, detailNeedsRefresh, dispatchTerminalName,
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
-  isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
+  isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress, reopenTarget,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDetail,
@@ -97,6 +97,7 @@ export default class AvenKanban extends View {
     this.hasSettledBoard = false;
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
+    this.reopening = "";
     // Navigation and archive presses that arrive before classification settles
     // are replayed against the authoritative board, so a provisional frame
     // cannot move the selection to a card that later changes column.
@@ -588,7 +589,9 @@ export default class AvenKanban extends View {
     const attempts = card.relatedAttempts?.length ? card.relatedAttempts : (card.attempt ? [card.attempt] : []);
     const addresses = card.column === "needs_you"
       ? [blockedAddress(attempts, this.state.liveAgents)].filter(Boolean)
-      : attempts.map((attempt) => attempt.terminal?.address).filter(Boolean);
+      // A worktree coordinator records its terminal on the coordinator side,
+      // while a single-session builder records the build terminal.
+      : attempts.flatMap((attempt) => [attempt.terminal?.address, attempt.coordinatorTerminal?.address]).filter(Boolean);
     // Live lookups leave the JS sandbox; use the snapshot taken at the start of
     // this render instead of asking the app once per card.
     for (const address of addresses) {
@@ -667,6 +670,43 @@ export default class AvenKanban extends View {
     this.focusAgent(agent, false);
     return true;
   }
+  // Enter reaches the card's current agent: focus a live one, reopen a closed
+  // worktree from its durable session, or fall back to the epic in Aven.
+  go(card, cx) {
+    if (this.jumpToAgent(card)) return;
+    if (this.reopenAgent(card, cx)) return;
+    this.open(card, cx);
+  }
+  reopenAgent(card, cx) {
+    const target = reopenTarget(card);
+    if (!target) return false;
+    const identity = `reopen\u0000${target.attemptId}`;
+    if (this.pendingLaunches.has(identity)) return true;
+    this.pendingLaunches.add(identity);
+    this.reopening = card.ref;
+    this.state = { ...this.state, error: "" };
+    this.notify(cx);
+    cx.spawn(async (taskCx) => {
+      try {
+        const args = ["reopen", target.ref, "--json"];
+        if (target.workflow) args.push("--workflow", target.workflow);
+        const result = await exec("aven-dispatch", args);
+        const payload = parse(result, `Reopen ${target.ref}`);
+        const address = String(payload?.terminal ?? "");
+        if (!address) throw new Error(`Reopen ${target.ref} returned no terminal`);
+        await this.reveal(address, taskCx);
+      } catch (error) {
+        this.state = { ...this.state, error: message(error) };
+        // Reopening failed; the epic's Aven TUI is still the safe fallback.
+        this.open(card, taskCx);
+      } finally {
+        this.pendingLaunches.delete(identity);
+        this.reopening = "";
+        this.notify(taskCx);
+      }
+    });
+    return true;
+  }
   answerSelected(cx) {
     const card = this.selected();
     if (!card) { this.notify(cx); return; }
@@ -676,8 +716,7 @@ export default class AvenKanban extends View {
   }
   goSelected(cx) {
     const card = this.selected();
-    if (card && this.jumpToAgent(card)) return;
-    this.openSelected(cx);
+    if (card) this.go(card, cx);
   }
   shipSelected(cx) { const card = this.selected(); if (card) this.ship(card, cx); }
   archiveSelected(cx) {
@@ -692,8 +731,9 @@ export default class AvenKanban extends View {
     else this.notify(cx);
   }
 
-  // o is the explicit "open in Aven" action. Enter jumps to a live agent via
-  // goSelected and only falls back to opening the epic when there is none.
+  // o is the explicit "open in Aven" action. Enter jumps to the card's agent
+  // via goSelected, reopening a closed worktree from its durable attempt, and
+  // only falls back to opening the epic when there is no saved agent to reach.
   openSelected(cx) {
     const card = this.selected();
     if (card) this.open(card, cx);
@@ -992,7 +1032,7 @@ export default class AvenKanban extends View {
     if (card.column === "needs_you") {
       return h_flex().flex_wrap().gap(6)
         .child(this.btn(`aven-kanban-answer-${card.id}`, "Answer", "you", () => this.answer(card)))
-        .child(this.btn(`aven-kanban-go-${card.id}`, "Go to agent", "plain", () => this.jumpToAgent(card)));
+        .child(this.btn(`aven-kanban-go-${card.id}`, "Go to agent", "plain", (clickCx) => this.go(card, clickCx)));
     }
     if (card.column === "done") {
       return h_flex().flex_wrap().gap(6)
@@ -1004,8 +1044,8 @@ export default class AvenKanban extends View {
       actions.push(this.btn(`aven-kanban-merge-${card.id}`, "Merge", "land", (clickCx) => this.merge(card, clickCx)));
       actions.push(this.btn(`aven-kanban-ship-${card.id}`, "Ship PR", "plain", (clickCx) => this.ship(card, clickCx)));
     }
-    if (this.relatedAgent(card)?.address) {
-      actions.push(this.btn(`aven-kanban-go-${card.id}`, "Go to agent", "plain", () => this.jumpToAgent(card)));
+    if (this.relatedAgent(card)?.address || reopenTarget(card)) {
+      actions.push(this.btn(`aven-kanban-go-${card.id}`, "Go to agent", "plain", (clickCx) => this.go(card, clickCx)));
     }
     if (open) {
       actions.push(this.btn(`aven-kanban-dispatch-${card.id}`, menuOpen ? "Dispatch ⌃" : "Dispatch ⌄", "plain", (clickCx) => {
@@ -1154,7 +1194,7 @@ export default class AvenKanban extends View {
           .child(question ? `${card.ref} asks: “${question}”` : `${card.ref} needs you: ${card.title}`))
         .child(mono(10, C.muted, [card.project, this.cardWhen(card)].filter(Boolean).join(" · "))))
       .child(this.btn("aven-kanban-next-answer", "Answer  ⏎", "you", () => this.answer(card)))
-      .child(this.btn("aven-kanban-next-go", "Go to agent", "plain", () => this.jumpToAgent(card)));
+      .child(this.btn("aven-kanban-next-go", "Go to agent", "plain", (clickCx) => this.go(card, clickCx)));
   }
 
   filterChip(id, label, count, alert, cx) {
@@ -1226,6 +1266,7 @@ export default class AvenKanban extends View {
         .children(next ? [this.banner(next, cx)] : [])
         .when(Boolean(this.state.error), (el) => el.child(mono(10, C.red, `Aven: ${this.state.error}`)))
         .when(Boolean(this.state.coverageError), (el) => el.child(mono(10, C.red, `Incomplete metadata: ${this.state.coverageError}`)))
+        .when(Boolean(this.reopening), (el) => el.child(mono(9.5, C.dim, `Reopening ${this.reopening}'s agent session…`)))
         .when(this.state.enriching, (el) => el.child(mono(9.5, C.dim, "Cards are visible now; loading epic metadata and plan badges…")))
         .when(this.state.evidencePending, (el) => el.child(mono(9.5, C.dim, "Checking local main for delivered work…")))
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
@@ -1255,7 +1296,7 @@ export default class AvenKanban extends View {
         ["1 – 5", "jump to a column"],
       ]],
       ["Actions", [
-        ["Enter", "jump to the epic's live agent (Open when none)"],
+        ["Enter", "focus, reopen, or open the epic's agent"],
         ["o", "open the epic in Aven"],
         ["a", "answer a Needs you card / archive a Done card"],
         ["Shift-A", "archive all visible Done cards"],
