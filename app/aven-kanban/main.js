@@ -10,8 +10,8 @@ import {
   landedWeek, landedWeekTotal, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDeleteOutcome, safeDetail,
-  selectAttempt, selectedCard, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
-  progressPublishDue,
+  selectAttempt, selectedCard, selectionAfterClick, selectionCards, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
+  pruneSelection, bulkTargets, progressPublishDue,
 } from "./logic.js";
 
 const REFRESH_MS = 10000;
@@ -137,6 +137,7 @@ export default class AvenKanban extends View {
     const storedArchive = shared(ARCHIVE_SHARED);
     this.archived = new Set(Array.isArray(storedArchive) ? storedArchive.filter((value) => typeof value === "string") : []);
     this.selectedId = "";
+    this.selectedIds = [];
     this.summaryCardId = "";
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
@@ -219,7 +220,20 @@ export default class AvenKanban extends View {
     if (this.helpOpen) { this.helpOpen = false; this.notify(cx); }
     else if (this.deleteConfirmId) { this.deleteConfirmId = ""; this.notify(cx); }
     else if (this.dispatchMenuEpicId) { this.dispatchMenuEpicId = null; this.notify(cx); }
+    else if (this.selectedIds.length > 1) this.clearSelection(cx);
     else this.close();
+  }
+
+  // Keyboard focus is always exactly one card, so navigation collapses a
+  // multi-selection back to the card the person is moving through.
+  focusSelection(id) {
+    this.selectedId = String(id ?? "");
+    this.selectedIds = this.selectedId ? [this.selectedId] : [];
+  }
+
+  clearSelection(cx) {
+    this.selectedIds = this.selectedId ? [this.selectedId] : [];
+    this.notify(cx);
   }
 
   toggleHelp(cx) {
@@ -229,21 +243,21 @@ export default class AvenKanban extends View {
   }
 
   selectColumn(delta, cx) {
-    this.selectedId = moveColumn(this.columns(), this.selectedId, delta);
+    this.focusSelection(moveColumn(this.columns(), this.selectedId, delta));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   selectEdge(last, cx) {
-    this.selectedId = moveEdge(this.columns(), this.selectedId, last);
+    this.focusSelection(moveEdge(this.columns(), this.selectedId, last));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
   }
 
   jumpColumn(index, cx) {
-    this.selectedId = jumpToColumn(this.columns(), this.selectedId, index);
+    this.focusSelection(jumpToColumn(this.columns(), this.selectedId, index));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
@@ -385,6 +399,7 @@ export default class AvenKanban extends View {
     for (let index = 0; index < Math.abs(moves); index += 1) {
       this.selectedId = moveSelection(this.columns(), this.selectedId, step);
     }
+    if (moves) this.focusSelection(this.selectedId);
     this.retainSelection(cx);
     if (archiveId) {
       const card = archiveId === "*" ? this.selected() : selectedCard(this.columns(), archiveId);
@@ -581,9 +596,17 @@ export default class AvenKanban extends View {
     return filterBoardByProject(this.boardColumns(), this.projectFilter);
   }
   selected(columns = this.columns()) { return selectedCard(columns, this.selectedId); }
+  selectedCards(columns = this.columns()) { return selectionCards(columns, this.selectedIds); }
   retainSelection(cx) {
     const columns = this.columns();
-    this.selectedId = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
+    // Keep a multi-selection across refreshes, but only for cards the drawn
+    // board still contains. Filters, archives, and deletes prune it here.
+    this.selectedIds = pruneSelection(this.selectedIds, columns);
+    if (!this.selectedIds.length) {
+      const fallback = selectedCard(columns, this.selectedId)?.id ?? moveSelection(columns, "", 1);
+      this.selectedIds = fallback ? [fallback] : [];
+    }
+    if (!this.selectedIds.includes(this.selectedId)) this.selectedId = this.selectedIds.at(-1) ?? "";
     if (this.deleteConfirmId && !selectedCard(columns, this.deleteConfirmId)) this.deleteConfirmId = "";
     this.notify(cx);
   }
@@ -639,14 +662,18 @@ export default class AvenKanban extends View {
       this.pendingMoves += delta;
       return;
     }
-    this.selectedId = moveSelection(this.columns(), this.selectedId, delta);
+    this.focusSelection(moveSelection(this.columns(), this.selectedId, delta));
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
   }
 
-  selectCard(card, cx) {
-    this.selectedId = card.id;
+  selectCard(card, cx, additive = false) {
+    const next = selectionAfterClick(this.selectedIds, card.id, additive);
+    this.selectedIds = next;
+    // The last card toggled on owns keyboard focus; removing it falls back to
+    // the most recently added remaining card.
+    this.selectedId = next.includes(card.id) ? card.id : (next.at(-1) ?? "");
     this.dispatchMenuEpicId = null;
     this.deleteConfirmId = "";
     this.notify(cx);
@@ -821,8 +848,15 @@ export default class AvenKanban extends View {
     const card = this.selected();
     if (card) this.go(card, cx);
   }
-  shipSelected(cx) { const card = this.selected(); if (card) this.ship(card, cx); }
+  shipSelected(cx) {
+    const cards = this.selectedCards();
+    if (cards.length > 1) { this.handoffCards(cards, "ship", cx); return; }
+    const card = this.selected();
+    if (card) this.ship(card, cx);
+  }
   archiveSelected(cx) {
+    const cards = this.selectedCards();
+    if (cards.length > 1) { this.archiveCards(cards, cx); return; }
     if (!this.settled()) {
       // The moves that precede this press are still queued; archive whatever
       // the authoritative board selects after replaying them.
@@ -846,7 +880,12 @@ export default class AvenKanban extends View {
     const action = DISPATCH_ACTIONS.find((candidate) => candidate.id === actionId);
     if (card && action) this.dispatch(card, action, cx);
   }
-  mergeSelected(cx) { const card = this.selected(); if (card) this.merge(card, cx); }
+  mergeSelected(cx) {
+    const cards = this.selectedCards();
+    if (cards.length > 1) { this.handoffCards(cards, "merge", cx); return; }
+    const card = this.selected();
+    if (card) this.merge(card, cx);
+  }
   toggleDispatch(cx) {
     const card = this.selected();
     if (!card || card.status === "done" || card.status === "canceled") return;
@@ -978,64 +1017,107 @@ export default class AvenKanban extends View {
   // that agent. Only when its terminal is gone does the board open a tab in the
   // task's worktree space. It never starts an agent in the primary checkout and
   // never mutates Git itself.
-  handoff(epic, kind, cx) {
+  //
+  // `focus` is false for a bulk batch: the prompts still go to each owning
+  // session, but the board stays open instead of jumping to the first one.
+  async handoffOne(epic, kind, focus = true) {
+    if (!epic?.mergeable) return { ok: false, skipped: true };
     const identity = `${kind}\u0000${epic.id}`;
-    if (!epic.mergeable || this.pendingHandoffs.has(identity)) return;
+    if (this.pendingHandoffs.has(identity)) return { ok: false, skipped: true };
     this.pendingHandoffs.add(identity);
-    cx.spawn(async (taskCx) => {
-      const label = kind === "ship" ? "Ship PR" : "Merge";
-      try {
-        const workspace = this.workspace();
-        const cwd = epic.attempt?.worktree || await this.rootFolder(this.spaceFolder());
-        // Re-read the exact task now: a cached or stale approval marker must
-        // never deliver a handoff. The dispatcher journal still validates it.
-        const detail = await this.exactDetail(workspace, epic, cwd);
-        const issue = mergeApprovalIssue(detail.task, detail.metadata);
-        if (issue) {
-          this.details.delete(detailCacheKey(workspace, epic.id));
-          throw new Error(`${epic.ref} has no complete durable approval (${issue}); rerun /approve.`);
-        }
-        const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
-        const live = liveHandoffTerminal(epic.attempt, agents(), terminals());
-        if (live) {
-          const sent = await hc(handoffSendArgs(live.address, task));
-          if (sent.code !== 0) {
-            throw new Error((sent.stderr || "").trim() || `could not send the ${label.toLowerCase()} prompt to the task agent`);
-          }
-          this.focusAgent(live, false);
-          return;
-        }
-        // The owning session has stopped. Keep the prompt in the task's own
-        // worktree space rather than starting a fresh agent in main.
-        const worktree = epic.attempt?.worktree ?? "";
-        const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
-        const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes());
-        if (!target?.id) {
-          throw new Error("the task agent terminal and its worktree space are unavailable; open the task agent and retry");
-        }
-        const name = kind === "ship" ? shipTabName(epic) : mergeTabName(epic);
-        const existing = (target.tabs ?? []).find((tab) => tab.name === name);
-        if (existing) {
-          run("tab.select", { id: existing.id });
-          const agent = agents().find((candidate) => candidate.tab === existing.id);
-          if (agent?.address) run("agent.focus", { terminal: agent.address });
-          this.close();
-          return;
-        }
-        const argv = await this.handoffAgent();
-        const result = await exec("herdr-app", handoffTabArgs({
-          name, space: target.id, folder: worktree, argv, task,
-        }));
-        if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not open the ${label.toLowerCase()} agent`);
-        this.close();
-      } catch (error) {
-        this.state = { ...this.state, error: `${label} handoff failed: ${message(error)}` };
-      } finally {
-        this.pendingHandoffs.delete(identity);
-        this.notify(taskCx);
+    const label = kind === "ship" ? "Ship PR" : "Merge";
+    try {
+      const workspace = this.workspace();
+      const cwd = epic.attempt?.worktree || await this.rootFolder(this.spaceFolder());
+      // Re-read the exact task now: a cached or stale approval marker must
+      // never deliver a handoff. The dispatcher journal still validates it.
+      const detail = await this.exactDetail(workspace, epic, cwd);
+      const issue = mergeApprovalIssue(detail.task, detail.metadata);
+      if (issue) {
+        this.details.delete(detailCacheKey(workspace, epic.id));
+        throw new Error(`no complete durable approval (${issue}); rerun /approve`);
       }
+      const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
+      const live = liveHandoffTerminal(epic.attempt, agents(), terminals());
+      if (live) {
+        const sent = await hc(handoffSendArgs(live.address, task));
+        if (sent.code !== 0) {
+          throw new Error((sent.stderr || "").trim() || `could not send the ${label.toLowerCase()} prompt to the task agent`);
+        }
+        if (focus) this.focusAgent(live, false);
+        return { ok: true };
+      }
+      // The owning session has stopped. Keep the prompt in the task's own
+      // worktree space rather than starting a fresh agent in main.
+      const worktree = epic.attempt?.worktree ?? "";
+      const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
+      const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes());
+      if (!target?.id) {
+        throw new Error("the task agent terminal and its worktree space are unavailable; open the task agent and retry");
+      }
+      const name = kind === "ship" ? shipTabName(epic) : mergeTabName(epic);
+      const existing = (target.tabs ?? []).find((tab) => tab.name === name);
+      if (existing) {
+        // A prior handoff already owns this tab. Bulk never steals focus or
+        // re-sends a possibly running prompt; report it as already open.
+        if (!focus) return { ok: false, skipped: true };
+        run("tab.select", { id: existing.id });
+        const agent = agents().find((candidate) => candidate.tab === existing.id);
+        if (agent?.address) run("agent.focus", { terminal: agent.address });
+        this.close();
+        return { ok: true };
+      }
+      const argv = await this.handoffAgent();
+      const result = await exec("herdr-app", handoffTabArgs({
+        name, space: target.id, folder: worktree, argv, task,
+      }));
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not open the ${label.toLowerCase()} agent`);
+      if (focus) this.close();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: message(error) };
+    } finally {
+      this.pendingHandoffs.delete(identity);
+    }
+  }
+
+  handoff(epic, kind, cx, focus = true) {
+    if (!epic?.mergeable) return;
+    const identity = `${kind}\u0000${epic.id}`;
+    if (this.pendingHandoffs.has(identity)) return;
+    const label = kind === "ship" ? "Ship PR" : "Merge";
+    cx.spawn(async (taskCx) => {
+      const result = await this.handoffOne(epic, kind, focus);
+      if (result.error) this.state = { ...this.state, error: `${label} handoff failed for ${epic.ref}: ${result.error}` };
+      this.notify(taskCx);
     });
   }
+
+  // Bulk merge/ship validates and delivers each card independently. One stale
+  // approval or stopped session must not stop the rest of the selection.
+  handoffCards(cards, kind, cx) {
+    const targets = bulkTargets(cards, kind, this.state);
+    if (!targets.length) { this.notify(cx); return; }
+    const label = kind === "ship" ? "Ship PR" : "Merge";
+    cx.spawn(async (taskCx) => {
+      let sent = 0;
+      let skipped = 0;
+      const errors = [];
+      for (const card of targets) {
+        const result = await this.handoffOne(card, kind, false);
+        if (result.ok) sent += 1;
+        else if (result.skipped) skipped += 1;
+        else if (result.error) errors.push(`${card.ref}: ${result.error}`);
+      }
+      const parts = [`Sent ${sent} ${label} handoff${sent === 1 ? "" : "s"}`];
+      if (skipped) parts.push(`${skipped} skipped`);
+      if (errors.length) parts.push(`${errors.length} failed`);
+      this.notice = `${parts.join("; ")}.`;
+      if (errors.length) this.state = { ...this.state, error: `${label} handoff: ${errors.slice(0, 2).join("; ")}` };
+      this.notify(taskCx);
+    });
+  }
+
   merge(epic, cx) { this.handoff(epic, "merge", cx); }
   ship(epic, cx) { this.handoff(epic, "ship", cx); }
 
@@ -1051,6 +1133,20 @@ export default class AvenKanban extends View {
     this.archived.add(archiveKey(this.workspace(), card.id));
     setShared(ARCHIVE_SHARED, [...this.archived]);
     this.questions.delete(card.id);
+    this.retainSelection(cx);
+  }
+  // Bulk archive reuses the single-card predicate and archive key. A card that
+  // is not fully classified Done stays visible instead of disappearing under a
+  // provisional classification.
+  archiveCards(cards, cx) {
+    const targets = bulkTargets(cards, "archive", this.state);
+    if (!targets.length) { this.notify(cx); return; }
+    for (const card of targets) {
+      this.archived.add(archiveKey(this.workspace(), card.id));
+      this.questions.delete(card.id);
+    }
+    setShared(ARCHIVE_SHARED, [...this.archived]);
+    this.notice = `Archived ${plural(targets.length, "card")}.`;
     this.retainSelection(cx);
   }
   archiveAll(cx) {
@@ -1078,7 +1174,7 @@ export default class AvenKanban extends View {
   // button) deletes. Selection changes, Esc, and opening help disarm it.
   confirmDeleteCard(card, cx) {
     if (!card?.id || this.deleting) return;
-    this.selectedId = card.id;
+    this.focusSelection(card.id);
     this.dispatchMenuEpicId = null;
     this.helpOpen = false;
     if (this.deleteConfirmId === card.id) {
@@ -1110,6 +1206,7 @@ export default class AvenKanban extends View {
         this.forgetDeleted(ids);
         this.state = { ...this.state, rows: this.state.rows.filter((row) => !removed.has(row.id)), error: "" };
         this.selectedId = "";
+        this.selectedIds = [];
         this.notice = `Deleted ${plural(outcome?.tasks.length || ids.length, "task")}${
           outcome?.attemptsRemoved ? ` and removed ${plural(outcome.attemptsRemoved, "dispatch attempt")}` : ""}.`;
         this.retainSelection(taskCx);
@@ -1130,6 +1227,9 @@ export default class AvenKanban extends View {
       this.details.delete(detailCacheKey(workspace, id));
       this.questions.delete(id);
     }
+    const removed = new Set(ids);
+    this.selectedIds = this.selectedIds.filter((id) => !removed.has(id));
+    if (removed.has(this.selectedId)) this.selectedId = this.selectedIds.at(-1) ?? "";
     if (archiveChanged) setShared(ARCHIVE_SHARED, [...this.archived]);
     if (this.summaryCardId && ids.includes(this.summaryCardId)) this.summaryCardId = "";
     if (this.dispatchMenuEpicId && ids.includes(this.dispatchMenuEpicId)) this.dispatchMenuEpicId = null;
@@ -1243,7 +1343,7 @@ export default class AvenKanban extends View {
     }
     if (open) {
       actions.push(this.btn(`aven-kanban-dispatch-${card.id}`, menuOpen ? "Dispatch ⌃" : "Dispatch ⌄", "plain", (clickCx) => {
-        this.selectedId = card.id;
+        this.focusSelection(card.id);
         this.dispatchMenuEpicId = this.dispatchMenuEpicId === card.id ? null : card.id;
         this.notify(clickCx);
       }));
@@ -1254,7 +1354,8 @@ export default class AvenKanban extends View {
   }
 
   card(card, cx) {
-    const selected = card.id === this.selectedId;
+    const selected = this.selectedIds.includes(card.id) || card.id === this.selectedId;
+    const multiSelected = this.selectedIds.length > 1 && this.selectedIds.includes(card.id);
     const summaryOpen = this.summaryCardId === card.id;
     const stop = (_event, clickCx) => clickCx.stop_propagation();
     const columnTone = TONES[BOARD_COLUMNS.find((column) => column.id === card.column)?.tone ?? "dim"] ?? C.dim;
@@ -1262,12 +1363,17 @@ export default class AvenKanban extends View {
     return div().id(`aven-kanban-card-${card.id}`).w_full().flex_none().flex().flex_row().rounded(6).overflow_hidden()
       .bg(card.column === "needs_you" ? C.youCard : C.card).border(1).border_color(selected ? C.accent : C.line)
       .cursor_pointer().hover((style) => style.bg(C.hover))
-      .on_click((_event, clickCx) => this.selectCard(card, clickCx ?? cx))
+      .on_click((event, clickCx) => this.selectCard(
+        card,
+        clickCx ?? cx,
+        Boolean(event?.modifiers?.control || event?.modifiers?.platform),
+      ))
       .child(div().w(3).flex_none().bg(columnTone))
       .child(v_flex().flex_1().min_w(0).px(10).py(8).gap(4)
         .child(h_flex().w_full().gap(6).items_center()
           .child(this.glyph(card))
           .child(this.projectChip(card.project))
+          .when(multiSelected, (el) => el.child(mono(10, C.accent, "✓")))
           .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(10.5).text_color(C.dim).child(card.ref))
           .child(mono(10, whenColor, this.cardWhen(card))))
         .child(div().font_family(SANS).text_size(12.5).text_color(C.text).child(card.title))
@@ -1311,6 +1417,31 @@ export default class AvenKanban extends View {
         .when(card.warnings.length > 0, (el) => el.child(mono(9.5, C.red, card.warnings.join(" "))))
         .child(this.cardActions(card, cx))
         .when(this.dispatchMenuEpicId === card.id, (el) => el.child(this.dispatchMenu(card, cx))));
+  }
+
+  // Multi-select is a board mode, not a hidden modifier: the bar names the
+  // selection and shows only the actions that the existing per-card rules make
+  // applicable. It stays absent for the ordinary single-card workflow.
+  bulkBar(cx) {
+    const cards = this.selectedCards();
+    if (cards.length < 2) return null;
+    const merge = bulkTargets(cards, "merge", this.state);
+    const ship = bulkTargets(cards, "ship", this.state);
+    const archive = bulkTargets(cards, "archive", this.state);
+    return h_flex().id("aven-kanban-bulk").w_full().flex_none().gap(8).items_center().px(10).py(6).rounded(6)
+      .bg(C.raised).border(1).border_color(C.accentDim)
+      .child(mono(10.5, C.accent, `${cards.length} selected`))
+      .when(merge.length > 0, (el) => el.child(this.btn(
+        "aven-kanban-bulk-merge", `Merge ${merge.length}`, "land",
+        (clickCx) => this.handoffCards(this.selectedCards(), "merge", clickCx))))
+      .when(ship.length > 0, (el) => el.child(this.btn(
+        "aven-kanban-bulk-ship", `Ship ${ship.length} PR${ship.length === 1 ? "" : "s"}`, "plain",
+        (clickCx) => this.handoffCards(this.selectedCards(), "ship", clickCx))))
+      .when(archive.length > 0, (el) => el.child(this.btn(
+        "aven-kanban-bulk-archive", `Archive ${archive.length}`, "plain",
+        (clickCx) => this.archiveCards(this.selectedCards(), clickCx))))
+      .child(div().flex_1())
+      .child(this.btn("aven-kanban-bulk-clear", "Clear", "plain", (clickCx) => this.clearSelection(clickCx)));
   }
 
   column(column, cx, focused = false) {
@@ -1431,6 +1562,7 @@ export default class AvenKanban extends View {
     const allStats = boardStats(board);
     const next = nextMove(columns);
     const focusedColumn = this.selected(columns)?.column ?? "";
+    const bulk = this.bulkBar(cx);
     const keyCommands = {
       escape: "close", j: "next", down: "next", k: "previous", up: "previous",
       h: "column-previous", left: "column-previous", l: "column-next", right: "column-next",
@@ -1465,8 +1597,9 @@ export default class AvenKanban extends View {
         .when(this.state.evidencePending, (el) => el.child(mono(9.5, C.dim, "Checking local main for delivered work…")))
         .when(this.state.stale, (el) => el.child(mono(9.5, C.dim, "Showing last successful results (stale).")))
         .child(this.chips(board, allStats, cx))
+        .children(bulk ? [bulk] : [])
         .child(h_flex().w_full().flex_none().gap(8).items_center()
-          .child(mono(10, C.dim, "j/k card · h/l column · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · D delete · d dispatch · ? keys"))
+          .child(mono(10, C.dim, "j/k card · h/l column · 1–5 column · ⏎ agent · o open · a answer · u summary · S ship · m merge · D delete · d dispatch · ctrl-click multi-select · ? keys"))
           .child(div().flex_1())
           .child(mono(10, C.dim, `${stats.total} of ${allStats.total} epics`)))
         .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
@@ -1508,6 +1641,7 @@ export default class AvenKanban extends View {
       ["Navigation", [
         ["j / k  ↓ / ↑", "next / previous card in the focused column"],
         ["h / l  ← / →", "previous / next non-empty column"],
+        ["Ctrl/⌘-click", "add or remove a card from the multi-selection"],
         ["g  Home", "jump to the top of the focused column"],
         ["Shift-G  End", "jump to the bottom of the focused column"],
         ["Tab / Shift-Tab", "next / previous column"],
@@ -1521,11 +1655,12 @@ export default class AvenKanban extends View {
         ["Shift-S", "ship a PR from the approved card's task agent"],
         ["Shift-D  Del", "delete the selected epic, its child tasks, and their dispatch state"],
         ["m", "merge an approved card in its task agent"],
+        ["m / Shift-S / x", "bulk merge / ship / archive when several cards are selected"],
         ["d", "toggle Dispatch"],
         ["u", "expand or collapse the LLM summary"],
         ["s / p / i", "plan-and-implement / plan / implement"],
         ["r", "refresh"],
-        ["Esc", "close help, Dispatch, then the board"],
+        ["Esc", "clear a multi-selection, close help or Dispatch, then the board"],
       ]],
     ];
     return v_flex().id("aven-kanban-help").absolute().top(50).right(16).w(520).p(16).gap(10).rounded(8)
