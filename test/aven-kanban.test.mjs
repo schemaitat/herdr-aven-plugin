@@ -9,8 +9,8 @@ import {
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
-  projectChips, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName, summaryDigest, summaryNeeded,
-  summaryState, taskSummary, terminalName, upcomingArgs,
+  projectChips, refreshMayPublishProgress, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName,
+  summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
 } from "../app/aven-kanban/logic.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
@@ -24,6 +24,15 @@ assert.match(kanbanSource, /refreshButton\(cx\)/, "the top bar uses the stable r
 assert.match(kanbanSource, /aven-kanban-refresh-spinner/, "the refresh control owns a fixed spinner slot");
 assert.match(kanbanSource, /w\(8\)\.h\(8\)\.flex_none\(\)/, "the spinner slot keeps a constant size");
 assert.match(kanbanSource, /child\("Refresh"\)/, "the refresh label is constant");
+
+// A settled board must be replaced atomically: intermediate hydration and
+// ancestry publishes would flip merged/main badges while the refresh runs.
+assert.equal(refreshMayPublishProgress(false), true, "the first paint may enrich progressively");
+assert.equal(refreshMayPublishProgress(true), false, "a settled board is replaced atomically");
+assert.match(kanbanSource, /const progressive = refreshMayPublishProgress\(this\.hasSettledBoard\)/);
+assert.match(kanbanSource, /if \(progressive\) this\.publishRows/);
+assert.match(kanbanSource, /this\.mainMerged = mainEvidence\.merged;/);
+assert.match(kanbanSource, /this\.hasSettledBoard = true;/);
 
 const rawEpic = (id, status = "todo", extra = {}) => ({
   id, ref: `HAP-${id}`, title: `Epic ${id}`, project: "herdr-aven-plugin", status,

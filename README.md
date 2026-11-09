@@ -681,7 +681,10 @@ control.
 
 Refresh is non-overlapping. The top-bar **Refresh** control keeps a constant
 label and a reserved spinner slot, so starting or finishing a refresh never
-reflows the toolbar or moves the adjacent `Esc` hint. Full Aven metadata is
+reflows the toolbar or moves the adjacent `Esc` hint. Once a board is visible,
+a refresh stages all metadata reads and local-main evidence and replaces the
+board in one publish; merged/main badges and columns never flicker through
+provisional states while the read is in flight. Full Aven metadata is
 cached by immutable epic ID
 and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
 the merged epic set, and dispatcher attempts. Dispatcher reads use read-only,

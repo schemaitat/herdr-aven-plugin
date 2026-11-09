@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make Kanban refreshes atomic once the board is visible: hydration and
+  local-main delivery evidence are staged off-screen and the board is replaced
+  in one publish, so **on main** badges and columns no longer flicker while a
+  refresh is running. The first paint still enriches progressively.
 - Keep the Kanban **Refresh** control geometrically stable: the label stays
   `Refresh` and a fixed-size spinner slot is always reserved, so timer and
   manual refreshes no longer reflow the top bar or move adjacent text.

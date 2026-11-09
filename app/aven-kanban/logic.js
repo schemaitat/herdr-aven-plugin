@@ -260,6 +260,13 @@ export function enrichmentPending(state) {
   return state?.enriching === true || state?.evidencePending === true;
 }
 
+// A first paint may enrich progressively while no board exists yet. Refreshing
+// an already-settled board instead stages hydration and delivery evidence and
+// publishes once, so merged badges cannot flicker mid-refresh.
+export function refreshMayPublishProgress(hasSettledBoard) {
+  return !hasSettledBoard;
+}
+
 export function cardArchiveable(card, state) {
   return card?.column === "done" && card?.hydrated === true && !enrichmentPending(state);
 }
