@@ -1158,7 +1158,7 @@ initiates a merge. These low-level commands back the slash workflows:
 ```sh
 # From the final worktree; checks are trusted, explicit shell commands via hc.
 aven-dispatch approve <task-id> --workflow implementation \
-  --check 'just test' --check 'just check' --review 'Acceptance and diff reviewed'
+  --check 'just test-all' --check 'just check' --review 'Acceptance and diff reviewed'
 # From main (also works from another checkout of the same repository):
 aven-dispatch merge <task-id> <task-id> --yes
 # Recover operation identities after a tool timeout/restart (read-only):
@@ -1362,21 +1362,39 @@ retained approved plan can be dispatched again without duplicate planning.
 ## Development
 
 ```sh
-just fmt       # Check Rust formatting
-just check     # Compile checks
-just test      # Rust unit tests and shell/integration fixtures
-just test-e2e  # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
-just app-test  # Node 24 Kanban and right-panel model/tabs fixtures
-just app-check # herdr-app check all optional Aven mods
+just fmt        # Check Rust formatting
+just check      # Compile checks
+just test       # Fast unit tier: Rust unit tests + contract suites (<20s once built)
+just test-unit  # Explicit alias for the default fast tier
+just test-integration  # Heavy approval, dispatch and lifecycle fixtures
+just test-all   # Every local Rust and shell suite, unit tier first
+just test-rust <filter>   # Rust unit tests scoped by module/test name
+just test-suite <name...> # Named use-case suites from the manifest
+just test-list  # Discover suite names, tiers and dependencies
+just test-e2e   # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
+just app-test   # Node 24 Kanban and right-panel model/tabs fixtures
+just app-check  # herdr-app check all optional Aven mods
 just app-test-e2e # Isolated native Kanban dummy epics, handoff and screenshots
-just ui-check  # Dashboard TypeScript
-just ui-test   # Dashboard unit tests
+just ui-check   # Dashboard TypeScript
+just ui-test    # Dashboard unit tests
 ```
 
-The shell/integration suites and the independent approval scenarios run in
-parallel by default, bounded by the logical CPU count. Set `TEST_JOBS=1` or
-`APPROVAL_TEST_JOBS=1` to force serial execution when diagnosing a failure.
-The `web/` UI tier is separate and only needed for UI work.
+`just test` is the default fast tier. It runs `cargo test --workspace` plus
+every `unit` suite in `test/suites.txt`, and fails when suite execution exceeds
+`TEST_BUDGET_SECONDS` (20 by default). The budget covers suite execution after
+the binary is built, not compilation. The heavy `approval`, `dispatch` and
+`lifecycle` fixtures are `integration` suites and run through
+`just test-integration`, `just test-all`, their focused recipes, or an explicit
+`just test-suite <name>`.
+
+Suites and approval's internal scenarios run in parallel by default, bounded by
+the logical CPU count. Set `TEST_JOBS=1` or `APPROVAL_TEST_JOBS=1` to force
+serial execution when diagnosing a failure. `just test-rust` forwards its
+argument to cargo's test filter, so `just test-rust dispatch::plan` runs one
+module's tests. Add a new `test/*.test.sh` by classifying it in
+`test/suites.txt`; `test/suites.test.sh` fails until every file appears exactly
+once and the dependency graph is valid. The `web/` UI tier is separate and only
+needed for UI work.
 
 The E2E fixture uses `test/hc_fixture.py` as `HC_BIN`; its `hc exec` runs real
 Git, so worktree operations are exercised through the same boundary as
