@@ -15,6 +15,7 @@ const REFRESH_MS = 10000;
 const QUESTION_MS = 5000;
 const READ_WORKERS = 4;
 const EVIDENCE_WORKERS = 4;
+const QUESTION_WORKERS = 3;
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 50;
 const READY_SETTLE_MS = 700;
@@ -412,7 +413,7 @@ export default class AvenKanban extends View {
         // wrong folder, then settle with an explicit error if it never appears.
         let cwd = sources.cwd;
         for (let attempt = 0; !cwd && attempt < 25; attempt += 1) {
-          await exec("sleep", ["0.2"]);
+          await taskCx.sleep(200);
           const folder = this.spaceFolder();
           cwd = folder ? await this.rootFolder(folder) : "";
         }
@@ -589,20 +590,27 @@ export default class AvenKanban extends View {
     }
     this.asking = true;
     try {
-      let changed = false;
-      const alive = new Set();
-      for (const card of cards) {
-        const agent = this.relatedAgent(card);
-        if (!agent?.address) continue;
-        alive.add(card.id);
+      // One slow terminal must not hold up the other blocked cards. Keep the
+      // batch bounded and apply the results in card order, which also keeps the
+      // stale-question cleanup deterministic.
+      const reads = await mapLimit(cards, QUESTION_WORKERS, async (card) => {
+        const address = this.relatedAgent(card)?.address ?? "";
+        if (!address) return { card, address, text: "" };
         let text = "";
         try {
-          const result = await exec("hc", ["read", agent.address]);
+          const result = await exec("hc", ["read", address]);
           if (result.code === 0) text = lastQuestion(result.stdout);
         } catch {}
+        return { card, address, text };
+      });
+      let changed = false;
+      const alive = new Set();
+      for (const { card, address, text } of reads) {
+        if (!address) continue;
+        alive.add(card.id);
         const current = this.questions.get(card.id);
-        if (!current || current.address !== agent.address || current.text !== text) {
-          this.questions.set(card.id, { address: agent.address, text });
+        if (!current || current.address !== address || current.text !== text) {
+          this.questions.set(card.id, { address, text });
           changed = true;
         }
       }

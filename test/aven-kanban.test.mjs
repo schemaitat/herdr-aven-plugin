@@ -44,6 +44,15 @@ assert.match(kanbanSource, /const columns = filterBoardByProject\(board, this\.p
 assert.match(kanbanSource, /chips\(board, allStats, cx\)/, "chips reuse the stats the render already computed");
 assert.doesNotMatch(kanbanSource, /this\.times\(\)\.get\(/, "no card falls back to a live tab-time read");
 
+// Needs-you terminal reads and the checkout wait must not serialize behind
+// process spawns: the reads share the bounded pool and the wait uses the app
+// timer.
+assert.match(kanbanSource, /QUESTION_WORKERS = 3/, "question reads use a small fixed pool");
+assert.match(kanbanSource, /mapLimit\(cards, QUESTION_WORKERS/, "question reads share the bounded pool");
+assert.doesNotMatch(kanbanSource, /for \(const card of cards\)/, "question reads are not a serial loop");
+assert.match(kanbanSource, /taskCx\.sleep\(200\)/, "the checkout wait uses the app timer");
+assert.doesNotMatch(kanbanSource, /exec\("sleep"/, "refresh no longer spawns a sleep process");
+
 const rawEpic = (id, status = "todo", extra = {}) => ({
   id, ref: `HAP-${id}`, title: `Epic ${id}`, project: "herdr-aven-plugin", status,
   is_epic: true, deleted: false, created_at: "2026-01-01T00:00:00Z",
