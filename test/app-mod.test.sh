@@ -111,6 +111,7 @@ assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'summaryDigest' 'th
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'SUMMARY_LABEL' 'the board renders the LLM SUMMARY label'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'summary.llm' 'Kanban hydration keeps the summary metadata'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'autoSummaryCandidate' 'the board limits background summary work'
+assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/logic.js" 'TERMINAL_STATUSES.has(String(task?.status' 'terminal cards never enter the background summary queue'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'autoSummarize' 'the board starts background summary generation'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" '"--auto"' 'the board uses the non-blocking auto mode'
 assert_file_contains "$PLUGIN_ROOT/app/aven-kanban/main.js" 'summaryCardId' 'Kanban cards expand one LLM summary at a time'

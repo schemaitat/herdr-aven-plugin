@@ -838,10 +838,12 @@ Generation is both explicit and automatic. Pressing `d l`/`z l` always
 regenerates the focused task in a terminal. Separately, the sidebar and Kanban
 board enqueue a background `describe --auto` for a long description without a
 current summary: the selected/focused card first, one run at a time, with a
-per-task lock. The UI shows **generating…** while `summary.llm.state` is
-`generating`, retries a failed run only after ten minutes, and treats a
-`generating` marker older than ten minutes as retryable. Set
-`AVEN_DISPATCH_SUMMARY_AUTO=0` (also `false`, `off`, or `no`) to disable
+per-task lock. Done and canceled epics are never enqueued automatically: they
+already show their final card, and summarizing them would restart the board's
+refresh chain for no user-visible benefit. The UI shows **generating…** while
+`summary.llm.state` is `generating`, retries a failed run only after ten
+minutes, and treats a `generating` marker older than ten minutes as retryable.
+Set `AVEN_DISPATCH_SUMMARY_AUTO=0` (also `false`, `off`, or `no`) to disable
 automatic generation.
 
 ### Dispatch flow

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Stop the Kanban board from auto-summarizing terminal epics. Done and canceled
+  cards are final results, so the background `describe --auto` queue now skips
+  them instead of refreshing the whole board to summarize each historical epic
+  in turn. Open work keeps the same bounded, one-at-a-time behaviour, and manual
+  `d l` / `z l` generation still works for any task.
 - Make the Aven-right panel and LLM summaries readable: task content, raw
   descriptions, phase snippets, and summary bullets now use the theme
   `foreground`, while refs, counts, and section labels use `muted` instead of
