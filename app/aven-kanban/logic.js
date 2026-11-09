@@ -452,11 +452,16 @@ export function taskSummary(task) {
   return summary ? { ...summary, label: SUMMARY_LABEL } : null;
 }
 
-export function cardSummary(task) {
-  const summary = taskSummary(task);
+// A card is the compact presentation of an already-derived task summary, so a
+// caller that holds the task summary never recomputes its description digest.
+export function cardFromSummary(summary) {
   if (!summary) return null;
   const lines = summaryLines(summary.text, SUMMARY_MAX_BULLETS, SUMMARY_CARD_LIMIT);
   return { ...summary, text: lines.join(" · "), lines };
+}
+
+export function cardSummary(task) {
+  return cardFromSummary(taskSummary(task));
 }
 
 export const SUMMARY_GENERATING_TIMEOUT_MS = 10 * 60 * 1000;
@@ -504,7 +509,7 @@ export function normalizeEpic(row, detail, obligations = new Map()) {
   const approval = approvalMarker(hydrated ? metadata : {});
   const description = hydrated && typeof detail?.description === "string" ? detail.description : "";
   const summary = hydrated ? taskSummary({ description, metadata }) : null;
-  const card = hydrated ? cardSummary({ description, metadata }) : null;
+  const card = cardFromSummary(summary);
   const state = summaryState(metadata);
   return {
     id,
@@ -1005,6 +1010,18 @@ export function lastQuestion(screen) {
 
 export function flattenBoard(columns) {
   return (columns ?? []).flatMap((column) => column.cards ?? []);
+}
+
+// Project chips narrow the board that was already classified. Filtering after
+// the build keeps one build as the source of truth for render, stats, and
+// selection; an empty project is an identity.
+export function filterBoardByProject(columns, project) {
+  const key = String(project ?? "");
+  if (!key) return columns ?? [];
+  return (columns ?? []).map((column) => ({
+    ...column,
+    cards: (column?.cards ?? []).filter((card) => card.project === key),
+  }));
 }
 
 // Locate the selected card by column and row. Column-aware navigation copies

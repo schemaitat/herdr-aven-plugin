@@ -38,6 +38,19 @@
   worktree space, and a missing worktree space fails closed. The Ship PR prompt
   now works from the task's own worktree/branch and keeps review follow-ups
   there. The board still never pushes, merges, commits, opens a PR or edits Aven.
+- Make one Kanban render build the board once and reuse those columns for
+  selection, stats, chips, and the banner. Live agents, terminals, and tab
+  timers are snapshotted once per frame, and each card's related agent is
+  memoized for that snapshot, so a key press or timer no longer repeats the
+  read-model and live-state work per card.
+- Compute a hydrated epic's LLM summary digest once: the card presentation now
+  derives from the task summary already computed for the epic, and project
+  filtering narrows the built board instead of rebuilding it from filtered
+  rows.
+- Read needs-you terminal questions through a bounded three-reader pool and wait
+  for the checkout with the app timer instead of spawning `sleep`, so one slow
+  terminal or a settling space no longer serializes the question poll or the
+  refresh.
 - Make Kanban refreshes atomic once the board is visible: hydration and
   local-main delivery evidence are staged off-screen and the board is replaced
   in one publish, so **on main** badges and columns no longer flicker while a

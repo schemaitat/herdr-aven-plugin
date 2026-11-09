@@ -715,8 +715,12 @@ label and a reserved spinner slot, so starting or finishing a refresh never
 reflows the toolbar or moves the adjacent `Esc` hint. Once a board is visible,
 a refresh stages all metadata reads and local-main evidence and replaces the
 board in one publish; merged/main badges and columns never flicker through
-provisional states while the read is in flight. Full Aven metadata is
-cached by immutable epic ID
+provisional states while the read is in flight. A render builds the board once
+and reuses those columns for selection, stats, chips, and the banner; live
+agents, terminals, and tab timers are snapshotted once per frame, and each
+card's related agent is memoized for that snapshot. Needs-you `hc read` probes
+share a three-reader bound, so one blocked terminal does not serialize the
+rest. Full Aven metadata is cached by immutable epic ID
 and `updated_at`, with four bounded readers and 500-item caps on each Aven list,
 the merged epic set, and dispatcher attempts. Dispatcher reads use read-only,
 prompt-free `aven-dispatch list --summary --limit 500`; exceeding a cap is an

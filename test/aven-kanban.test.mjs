@@ -4,8 +4,8 @@ import {
   ATTEMPT_LIMIT, BOARD_COLORS, BOARD_COLUMNS, BORDER_CONTRAST_PAIRS, CREATED_FILTERS, DETAIL_METADATA, DISPATCH_ACTIONS, LIMIT,
   MERGE_PROMPT, SUMMARY_CARD_LIMIT, SUMMARY_ERROR_RETRY_MS, SUMMARY_LABEL, TEXT_CONTRAST_PAIRS, autoSummaryCandidate,
   approvalMarker, archiveKey, assertBoardCoverage, attemptNeedsYou, automaticProjectFilter, blockedAddress, boardStats, buildBoard,
-  cardArchiveable, cardForEpic, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, detailArgs, detailCacheKey, detailIsCurrent,
-  detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, flattenBoard,
+  cardArchiveable, cardForEpic, cardFromSummary, cardSummary, contrastRatio, createdCutoff, currentProjectArgs, detailArgs, detailCacheKey, detailIsCurrent,
+  detailNeedsRefresh, dispatchTerminalName, enrichmentPending, epicArgs, filterArchived, filterBoardByProject, filterRowsByCreated, flattenBoard,
   hydrateDetails, indexAttempts, isLiveEpicTerminal, jumpToColumn, landedWeek, lastQuestion, mapLimit, safeDetail,
   handoffAgentRun, handoffSendArgs, handoffTabArgs, liveAgentFor, liveHandoffTerminal, markMergedOnMain,
   mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection,
@@ -37,6 +37,25 @@ assert.match(kanbanSource, /const progressive = refreshMayPublishProgress\(this\
 assert.match(kanbanSource, /if \(progressive\) this\.publishRows/);
 assert.match(kanbanSource, /this\.mainMerged = mainEvidence\.merged;/);
 assert.match(kanbanSource, /this\.hasSettledBoard = true;/);
+
+// One render takes one live snapshot and builds the board once. The drawn,
+// project-filtered columns then drive selection, stats, and chips instead of a
+// second build or a per-card live lookup.
+assert.match(kanbanSource, /snapshotLive\(\)/, "a render snapshots live agents, terminals, and tab times once");
+assert.match(kanbanSource, /relatedAgentCache = new Map\(\)/, "each snapshot clears the related-agent memo");
+assert.match(kanbanSource, /this\.selected\(columns\)/, "render reuses the drawn board for selection");
+assert.match(kanbanSource, /const columns = filterBoardByProject\(board, this\.projectFilter\)/, "the project filter narrows the one built board");
+assert.match(kanbanSource, /chips\(board, allStats, cx\)/, "chips reuse the stats the render already computed");
+assert.doesNotMatch(kanbanSource, /this\.times\(\)\.get\(/, "no card falls back to a live tab-time read");
+
+// Needs-you terminal reads and the checkout wait must not serialize behind
+// process spawns: the reads share the bounded pool and the wait uses the app
+// timer.
+assert.match(kanbanSource, /QUESTION_WORKERS = 3/, "question reads use a small fixed pool");
+assert.match(kanbanSource, /mapLimit\(cards, QUESTION_WORKERS/, "question reads share the bounded pool");
+assert.doesNotMatch(kanbanSource, /for \(const card of cards\)/, "question reads are not a serial loop");
+assert.match(kanbanSource, /taskCx\.sleep\(200\)/, "the checkout wait uses the app timer");
+assert.doesNotMatch(kanbanSource, /exec\("sleep"/, "refresh no longer spawns a sleep process");
 
 const rawEpic = (id, status = "todo", extra = {}) => ({
   id, ref: `HAP-${id}`, title: `Epic ${id}`, project: "herdr-aven-plugin", status,
@@ -186,6 +205,16 @@ assert.equal(
   SUMMARY_CARD_LIMIT,
   "card summary lines are bounded",
 );
+const derivedSummary = taskSummary({
+  description: longText,
+  metadata: { "summary.llm": summaryText, "summary.llm.digest": summaryDigest(longText) },
+});
+assert.deepEqual(
+  cardFromSummary(derivedSummary),
+  cardSummary({ description: longText, metadata: { "summary.llm": summaryText, "summary.llm.digest": summaryDigest(longText) } }),
+  "a card reuses the task summary that was already derived",
+);
+assert.equal(cardFromSummary(null), null, "no task summary produces no card summary");
 const summaryCard = cardForEpic(summarized, selectAttempt([], "SUM"));
 assert.equal(summaryCard.summaryCard, "First point. · Second point. · Third point.");
 assert.equal(summaryCard.column, "backlog");
@@ -677,6 +706,18 @@ for (const [foreground, background] of BORDER_CONTRAST_PAIRS) {
 
 assert.equal(selectedCard(board, "B").column, "ready");
 assert.equal(selectedCard(board, "missing"), null);
+
+// Project narrowing filters the board that was already built, keeping one
+// build as the source of truth for render, stats, and selection.
+const projectBoard = buildBoard({
+  rows: [rawEpic("ALPHA"), rawEpic("BETA", "todo", { project: "other" })],
+  attemptIndex: new Map(),
+});
+const alphaBoard = filterBoardByProject(projectBoard, "herdr-aven-plugin");
+assert.deepEqual(alphaBoard.map(({ id }) => id), BOARD_COLUMNS.map(({ id }) => id), "every column survives the filter");
+assert.deepEqual(flattenBoard(alphaBoard).map(({ id }) => id), ["ALPHA"]);
+assert.equal(filterBoardByProject(projectBoard, ""), projectBoard, "an empty project filter is an identity");
+assert.deepEqual(flattenBoard(filterBoardByProject(projectBoard, "missing")), []);
 const childBoard = buildBoard({ rows: [childEpic], attemptIndex: indexAttempts([attempt("CHILD", { state: "running" })]) });
 assert.equal(flattenBoard(childBoard)[0].agentActive, true, "child attempts pulse the root card");
 
