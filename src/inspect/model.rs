@@ -200,6 +200,36 @@ pub(crate) struct BoundaryRef {
     pub(crate) hydrated: bool,
 }
 
+/// Dispatcher acceptance marker read from the task's `approval.*` metadata.
+///
+/// Aven `done` is acceptance, but the ship queue additionally needs the
+/// commit-bound approval the dispatcher records. An `approved` state without a
+/// commit is incomplete and must not claim ready-to-land.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub(crate) struct ApprovalRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workflow: Option<String>,
+}
+
+impl ApprovalRecord {
+    pub(crate) fn is_approved(&self) -> bool {
+        self.state.as_deref() == Some("approved")
+    }
+    pub(crate) fn is_complete(&self) -> bool {
+        self.is_approved()
+            && self
+                .commit
+                .as_deref()
+                .is_some_and(|commit| !commit.is_empty())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub(crate) struct PlanMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,9 +288,12 @@ pub(crate) struct TaskRecord {
     pub(crate) dependencies: Vec<BoundaryRef>,
     pub(crate) blocks: Vec<BoundaryRef>,
     pub(crate) related: Vec<BoundaryRef>,
+    /// Count of open dependencies from Aven's bounded list read.
+    pub(crate) blocked_by: u64,
     pub(crate) plan: PlanMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) delivery: Option<DeliveryRecord>,
+    pub(crate) approval: ApprovalRecord,
     pub(crate) hydrated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) context_observed_at_ms: Option<u64>,
@@ -648,6 +681,22 @@ mod tests {
         assert!(valid_session_id("ses_abc123"));
         assert!(!valid_session_id("abc123"));
         assert!(!valid_session_id("ses_"));
+    }
+
+    #[test]
+    fn approval_is_complete_only_with_a_commit_bound_approved_marker() {
+        let mut approval = ApprovalRecord::default();
+        assert!(!approval.is_approved());
+        assert!(!approval.is_complete());
+        approval.state = Some("checking".into());
+        assert!(!approval.is_approved());
+        approval.state = Some("approved".into());
+        assert!(approval.is_approved());
+        assert!(!approval.is_complete());
+        approval.commit = Some(String::new());
+        assert!(!approval.is_complete());
+        approval.commit = Some("deadbeef".into());
+        assert!(approval.is_complete());
     }
 
     #[test]

@@ -127,6 +127,13 @@ pub(crate) fn assemble(base: &BaseRead, live: &LiveRead) -> Snapshot {
     assemble::assemble(base, live, now())
 }
 
+/// Read Aven's authoritative ready-task ids through the bounded read-only
+/// source. The work queue uses this instead of re-deriving availability.
+pub(crate) fn read_ready_ids(scope: &Scope) -> Result<Vec<String>> {
+    let secrets = configured_secrets();
+    aven::read_ready_ids(scope, &secrets)
+}
+
 pub(crate) fn collect(options: &Options) -> Result<Snapshot> {
     let base = read_base(options)?;
     let live = read_live(&base.scope, &base.attempts, options);

@@ -105,6 +105,8 @@ struct AvenTask {
     #[serde(default)]
     priority: String,
     #[serde(default)]
+    blocked_by: u64,
+    #[serde(default)]
     available_at: String,
     #[serde(default)]
     due_on: String,
@@ -354,6 +356,39 @@ fn read_list(scope: &Scope, upcoming: bool, secrets: &[String]) -> Result<Vec<Av
     Ok(tasks)
 }
 
+/// Read the authoritative Aven-ready immutable task ids.
+///
+/// `work` must not re-derive availability from `available_at` and dependency
+/// counts; Aven owns those rules. This is a second bounded, read-only list
+/// call, intentionally separate from the inspector's available/upcoming lists.
+pub(super) fn read_ready_ids(scope: &Scope, secrets: &[String]) -> Result<Vec<String>> {
+    let output = aven_read(
+        &[
+            "list".into(),
+            "--project".into(),
+            scope.project.clone(),
+            "--workspace".into(),
+            scope.workspace.clone(),
+            "--ready".into(),
+            "--limit".into(),
+            AVEN_LIST_LIMIT.to_string(),
+            "--json".into(),
+        ],
+        Path::new(&scope.cwd),
+        secrets,
+    )?;
+    let tasks: Vec<AvenTask> =
+        serde_json::from_str(&output).context("Aven ready list returned an unsupported payload")?;
+    if tasks.len() > AVEN_LIST_LIMIT {
+        bail!("Aven ready list exceeded the {AVEN_LIST_LIMIT}-task limit");
+    }
+    Ok(tasks
+        .into_iter()
+        .map(|task| task.id)
+        .filter(|id| valid_identifier(id))
+        .collect())
+}
+
 /// Drop cached contexts for tasks that left the scoped list so the map stays
 /// bounded by live coverage.
 fn retain_live(cache: &ContextCache, tasks: &[AvenTask]) {
@@ -579,6 +614,20 @@ fn build_task_records(
                 obligation: metadata.get("delivery.obligation-for").cloned(),
                 provenance: metadata.get("delivery.provenance").cloned(),
             };
+            let approval = ApprovalRecord {
+                state: metadata
+                    .get("approval.state")
+                    .map(|value| sanitize(value, 64, secrets)),
+                id: metadata
+                    .get("approval.id")
+                    .map(|value| sanitize(value, 128, secrets)),
+                commit: metadata
+                    .get("approval.commit")
+                    .map(|value| sanitize(value, 128, secrets)),
+                workflow: metadata
+                    .get("approval.workflow")
+                    .map(|value| sanitize(value, 128, secrets)),
+            };
             let delivery = (delivery.state.is_some()
                 || delivery.commit.is_some()
                 || delivery.obligation.is_some())
@@ -720,8 +769,10 @@ fn build_task_records(
                             .collect()
                     })
                     .unwrap_or_default(),
+                blocked_by: task.blocked_by,
                 plan,
                 delivery,
+                approval,
                 hydrated: context.is_some(),
                 context_observed_at_ms: contexts.get(&task.id).map(|(_, observed)| *observed),
             })
@@ -784,6 +835,7 @@ mod tests {
             is_epic: false,
             deleted: false,
             priority: String::new(),
+            blocked_by: 0,
             available_at: String::new(),
             due_on: String::new(),
             created_at: String::new(),

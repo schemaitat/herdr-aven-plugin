@@ -660,8 +660,10 @@ mod tests {
             dependencies: Vec::new(),
             blocks: Vec::new(),
             related: Vec::new(),
+            blocked_by: 0,
             plan: PlanMetadata::default(),
             delivery: None,
+            approval: ApprovalRecord::default(),
             hydrated: true,
             context_observed_at_ms: Some(1),
         }];
@@ -718,8 +720,10 @@ mod tests {
             dependencies: Vec::new(),
             blocks: Vec::new(),
             related: Vec::new(),
+            blocked_by: 0,
             plan: PlanMetadata::default(),
             delivery: None,
+            approval: ApprovalRecord::default(),
             hydrated: true,
             context_observed_at_ms: Some(1),
         };

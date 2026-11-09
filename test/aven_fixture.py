@@ -53,7 +53,15 @@ def find(state, reference):
     raise SystemExit(f"unknown task {reference}")
 
 
-def task_summary(task):
+def open_dependencies(state, task):
+    return sum(
+        1
+        for dep_ref in task.get("depends_on", [])
+        if state["tasks"].get(dep_ref, {}).get("status") not in ("done", "canceled")
+    )
+
+
+def task_summary(state, task):
     return {
         "id": task["id"],
         "ref": task["ref"],
@@ -65,13 +73,19 @@ def task_summary(task):
         "is_epic": task.get("is_epic", False),
         "project": task.get("project", ""),
         "metadata": task.get("metadata", {}),
+        "blocked_by": open_dependencies(state, task),
+        "blocks": sum(
+            1
+            for other in state["tasks"].values()
+            if task["ref"] in other.get("depends_on", [])
+        ),
         "updated_at": task.get("updated_at", "2026-01-01T00:00:00Z"),
     }
 
 
 def context(state, task):
     children = [
-        task_summary(child)
+        task_summary(state, child)
         for child in state["tasks"].values()
         if child.get("epic_parent") == task["ref"]
     ]
@@ -170,6 +184,7 @@ def main(argv):
         metadata = []
         include_deleted = False
         include_open = False
+        include_ready = False
         required_status = None
         i = 1
         while i < len(argv):
@@ -188,6 +203,9 @@ def main(argv):
             elif argv[i] == "--open":
                 include_open = True
                 i += 1
+            elif argv[i] == "--ready":
+                include_ready = True
+                i += 1
             elif argv[i] in ("--json", "--limit") and i + 1 < len(argv) and argv[i] == "--limit":
                 i += 2
             else:
@@ -202,12 +220,18 @@ def main(argv):
                 continue
             if include_open and task["status"] in ("done", "canceled"):
                 continue
+            if include_ready and (
+                task["status"] in ("done", "canceled")
+                or task.get("is_epic", False)
+                or open_dependencies(state, task) > 0
+            ):
+                continue
             if any(
                 task.get("metadata", {}).get(key) != value
                 for key, value in (item.split("=", 1) for item in metadata)
             ):
                 continue
-            tasks.append(task_summary(task))
+            tasks.append(task_summary(state, task))
         if "--json" in argv:
             print(json.dumps(tasks))
         else:
