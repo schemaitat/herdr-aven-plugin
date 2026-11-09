@@ -7,8 +7,9 @@ import {
   enrichmentPending, epicArgs, filterArchived, filterRowsByCreated, firstPaneFolder, flattenBoard, hydrateDetails, indexAttempts,
   isLiveEpicTerminal, jumpToColumn, refreshMayPublishProgress,
   landedWeek, lastQuestion, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
-  mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, openArgs, projectChips, automaticProjectFilter, currentProjectArgs,
-  resolveCurrentProject, safeDetail, selectAttempt, selectedCard,
+  mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
+  openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDetail,
+  selectAttempt, selectedCard,
   selectMainSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
 } from "./logic.js";
 
@@ -86,6 +87,7 @@ export default class AvenKanban extends View {
       enriching: false, evidencePending: false,
     };
     this.details = new Map();
+    this.obligationDetails = new Map();
     this.sources = null;
     this.mainMerged = new Set();
     this.coverageError = "";
@@ -261,26 +263,46 @@ export default class AvenKanban extends View {
     // A non-Git folder can still be mapped to a project by Aven path mappings,
     // so let Aven see the space folder when there is no Git checkout.
     const projectCwd = cwd || folder;
-    const [availableResult, upcomingResult, attemptsResult, projectResult] = await Promise.all([
+    const [availableResult, upcomingResult, attemptsResult, projectResult, obligationResult] = await Promise.all([
       exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
       exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
       projectCwd ? exec("aven", currentProjectArgs(workspace), { cwd: projectCwd }).catch(() => null) : Promise.resolve(null),
+      exec("aven", obligationListArgs(workspace), cwd ? { cwd } : undefined),
     ]);
     const available = parseList(availableResult, "Epics");
     const upcoming = parseList(upcomingResult, "Upcoming epics");
-    assertBoardCoverage({ available: available.length, upcoming: upcoming.length });
+    const obligationRows = parseList(obligationResult, "Delivery obligations")
+      .filter((row) => String(row?.ref ?? "").trim());
+    assertBoardCoverage({ available: available.length, upcoming: upcoming.length, obligations: obligationRows.length });
     const rawAttempts = parseList(attemptsResult, "Dispatcher attempts");
     assertBoardCoverage({ attempts: rawAttempts.length });
     const resolvedProject = projectResult?.code === 0
       ? resolveCurrentProject(projectRows(projectResult), projectResult.stderr)
       : "";
-    const baseRows = mergeEpicRows({ available, upcoming });
+    // Read only changed open obligations. A resolved obligation disappears from
+    // the bounded list, so the cache is pruned before indexing.
+    const currentObligations = new Set(obligationRows.map((row) => String(row?.ref ?? "")).filter(Boolean));
+    for (const ref of this.obligationDetails.keys()) if (!currentObligations.has(ref)) this.obligationDetails.delete(ref);
+    const obligationDetails = await mapLimit(obligationRows, READ_WORKERS, async (row) => {
+      const ref = String(row?.ref ?? "");
+      const cached = this.obligationDetails.get(ref);
+      if (cached && cached.updatedAt === row?.updated_at
+        && cached.detail?.task?.status === String(row?.status ?? "")) return cached.detail;
+      const detail = safeDetail(parse(
+        await exec("aven", detailArgs(workspace, ref), cwd ? { cwd } : undefined),
+        `Obligation ${ref}`,
+      ));
+      this.obligationDetails.set(ref, { updatedAt: row?.updated_at, detail });
+      return detail;
+    });
+    const obligations = openObligationIndex(obligationDetails);
+    const baseRows = mergeEpicRows({ available, upcoming, obligations });
     assertBoardCoverage({ epics: baseRows.length });
     const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
     for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
     const attemptIndex = indexAttempts(rawAttempts);
-    return { workspace, cwd, resolvedProject, available, upcoming, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
+    return { workspace, cwd, resolvedProject, available, upcoming, obligations, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
   }
 
   mergedRows() {
@@ -292,7 +314,7 @@ export default class AvenKanban extends View {
       if (detailIsCurrent(cached, sources.workspace, row)) details[row.id] = cached.detail;
     }
     return markMergedOnMain(
-      mergeEpicRows({ available: sources.available, upcoming: sources.upcoming, details }),
+      mergeEpicRows({ available: sources.available, upcoming: sources.upcoming, details, obligations: sources.obligations }),
       this.mainMerged,
     ).map((row) => ({ ...row, ancestryPending: !this.ancestryChecked }));
   }
@@ -1039,6 +1061,13 @@ export default class AvenKanban extends View {
           .child(div().font_family(SANS).text_size(11.5).text_color(C.soft)
             .child(this.question(card) || "The agent is waiting for you."))))
         .child(h_flex().flex_wrap().gap(9).children(this.cardFacts(card).map(([text, color]) => mono(10, color, text))))
+        .when((card.openTasks?.length ?? 0) > 0 && card.column === "ready", (el) => el.child(v_flex()
+          .id(`aven-kanban-open-tasks-${card.id}`).gap(1).pt(1)
+          .child(mono(9, C.dim, "STILL OPEN"))
+          .children(card.openTasks.map((task) => h_flex().w_full().min_w(0).gap(5).items_center()
+            .child(mono(9, C.accent, task.ref))
+            .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(9.5).text_color(C.muted)
+              .child(task.title || task.status || "open task"))))))
         .when(card.readyToMerge, (el) => el.child(h_flex().gap(5).items_center()
           .child(div().font_family(SANS).text_size(10.5).font_semibold().text_color(C.land).child("✓ ready to merge"))
           .child(div().font_family(SANS).text_size(9.5).text_color(C.dim).child("approved"))))

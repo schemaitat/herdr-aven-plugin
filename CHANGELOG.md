@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Show the remaining open tasks that block a Kanban card from becoming done.
+  Ready-to-land cards list the root's open delivery obligation, the open
+  delivery obligations of its accepted child phases, and any open child phases
+  under **STILL OPEN** by ref and title. A local-main merge only verifies code
+  ancestry, so an approved result with an open blocker (for example a manual
+  main-integration check) stays in Ready to land with an explicit warning
+  instead of moving to Done, and its already-merged card no longer offers a
+  second Merge or Ship PR action. Obligation reads are bounded, cached by
+  `updated_at`, and re-read on every refresh so a resolved task disappears
+  promptly.
+
 - Make Kanban refreshes atomic once the board is visible: hydration and
   local-main delivery evidence are staged off-screen and the board is replaced
   in one publish, so **on main** badges and columns no longer flicker while a
