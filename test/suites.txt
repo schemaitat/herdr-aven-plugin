@@ -1,0 +1,34 @@
+# Test suite manifest for test/run.sh.
+#
+# Columns: name|tier|depends|files|description
+#
+# - tier:       unit (default, budgeted below 20s once built) or integration
+#               (heavy process/Git fixtures that are opt-in).
+# - depends:    comma-separated suite names that must run before this suite.
+# - files:      comma-separated test/*.test.sh files; empty for aggregate
+#               groups that only express dependencies.
+# - description: one short line without a pipe character.
+#
+# A test file must appear exactly once across the manifest. test/suites.test.sh
+# enforces coverage, unique names, valid dependencies and the absence of cycles
+# so a new test cannot silently fall out of the default tier.
+app-mod|unit||app-mod.test.sh|Optional herdr-app mod ownership and keys
+approval|integration||approval.test.sh|Approval, merges, conflicts and closeout with real Git
+board-delete|unit||board-delete.test.sh|Epic cascade deletion and dispatcher cleanup
+dispatch|integration||rust-dispatch.test.sh|Dispatcher process fixture with herdr-core and real Git
+doctor|unit||doctor.test.sh|Doctor readiness reporting
+inspect|unit||inspect.test.sh|Read-only inspection sources and sanitization
+install|unit|install-app-mod,install-aven-command,install-opencode-command,install-skill||Every installer contract
+install-app-mod|unit||install-app-mod.test.sh|herdr-app mod installation and key merge
+install-aven-command|unit||install-aven-command.test.sh|Aven command installation
+install-opencode-command|unit||install-opencode-command.test.sh|OpenCode command installation
+install-skill|unit||install-skill.test.sh|OpenCode skill installation
+json-field|unit||json-field.test.sh|Backend-neutral JSON helper
+lifecycle|integration||lifecycle.test.sh|Lifecycle guards, closeout, disposition and audit
+message|unit||message.test.sh|Message fences and bounded summaries
+picker|unit||picker.test.sh|Agent and model picker behaviour
+repo|unit||repo.test.sh|Repository shape and just entrypoints
+suites|unit||suites.test.sh|Test manifest coverage and dependency resolution
+summary|unit||summary.test.sh|On-demand LLM summary contract
+watch|unit||watch.test.sh|Event-driven watcher lifecycle
+work|unit||work.test.sh|Read-only work queue classification and filtering
