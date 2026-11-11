@@ -44,6 +44,9 @@ pub(crate) struct Approval {
     pub(crate) attempt_id: String,
     pub(crate) generation: u64,
     pub(crate) repository: String,
+    /// Non-secret provider identity captured at approval; old journals lack it.
+    #[serde(default)]
+    pub(crate) github_repository: String,
     pub(crate) worktree: String,
     pub(crate) branch: String,
     pub(crate) commit: String,
@@ -455,6 +458,10 @@ pub(crate) fn run(
         attempt_id: attempt.attempt_id.clone(),
         generation: attempt.generation,
         repository: repo,
+        github_repository: git(&attempt.worktree, &["remote", "get-url", "origin"])
+            .ok()
+            .and_then(|origin| super::pr_delivery::origin_repository(&origin).ok())
+            .unwrap_or_default(),
         worktree: cwd,
         branch: attempt.branch,
         commit,

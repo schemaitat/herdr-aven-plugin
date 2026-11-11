@@ -56,6 +56,10 @@ pub(crate) struct CloseoutOutcome {
     pub(crate) target_commit: String,
     pub(crate) merged: String,
     pub(crate) provenance: String,
+    pub(crate) pr: String,
+    pub(crate) pr_head: String,
+    pub(crate) approval_id: String,
+    pub(crate) provider_repository: String,
     pub(crate) obligation: String,
     pub(crate) unresolved: Vec<String>,
     pub(crate) notes: Vec<String>,
@@ -91,6 +95,27 @@ fn delivery_evidence_matches(task: &Value, outcome: &CloseoutOutcome) -> bool {
             .pointer("/metadata/delivery.merged")
             .and_then(Value::as_str)
             == Some(outcome.merged.as_str())
+        && (outcome.pr.is_empty()
+            || [
+                ("delivery.pr", &outcome.pr),
+                ("delivery.pr-head", &outcome.pr_head),
+                ("delivery.approval-id", &outcome.approval_id),
+                ("delivery.provider-repository", &outcome.provider_repository),
+                ("delivery.target", &outcome.target),
+                ("delivery.target-commit", &outcome.target_commit),
+                ("delivery.repository", &outcome.repository),
+                ("delivery.provenance", &outcome.provenance),
+            ]
+            .iter()
+            .all(|(key, value)| {
+                task.get("metadata")
+                    .and_then(|m| m.get(*key))
+                    .and_then(Value::as_str)
+                    == Some(value.as_str())
+            }) && task
+                .pointer("/metadata/delivery.pr-state")
+                .and_then(Value::as_str)
+                == Some("verified-merged"))
 }
 
 pub(crate) fn invocation(workspace: Option<String>) -> Invocation {
@@ -126,6 +151,15 @@ fn append_note(invocation: &Invocation, reference: &str, body: &str) -> Result<(
     Ok(())
 }
 
+fn refresh_with_notes(invocation: &Invocation, reference: &str) -> Result<Value> {
+    let output = aven(
+        invocation,
+        &["context", reference, "--full", "--json"],
+        None,
+    )?;
+    serde_json::from_str(&output).context("complete delivery note read-back")
+}
+
 fn delivery_metadata(outcome: &CloseoutOutcome) -> Vec<(String, String)> {
     let mut pairs = vec![
         ("delivery.state".into(), outcome.state.clone()),
@@ -138,10 +172,18 @@ fn delivery_metadata(outcome: &CloseoutOutcome) -> Vec<(String, String)> {
         ("delivery.repository", &outcome.repository),
         ("delivery.merged", &outcome.merged),
         ("delivery.provenance", &outcome.provenance),
+        ("delivery.pr", &outcome.pr),
+        ("delivery.pr-head", &outcome.pr_head),
+        ("delivery.approval-id", &outcome.approval_id),
+        ("delivery.provider-repository", &outcome.provider_repository),
+        ("delivery.target-commit", &outcome.target_commit),
     ] {
         if !value.is_empty() {
             pairs.push((key.into(), value.clone()));
         }
+    }
+    if !outcome.pr.is_empty() {
+        pairs.push(("delivery.pr-state".into(), "verified-merged".into()));
     }
     pairs
 }
@@ -363,8 +405,7 @@ fn resolve_obligations(
         invocation,
         project,
         Some(&format!("delivery.obligation-for={source}")),
-    )
-    .unwrap_or_default()
+    )?
     .into_iter()
     {
         let reference = task
@@ -392,7 +433,13 @@ fn resolve_obligations(
                 .and_then(|metadata| metadata.get("delivery.merged"))
                 .and_then(Value::as_str)
                 == Some(outcome.merged.as_str());
-        if !already_merged {
+        if !already_merged
+            || (!outcome.pr.is_empty()
+                && !delivery_evidence_matches(
+                    &refresh_task_by_ref(invocation, reference)?,
+                    outcome,
+                ))
+        {
             edit_metadata(invocation, reference, &delivery_metadata(outcome))?;
         }
         let mut refreshed = refresh_task_by_ref(invocation, reference)?;
@@ -401,8 +448,8 @@ fn resolve_obligations(
         }
         if task_status(&refreshed) != "done" {
             aven(invocation, &["edit", reference, "--status", "done"], None)?;
-            refreshed = refresh_task_by_ref(invocation, reference)?;
         }
+        refreshed = refresh_with_notes(invocation, reference)?;
         let marker = format!(
             "<!-- aven-dispatch:delivery-resolved:{}:{} -->",
             outcome.task, outcome.commit
@@ -422,11 +469,16 @@ fn resolve_obligations(
                 invocation,
                 reference,
                 &format!(
-                    "## Delivery resolved\n\n{marker}\n\nVerified source `{}` at commit `{}` is an ancestor of local `{}` ({}) after a human-triggered merge. Closeout recorded the evidence and resolved this obligation.",
-                    outcome.task, outcome.commit, outcome.target, outcome.target_commit
+                    "## Delivery resolved\n\n{marker}\n\nVerified source `{}` at commit `{}` delivered to `{}` (target `{}`; merged commit `{}`), provenance `{}`. Closeout recorded the evidence and resolved this obligation.",
+                    outcome.task,
+                    outcome.commit,
+                    outcome.target,
+                    outcome.target_commit,
+                    outcome.merged,
+                    outcome.provenance
                 ),
             )?;
-            refreshed = refresh_task_by_ref(invocation, reference)?;
+            refreshed = refresh_with_notes(invocation, reference)?;
         }
         let note_readback = refreshed
             .get("notes")
@@ -447,6 +499,74 @@ fn resolve_obligations(
         resolved.push(reference.to_owned());
     }
     Ok(resolved)
+}
+
+/// Called only after the reconciler validates the complete approval and PR.
+pub(crate) fn record_pr_delivery(
+    invocation: &Invocation,
+    project: &str,
+    outcome: &CloseoutOutcome,
+) -> Result<()> {
+    let task = refresh_with_notes(invocation, &outcome.task)?;
+    if task_status(&task) != "done" {
+        bail!("{} is no longer accepted", outcome.task);
+    }
+    // Resolve obligations first: a partial publication must not expose the
+    // source as delivered while its obligations are still pending.
+    resolve_obligations(invocation, project, outcome)?;
+    if !delivery_evidence_matches(&task, outcome) {
+        edit_metadata(invocation, &outcome.task, &delivery_metadata(outcome))?;
+    }
+    if !delivery_evidence_matches(&refresh_task_by_ref(invocation, &outcome.task)?, outcome) {
+        bail!("PR delivery evidence read-back failed for {}", outcome.task);
+    }
+    let marker = format!(
+        "<!-- aven-dispatch:pr-delivery:{}:{}:{} -->",
+        outcome.approval_id, outcome.commit, outcome.merged
+    );
+    let task = refresh_with_notes(invocation, &outcome.task)?;
+    let present = task
+        .get("notes")
+        .and_then(Value::as_array)
+        .is_some_and(|notes| {
+            notes.iter().any(|note| {
+                note.get("body")
+                    .and_then(Value::as_str)
+                    .is_some_and(|body| body.contains(&marker))
+            })
+        });
+    if !present {
+        append_note(
+            invocation,
+            &outcome.task,
+            &format!(
+                "## Verified PR delivery\n\n{marker}\n\nPR: {}. Repository: `{}`. Approved head: `{}`. Accepted source: `{}`. Target: `{}` at `{}`. Merged commit: `{}`. Approval: `{}`.",
+                outcome.pr,
+                outcome.provider_repository,
+                outcome.pr_head,
+                outcome.commit,
+                outcome.target,
+                outcome.target_commit,
+                outcome.merged,
+                outcome.approval_id
+            ),
+        )?;
+    }
+    let task = refresh_with_notes(invocation, &outcome.task)?;
+    if !task
+        .get("notes")
+        .and_then(Value::as_array)
+        .is_some_and(|notes| {
+            notes.iter().any(|note| {
+                note.get("body")
+                    .and_then(Value::as_str)
+                    .is_some_and(|body| body.contains(&marker))
+            })
+        })
+    {
+        bail!("PR delivery note read-back failed for {}", outcome.task);
+    }
+    Ok(())
 }
 
 fn unresolved_children(
@@ -475,8 +595,17 @@ fn unresolved_children(
             unresolved.push(format!("{reference} is {status}"));
             continue;
         }
-        if let Some(obligation_ref) = find_obligation(invocation, project, reference) {
-            let obligation = refresh_task_by_ref(invocation, &obligation_ref)?;
+        for obligation in list_tasks(
+            invocation,
+            project,
+            Some(&format!("delivery.obligation-for={reference}")),
+        )? {
+            let obligation_ref = obligation
+                .get("ref")
+                .or_else(|| obligation.get("display_ref"))
+                .and_then(Value::as_str)
+                .context("delivery obligation has no reference")?;
+            let obligation = refresh_task_by_ref(invocation, obligation_ref)?;
             let obligation_status = task_status(&obligation);
             if !matches!(obligation_status, "done" | "canceled") {
                 unresolved.push(format!(
@@ -549,6 +678,10 @@ fn run_with_pending(path: PathBuf, args: CloseoutArgs, allow_pending: bool) -> R
         target_commit: String::new(),
         merged: String::new(),
         provenance: String::new(),
+        pr: String::new(),
+        pr_head: String::new(),
+        approval_id: String::new(),
+        provider_repository: String::new(),
         obligation: String::new(),
         unresolved: Vec::new(),
         notes: Vec::new(),
@@ -795,6 +928,10 @@ mod tests {
             target_commit: "def".into(),
             merged: "def".into(),
             provenance: "local-main-ancestry".into(),
+            pr: String::new(),
+            pr_head: String::new(),
+            approval_id: String::new(),
+            provider_repository: String::new(),
             obligation: String::new(),
             unresolved: Vec::new(),
             notes: Vec::new(),
