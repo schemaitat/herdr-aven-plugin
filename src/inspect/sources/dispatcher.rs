@@ -61,6 +61,14 @@ struct RawObservation {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct RawLifecycle {
+    #[serde(default)]
+    observation: String,
+    #[serde(default)]
+    contradiction: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct RawAttempt {
     #[serde(default)]
     task_id: String,
@@ -114,6 +122,8 @@ struct RawAttempt {
     log_task_ref: String,
     #[serde(default)]
     terminals: BTreeMap<String, RawObservation>,
+    #[serde(default)]
+    lifecycle: RawLifecycle,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -342,6 +352,8 @@ fn accept_attempt(
             64,
             secrets,
         ),
+        observation: sanitize(&raw.lifecycle.observation, 64, secrets),
+        contradiction: sanitize(&raw.lifecycle.contradiction, 128, secrets),
         backend: sanitize(
             if raw.backend.is_empty() {
                 if raw.terminal.is_empty() && raw.pane.is_empty() {
@@ -571,6 +583,8 @@ mod tests {
             created_at_ms: 1,
             state: "running".into(),
             execution_mode: "single-session".into(),
+            observation: String::new(),
+            contradiction: String::new(),
             backend: "hc".into(),
             core_id: "core".into(),
             terminal: TerminalLink::default(),

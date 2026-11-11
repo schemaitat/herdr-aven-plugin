@@ -1223,6 +1223,46 @@ focused terminal so the Kanban board can reveal it.
 pass Aven's versioned command context on stdin; opt-in babysitting uses
 `aven-dispatch dispatch --agent select --babysitter`.
 
+### Work queue for automation
+
+`aven-dispatch work` is the read-only lifecycle projection for a central
+automation. It answers what can be planned, dispatched, approved or landed next
+without scraping Aven, the dispatcher store or the Kanban UI.
+
+```sh
+aven-dispatch work --project HAP                        # grouped human view
+aven-dispatch work --project HAP --stage land --json     # ship queue
+aven-dispatch work --project HAP --stage dispatch --json # dispatch queue
+aven-dispatch work --project HAP --stage land --stage review --json
+```
+
+The JSON schema is `aven-dispatch-work/v1`. Every card carries `ref`, `id`,
+`title`, `status`, `is_epic`, `stage`, `column`, `action`, `reason`, `detail`,
+plan/approval/delivery evidence and attempt summaries. `counts` are totals per
+selected stage before `--limit` (default 100); `truncated` is set and a warning
+is emitted when a stage is capped. Stages are emitted in action order:
+`land`, `review`, `dispatch`, `plan`, `working`, `waiting`, `blocked`,
+`unknown`, `done`. `column` uses the Kanban names `backlog`, `working`, `ready`
+and `done`.
+
+| stage | meaning | action | column |
+| --- | --- | --- | --- |
+| `land` | done + commit-bound approval + unsettled delivery | `merge` | `ready` |
+| `review` | execution needs acceptance, approval is incomplete, or a root's phases are complete | `approve` | `ready` |
+| `dispatch` | open, Aven-ready, unblocked, no in-flight attempt, parent plan worked out | `dispatch` | `backlog` |
+| `plan` | open epic without `sdd.plan-worked-out=true` | `plan` | `backlog` |
+| `working` | live persisted attempt, or an active task with no attempt | `watch` / `none` | `working` |
+| `waiting` | worked-out root with open phase children | `none` | `backlog` |
+| `blocked` | open dependency, incomplete parent plan, non-ready availability, stopped attempt, or durable contradiction | `resume` / `none` | `backlog` |
+| `unknown` | required context was not hydrated | `none` | `backlog` |
+| `done` | canceled or settled delivery | `none` | `done` |
+
+Reads are bounded and reuse the inspector's scoped Aven/store evidence plus
+Aven's authoritative `list --ready`. The command never mutates Aven, dispatcher
+state, sessions or Git. It does not read herdr-core or OpenCode presence, so the
+Kanban board's live **Needs you** column is not derived here; the contract uses
+the same column names so the board can adopt it later.
+
 Supervision is event-driven:
 
 ```sh

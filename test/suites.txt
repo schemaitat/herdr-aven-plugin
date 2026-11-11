@@ -31,3 +31,4 @@ repo|unit||repo.test.sh|Repository shape and just entrypoints
 suites|unit||suites.test.sh|Test manifest coverage and dependency resolution
 summary|unit||summary.test.sh|On-demand LLM summary contract
 watch|unit||watch.test.sh|Event-driven watcher lifecycle
+work|unit||work.test.sh|Read-only work queue classification and filtering

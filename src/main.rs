@@ -403,6 +403,27 @@ enum Commands {
         #[arg(long)]
         no_api: bool,
     },
+    /// Read-only work queue for automation: plan, dispatch, review, and land.
+    Work {
+        /// Aven project key; inferred from the repository when omitted.
+        #[arg(long)]
+        project: Option<String>,
+        /// Aven workspace key; defaults to the Aven default workspace.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Directory used to infer the project and repository.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Restrict output to these stages; repeat to select more than one.
+        #[arg(long, value_enum)]
+        stage: Vec<dispatch::work::WorkStage>,
+        /// Maximum cards emitted per stage.
+        #[arg(long, default_value_t = dispatch::work::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Print the stable work report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Validate local Aven and OpenCode V2 capabilities without mutation.
     Doctor,
 }
@@ -673,6 +694,22 @@ fn main() -> Result<()> {
             store: path,
             json,
             skip_api: no_api,
+        }),
+        Commands::Work {
+            project,
+            workspace,
+            cwd,
+            stage,
+            limit,
+            json,
+        } => dispatch::work::run(dispatch::work::WorkArgs {
+            store: path,
+            project,
+            workspace,
+            cwd,
+            stages: stage,
+            limit,
+            json,
         }),
         Commands::Doctor => dispatch::doctor(&path),
     };
