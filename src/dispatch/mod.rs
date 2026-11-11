@@ -11,6 +11,7 @@ pub(crate) mod integration;
 pub(crate) mod lifecycle;
 pub(crate) mod phases;
 pub(crate) mod plan;
+pub(crate) mod pr_delivery;
 pub(crate) mod reset;
 pub(crate) mod runtime;
 pub(crate) mod summary;

@@ -257,6 +257,21 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
     },
+    /// Reconcile an already merged GitHub PR against a current root approval.
+    ReconcilePr {
+        task: String,
+        /// Full https://github.com/OWNER/REPO/pull/NUMBER URL.
+        #[arg(long)]
+        pr: String,
+        /// Approved local target; currently only main is supported.
+        #[arg(long, default_value = "main")]
+        target: String,
+        /// Record delivery after verification; default is read-only.
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Verify accepted delivery and optionally record/resolve obligations.
     Closeout {
         task: String,
@@ -572,6 +587,13 @@ fn main() -> Result<()> {
                 workspace,
             },
         ),
+        Commands::ReconcilePr {
+            task,
+            pr,
+            target,
+            apply,
+            workspace,
+        } => dispatch::pr_delivery::run(path, &task, &pr, &target, apply, workspace),
         Commands::Closeout {
             task,
             workflow,

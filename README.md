@@ -1306,8 +1306,7 @@ aven-dispatch closeout HAP-XXXX --project <key> --waive "<reason>"
 aven-dispatch closeout HAP-XXXX --project <key> --superseded-by HAP-YYYY
 ```
 
-The configured local target (initially `main`) is the only delivery provider in
-this release. Closeout verifies:
+Ordinary closeout uses the configured local target (initially `main`). It verifies:
 the exact accepted source commit, a clean source and target tree, a canonical
 repository, and source ancestry in the freshly observed target commit. A dirty
 result has no fabricated SHA. An open PR, an unrelated merge, a branch name,
@@ -1318,6 +1317,37 @@ matching obligation. A root epic closes only when every child is dispositioned
 and every obligation is verified delivered, waived or superseded. This is delivery
 closeout, not the root's acceptance gate: `/approve` may accept the root before
 delivery with explicit pending obligations.
+
+#### Reconcile an already merged GitHub PR
+
+For a normal, squash, or rebase merge that happened outside `/ha-merge`, use the
+separate PR verifier; it never merges, pushes, or waives delivery:
+
+```sh
+aven-dispatch reconcile-pr HAP-XXXX --pr https://github.com/OWNER/REPO/pull/42
+aven-dispatch reconcile-pr HAP-XXXX --pr https://github.com/OWNER/REPO/pull/42 --apply
+```
+
+Run this for the approved **root** in the same repository. It requires `gh`
+authenticated to GitHub.com, an origin pointing to that repository, a current
+completed local approval journal and its clean feature worktree, and exactly one
+clean checkout of the approved target branch (`main` in the current approval flow).
+Fetch and update that local branch by your normal process first: the GitHub merge
+commit must already be in its history. The PR must be merged into that branch,
+and its final head must exactly match the current approved commit. Each approved
+child result must be covered by that head. The command records the PR, head,
+merged commit, target and approval identity on the leaf deliveries and their
+obligations, then settles aggregates child-first. Retry the same command after a
+partial publication; it re-verifies evidence without creating a second merge.
+
+Approvals made before GitHub origin identity was captured must be reviewed and
+approved again. If the PR head changed after approval, the old approval does **not** cover it.
+Inspect the final head and changes, restore or update the approved feature
+worktree to that exact head, and run `/approve` again there with the required
+checks and actual review evidence before reconciling. If the approval journal,
+worktree, provider data, repository identity or local merge commit is missing,
+reconciliation fails closed; restore the evidence and retry. A URL supplied to
+ordinary `closeout --pr` remains a note, not verified delivery evidence.
 
 The supported repair actions are all dry-run by default:
 

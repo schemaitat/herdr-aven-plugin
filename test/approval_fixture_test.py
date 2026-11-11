@@ -360,7 +360,118 @@ def scenario_phase_evidence():
 
 # Ordered so the label list is stable for a serial run. The pool makes the
 # order of completion irrelevant; failures are reported in this list order.
+def scenario_pr_reapproval():
+    c = Case("pr-reapproval")
+    source = c.feature()
+    c.git(c.repo, "remote", "add", "origin", "git@github.com:example/project.git")
+    c.approve(source)
+    old = c.head(source)
+    (source / "feature.txt").write_text("changed after approval\n")
+    c.commit(source, "feature.txt")
+    head = c.head(source)
+    assert old != head
+    c.git(c.repo, "merge", "--squash", head)
+    c.git(c.repo, "commit", "-qm", "squash")
+    url = "https://github.com/example/project/pull/42"
+    provider = c.root / "pr.json"
+    provider.write_text(json.dumps({"number": 42, "html_url": url, "state": "closed", "merged_at": "2026-01-01",
+                                    "merge_commit_sha": c.head(), "head": {"sha": head},
+                                    "base": {"ref": "main", "repo": {"full_name": "example/project"}}}))
+    gh = c.root / "bin/gh"
+    gh.write_text(f'#!/bin/sh\ncat "{provider}"\n')
+    gh.chmod(0o755)
+    args = ("reconcile-pr", "APP-A", "--pr", url, "--apply")
+    c.cli(c.repo, *args, ok=False, contains="rerun /approve")
+    assert c.read()["tasks"]["APP-A"]["metadata"]["approval.commit"] == old
+    assert c.read()["tasks"]["APP-A"]["metadata"]["delivery.state"] == "committed"
+    c.approve(source)
+    c.cli(c.repo, *args)
+    assert c.read()["tasks"]["APP-A"]["metadata"]["delivery.pr-head"] == head
+
+
+def scenario_pr_delivery(kind):
+    c = Case("pr-" + kind)
+    source = c.feature()
+    c.task("APP-CHILD", "done", parent="APP-A")
+    c.git(c.repo, "remote", "add", "origin", "https://github.com/example/project.git")
+    c.approve(source)
+    head = c.head(source)
+    (c.repo / "other.txt").write_text("unrelated target change\n")
+    c.commit(c.repo, "other.txt")
+    if kind == "merge":
+        c.git(c.repo, "merge", "--no-ff", "--no-edit", head)
+    elif kind == "squash":
+        c.git(c.repo, "merge", "--squash", head)
+        c.git(c.repo, "commit", "-qm", "squash")
+    else:
+        c.git(c.repo, "cherry-pick", head)
+    merged = c.head()
+    pr_url = "https://github.com/example/project/pull/42"
+    payload = {"number": 42, "html_url": pr_url, "state": "closed", "merged_at": "2026-01-01T00:00:00Z",
+               "merge_commit_sha": merged, "head": {"sha": head},
+               "base": {"ref": "main", "repo": {"full_name": "example/project"}}}
+    provider = c.root / "pr.json"
+    provider.write_text(json.dumps(payload))
+    gh = c.root / "bin/gh"
+    gh.write_text(f'#!/bin/sh\ncat "{provider}"\n')
+    gh.chmod(0o755)
+    args = ("reconcile-pr", "APP-A", "--pr", pr_url)
+    c.cli(c.repo, *args)
+    assert c.read()["tasks"]["APP-CHILD"]["metadata"]["delivery.state"] == "committed"
+    original = json.dumps(payload)
+    for mutate in (
+        lambda p: p.update(state="open"),
+        lambda p: p.update(merged_at=None),
+        lambda p: p["base"].update(ref="other"),
+        lambda p: p["base"]["repo"].update(full_name="other/project"),
+        lambda p: p["head"].update(sha="a" * 40),
+        lambda p: p.update(merge_commit_sha="b" * 40),
+        lambda p: p.update(number=99),
+        lambda p: p.update(merge_commit_sha=None),
+    ):
+        invalid = json.loads(original)
+        mutate(invalid)
+        provider.write_text(json.dumps(invalid))
+        c.cli(c.repo, *args, "--apply", ok=False)
+        assert c.read()["tasks"]["APP-CHILD"]["metadata"]["delivery.state"] == "committed"
+    gh.write_text('#!/bin/sh\necho unavailable >&2\nexit 1\n')
+    c.cli(c.repo, *args, "--apply", ok=False, contains="GitHub PR lookup failed")
+    gh.write_text(f'#!/bin/sh\ncat "{provider}"\n')
+    provider.write_text(original)
+    c.cli(c.repo, "reconcile-pr", "APP-A", "--pr", "https://github.com/other/project/pull/42", "--apply", ok=False)
+    c.git(c.repo, "remote", "set-url", "origin", "https://github.com/other/project.git")
+    c.cli(c.repo, *args, "--apply", ok=False, contains="origin")
+    c.git(c.repo, "remote", "set-url", "origin", "https://github.com/example/project.git")
+    if kind == "squash":
+        # Fail after the obligation is settled but before the child evidence is
+        # published; the root must remain pending and a replay must recover.
+        aven = c.root / "bin/aven"
+        script = aven.read_text()
+        aven.write_text('#!/bin/sh\nif [ "$1" = edit ] && [ "$2" = APP-CHILD ]; then echo fixture-failure >&2; exit 1; fi\n' + script.split('\n', 1)[1])
+        c.cli(c.repo, *args, "--apply", ok=False, contains="fixture-failure")
+        pending = c.read()["tasks"]
+        assert pending["APP-CHILD"]["metadata"]["delivery.state"] == "committed"
+        assert pending["APP-A"]["metadata"]["delivery.state"] == "committed"
+        aven.write_text(script)
+    c.cli(c.repo, *args, "--apply")
+    tasks = c.read()["tasks"]
+    child = tasks["APP-CHILD"]
+    assert child["metadata"]["delivery.state"] == "merged"
+    assert child["metadata"]["delivery.pr-head"] == head
+    assert child["metadata"]["delivery.merged"] == merged
+    assert child["metadata"]["delivery.pr-state"] == "verified-merged"
+    assert tasks["APP-A"]["metadata"]["delivery.state"] == "not-applicable"
+    assert all(t["status"] == "done" for t in tasks.values() if t["metadata"].get("delivery.obligation-for"))
+    c.cli(c.repo, *args, "--apply")
+    assert c.read()["tasks"] == tasks
+    assert c.head() == merged
+
+
 SCENARIOS = [
+    ("pr-reapproval", scenario_pr_reapproval),
+    ("pr-merge", lambda: scenario_pr_delivery("merge")),
+    ("pr-squash", lambda: scenario_pr_delivery("squash")),
+    ("pr-rebase", lambda: scenario_pr_delivery("rebase")),
     ("acceptance", scenario_acceptance),
     ("failed-check", lambda: scenario_rejected("failed-check")),
     ("dirty-source", lambda: scenario_rejected("dirty-source")),
