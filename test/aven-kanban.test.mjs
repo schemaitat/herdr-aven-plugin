@@ -10,7 +10,7 @@ import {
   liveAgentFor, markMergedOnMain, mergeAgentRun, mergeApprovalIssue, mergeEpicRows, mergePrompt, mergeTabArgs,
   mergeTabName, moveColumn, moveEdge, moveHorizontal, moveSelection, nextMove, normalizeAttempt, normalizeEpic, openArgs,
   projectChips, selectAttempt, selectedCard, selectMainSpace, shipPrompt, shipTabName, summaryDigest, summaryNeeded,
-  summaryState, taskSummary, terminalName, upcomingArgs,
+  summaryState, taskSummary, terminalName, upcomingArgs, machineOption, onMachine, qualifyAddress, qualifyAttempt, spaceMachine,
 } from "../app/aven-kanban/logic.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../app/aven-kanban/mod.json", import.meta.url), "utf8"));
@@ -299,6 +299,36 @@ assert.equal(nonDoneApproval.readyToMerge, false);
 // a failed read rather than reusing a stale approval snapshot.
 assert.equal(detailCacheKey("default", "ONE"), "default\u0000ONE");
 assert.notEqual(detailCacheKey("default", "ONE"), detailCacheKey("notes", "ONE"));
+
+// The focused space's machine selects the Aven, Git, and dispatcher target.
+// null keeps this computer's exact argv and keys.
+assert.equal(spaceMachine({ machine: "a1" }), "a1");
+assert.equal(spaceMachine({ machine: "" }), null);
+assert.equal(spaceMachine(null), null);
+assert.equal(qualifyAddress("t7", "a1"), "a1/t7");
+assert.equal(qualifyAddress("a1/t7", "a1"), "a1/t7");
+assert.equal(qualifyAddress("t7", null), "t7");
+assert.equal(onMachine("a1/t7", "a1"), true);
+assert.equal(onMachine("t7", "a1"), false);
+assert.equal(onMachine("t7", null), true);
+assert.equal(onMachine("a1/t7", null), false);
+assert.deepEqual(machineOption(null, { cwd: "/repo" }), { cwd: "/repo" });
+assert.deepEqual(machineOption("a1", { cwd: "/repo" }), { cwd: "/repo", on: "a1" });
+const remoteAttempt = {
+  terminal: { address: "t7", core_id: "a1-core" },
+  coordinator_terminal: { address: "t8" },
+  terminals: [{ address: "t7", state: "live" }],
+  phases: [{ task_id: "P", terminal: { address: "t9" } }],
+};
+const qualified = qualifyAttempt(remoteAttempt, "a1");
+assert.equal(qualified.terminal.address, "a1/t7");
+assert.equal(qualified.coordinator_terminal.address, "a1/t8");
+assert.equal(qualified.terminals[0].address, "a1/t7");
+assert.equal(qualified.phases[0].terminal.address, "a1/t9");
+assert.equal(remoteAttempt.terminal.address, "t7", "qualification never mutates dispatcher records");
+assert.equal(qualifyAttempt(remoteAttempt, null), remoteAttempt);
+assert.notEqual(detailCacheKey("default", "ONE", "a1"), detailCacheKey("default", "ONE"));
+assert.equal(detailCacheKey("default", "ONE", "a1"), "a1\u0000default\u0000ONE");
 const cachedDetail = { workspace: "default", updatedAt: "t1", detail: detail(rawEpic("ONE", "done"), fullApproval) };
 assert.equal(detailIsCurrent(cachedDetail, "default", { updated_at: "t1" }), true);
 assert.equal(detailIsCurrent(cachedDetail, "notes", { updated_at: "t1" }), false, "a detail from another workspace is never current");
@@ -423,6 +453,17 @@ assert.equal(selectMainSpace(knownSpaces, "/repo", "missing").id, "main");
 assert.equal(selectMainSpace([{ id: "worktree", folder: "/repo/worktree", name: "task space" }], "/repo", "worktree").id, "worktree", "falls back to the active space");
 assert.equal(selectMainSpace([], "/repo", "worktree"), null);
 
+// A remote checkout can share a path with this computer's. The handoff must
+// stay on the task's machine and refuse another machine's space.
+const machineSpaces = [
+  { id: "local-main", folder: "/repo", name: "repo", machine: null },
+  { id: "a1-main", folder: "/repo", name: "repo", machine: "a1" },
+];
+assert.equal(selectMainSpace(machineSpaces, "/repo", "local-main").id, "local-main");
+assert.equal(selectMainSpace(machineSpaces, "/repo", "local-main", [], "a1").id, "a1-main");
+assert.equal(selectMainSpace(machineSpaces, "/repo", "", [], "missing"), null,
+  "no space on another machine is ever selected");
+
 // A space's `folder` is only where its new terminals start: the real main
 // space can point at $HOME while another project's space carries a stale
 // folder equal to the checkout. The first tab's live terminal decides.
@@ -529,8 +570,16 @@ assert.ok(name.length <= 32);
 assert.notEqual(terminalName("default", epic.id), terminalName("other", epic.id));
 assert.equal(isLiveEpicTerminal({ state: "live", name }, "default", epic.id), true);
 assert.equal(isLiveEpicTerminal({ state: "finished", name }, "default", epic.id), false);
+const remoteName = `${terminalName("default", epic.id)}test`;
+assert.equal(isLiveEpicTerminal({ state: "live", name: remoteName, address: "a1/t7" }, "default", epic.id, "a1"), true);
+assert.equal(isLiveEpicTerminal({ state: "live", name: remoteName, address: "t7" }, "default", epic.id, "a1"), false,
+  "a same-named local terminal is never adopted for a remote epic");
 assert.deepEqual(openArgs({ workspace: "default", epic, cwd: "/repo", name }).slice(-6), ["--", "aven", "--workspace", "default", "tui", "HAP-ONE"]);
 assert.equal(openArgs({ workspace: "default", epic, cwd: "", name }).includes("--cwd"), false);
+assert.equal(openArgs({ workspace: "default", epic, cwd: "/repo", name }).includes("--on"), false);
+const remoteOpen = openArgs({ workspace: "default", epic, cwd: "/home/dev/apo", name, machine: "a1" });
+assert.deepEqual(remoteOpen.slice(remoteOpen.indexOf("--on"), remoteOpen.indexOf("--on") + 2), ["--on", "a1"]);
+assert.deepEqual(remoteOpen.slice(-6), ["--", "aven", "--workspace", "default", "tui", "HAP-ONE"]);
 assert.ok(dispatchTerminalName("default", epic.id, DISPATCH_ACTIONS[1]).startsWith(terminalName("default", epic.id)));
 assert.ok(dispatchTerminalName("default", epic.id, DISPATCH_ACTIONS[1]).endsWith("-s-"));
 
@@ -574,6 +623,16 @@ const archived = new Set([archiveKey("default", "ONE")]);
 assert.deepEqual(filterArchived([rawEpic("ONE"), rawEpic("TWO")], archived, "default").map(({ id }) => id), ["TWO"]);
 assert.deepEqual(filterArchived([rawEpic("ONE")], archived, "other").map(({ id }) => id), ["ONE"], "another workspace is untouched");
 assert.equal(filterArchived([rawEpic("ONE")], new Set(), "default").length, 1);
+assert.notEqual(archiveKey("default", "ONE", "a1"), archiveKey("default", "ONE"));
+assert.deepEqual(
+  filterArchived([rawEpic("ONE")], new Set([archiveKey("default", "ONE", "a1")]), "default", null).map(({ id }) => id),
+  ["ONE"],
+  "archiving a remote epic never hides the same id on this computer",
+);
+assert.deepEqual(
+  filterArchived([rawEpic("ONE")], new Set([archiveKey("default", "ONE", "a1")]), "default", "a1"),
+  [],
+);
 assert.equal(filterArchived([rawEpic("ONE")], null, "default").length, 1);
 
 // The question parser takes the lowest question, ignores chrome and shortcuts.

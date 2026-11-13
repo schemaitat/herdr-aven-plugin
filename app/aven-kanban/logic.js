@@ -209,10 +209,65 @@ export function approvalMarker(metadata) {
   return { state, id, commit, workflow, approved, incomplete: state === "approved" && !approved };
 }
 
-// Aven tasks are workspace-scoped. Hydrated details must never be reused across
-// workspaces, and a changed or failed read must invalidate the cached snapshot.
-export function detailCacheKey(workspace, id) {
-  return `${String(workspace ?? "")}\u0000${String(id ?? "")}`;
+// The focused space's machine selects which machine's Aven, Git, and
+// dispatcher store the board reads. null means this computer.
+export function spaceMachine(space) {
+  const machine = space?.machine;
+  return typeof machine === "string" && machine ? machine : null;
+}
+
+// Herdr shows remote terminal, tab, and space ids with a `machine/` prefix.
+// Addresses this computer owns stay bare. Commands that run on a machine accept
+// the bare form, so qualification is for presentation identity only.
+export function qualifyAddress(address, machine) {
+  const value = String(address ?? "");
+  const target = String(machine ?? "");
+  if (!value || !target || value.includes("/")) return value;
+  return `${target}/${value}`;
+}
+
+export function onMachine(address, machine) {
+  const value = String(address ?? "");
+  if (!value) return false;
+  const target = String(machine ?? "");
+  return target ? value.startsWith(`${target}/`) : !value.includes("/");
+}
+
+// Every checkout-dependent command carries `on` for a remote space and stays
+// byte-identical for this computer.
+export function machineOption(machine, extra = {}) {
+  const target = String(machine ?? "");
+  return target ? { ...extra, on: target } : extra;
+}
+
+function qualifyTerminal(terminal, machine) {
+  if (!terminal || typeof terminal !== "object") return terminal;
+  return { ...terminal, address: qualifyAddress(terminal.address, machine) };
+}
+
+// Dispatcher records store bare core addresses. The board matches them against
+// herdr-app's machine-qualified agent and terminal addresses.
+export function qualifyAttempt(attempt, machine) {
+  if (!attempt || typeof attempt !== "object" || !machine) return attempt;
+  const next = { ...attempt };
+  for (const key of ["terminal", "coordinator_terminal", "babysitter_terminal"]) {
+    if (next[key]) next[key] = qualifyTerminal(next[key], machine);
+  }
+  if (Array.isArray(next.terminals)) next.terminals = next.terminals.map((entry) => qualifyTerminal(entry, machine));
+  if (Array.isArray(next.phases)) {
+    next.phases = next.phases.map((phase) => phase?.terminal
+      ? { ...phase, terminal: qualifyTerminal(phase.terminal, machine) }
+      : phase);
+  }
+  return next;
+}
+
+// Aven tasks are workspace- and machine-scoped. Hydrated details must never be
+// reused across workspaces or machines, and a changed or failed read must
+// invalidate the cached snapshot.
+export function detailCacheKey(workspace, id, machine = null) {
+  const prefix = machine ? `${String(machine)}\u0000` : "";
+  return `${prefix}${String(workspace ?? "")}\u0000${String(id ?? "")}`;
 }
 
 export function detailIsCurrent(cached, workspace, row) {
@@ -582,8 +637,11 @@ export function firstPaneFolder(space, panes) {
 // the board was opened from. Prefer the visible space whose first tab actually
 // lives there; `space.folder` is only a fallback when no live pane data exists.
 // If no space matches, fall back to the active space and run the tab there.
-export function selectMainSpace(spaces, root, activeSpaceId = "", panes = []) {
-  const list = spaces ?? [];
+export function selectMainSpace(spaces, root, activeSpaceId = "", panes = [], machine = null) {
+  // A remote checkout can share a path with a local space. Never integrate or
+  // hand off into a space on another machine.
+  const target = String(machine ?? "");
+  const list = (spaces ?? []).filter((space) => String(space?.machine ?? "") === target);
   const folder = normalizedPath(root);
   const live = folder
     ? list.filter((space) => insideFolder(firstPaneFolder(space, panes), folder))
@@ -803,14 +861,15 @@ export function projectChips(cards) {
 }
 
 // Archive is local presentation state keyed by workspace and immutable epic ID.
-export function archiveKey(workspace, id) {
-  return `${String(workspace ?? "")}\u0000${String(id ?? "")}`;
+export function archiveKey(workspace, id, machine = null) {
+  const prefix = machine ? `${String(machine)}\u0000` : "";
+  return `${prefix}${String(workspace ?? "")}\u0000${String(id ?? "")}`;
 }
 
-export function filterArchived(rows, archived, workspace) {
+export function filterArchived(rows, archived, workspace, machine = null) {
   const list = rows ?? [];
   if (!archived || typeof archived.has !== "function" || archived.size === 0) return list;
-  return list.filter((row) => !archived.has(archiveKey(workspace, canonicalId(row))));
+  return list.filter((row) => !archived.has(archiveKey(workspace, canonicalId(row), machine)));
 }
 
 // The lowest line on a blocked agent's screen that asks a question. The same
@@ -928,12 +987,17 @@ export function terminalName(workspace, epicId) {
   return `aven-k-${terminalHash(`${workspace}\u0000${epicId}`)}-`;
 }
 
-export function isLiveEpicTerminal(terminalValue, workspace, epicId) {
-  return terminalValue?.state === "live" && String(terminalValue?.name ?? "").startsWith(terminalName(workspace, epicId));
+export function isLiveEpicTerminal(terminalValue, workspace, epicId, machine = null) {
+  if (terminalValue?.state !== "live") return false;
+  // Terminal names are unique only within one core, so a remote match must
+  // also carry that machine's address prefix.
+  if (machine && !onMachine(terminalValue?.address, machine)) return false;
+  return String(terminalValue?.name ?? "").startsWith(terminalName(workspace, epicId));
 }
 
-export function openArgs({ workspace, epic, cwd, name }) {
+export function openArgs({ workspace, epic, cwd, name, machine = null }) {
   return ["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name,
+    ...(machine ? ["--on", machine] : []),
     ...(cwd ? ["--cwd", cwd] : []), "--", "aven", "--workspace", workspace, "tui", epic.ref];
 }
 
