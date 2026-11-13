@@ -163,6 +163,40 @@ assert_file_contains "$config" "# user comment" "content after the block kept"
 assert_file_contains "$config" "project:" "top-level key after the block kept"
 aven config get sync.enabled >/dev/null || fail "config with trailing content does not parse"
 
+# A block merged by hand under an existing tui: section (markers after the bare
+# header, aven's own columns after the end marker) is folded into one valid
+# block rather than gaining a second tui: key.
+merged=$work/merged
+AVEN_CONFIG_DIR=$merged
+export AVEN_CONFIG_DIR
+mkdir -p "$merged"
+cat > "$merged/config.yaml" <<'EOF'
+local:
+  db_path: null
+tui:
+# Managed by herdr-aven-plugin (install-aven-command). Remove this block to uninstall.
+  commands:
+    - name: dispatch
+      description: Implement the selected task
+      program: /old/aven-dispatch
+# End of the herdr-aven-plugin managed block.
+  columns:
+  - name: Inbox
+    statuses: [inbox, backlog, todo]
+  - name: Active
+    statuses: [active]
+  - name: Done
+    statuses: [done, canceled]
+EOF
+out=$(run_installer)
+assert_contains "$out" "updated: $merged/config.yaml" "merged block updated"
+assert_eq "$(grep -cE '^tui[[:space:]]*:' "$merged/config.yaml")" "1" "merged block keeps a single tui: key"
+assert_file_contains "$merged/config.yaml" "program: $fake/aven-dispatch" "merged block refreshed"
+assert_file_contains "$merged/config.yaml" "name: Inbox" "aven's own tui columns kept"
+aven config get sync.enabled >/dev/null || fail "merged config does not parse"
+out=$(run_installer)
+assert_contains "$out" "already installed" "merged block converges"
+
 # A block written by an older version (no end marker) is replaced, keeping what
 # came before it.
 legacy=$work/legacy

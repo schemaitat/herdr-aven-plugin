@@ -176,22 +176,49 @@ if [ -f "$config" ]; then
 fi
 
 if [ -n "$start_line" ]; then
-  existing=$tmp/existing
-  if [ -n "$end_line" ]; then
-    sed -n "${start_line},${end_line}p" "$config" > "$existing"
-  else
-    # Written by an older version: the block runs to the end of the file.
-    tail -n "+$start_line" "$config" > "$existing"
+  # A block merged by hand under an existing top-level tui: section keeps that
+  # header on the line before the marker. Compare from after it, and let the
+  # rewrite replace it with the block's own header, so no second tui: key is
+  # introduced (which aven rejects as invalid YAML).
+  body_start=$start_line
+  folded_header=no
+  if [ "$start_line" -gt 1 ] &&
+    sed -n "$((start_line - 1))p" "$config" | grep -qE '^tui[[:space:]]*:[[:space:]]*$'; then
+    body_start=$((start_line + 1))
+    folded_header=yes
   fi
 
-  if cmp -s "$existing" "$block"; then
+  existing=$tmp/existing
+  if [ -n "$end_line" ]; then
+    sed -n "${body_start},${end_line}p" "$config" > "$existing"
+  else
+    # Written by an older version: the block runs to the end of the file.
+    tail -n "+$body_start" "$config" > "$existing"
+  fi
+
+  expected=$block
+  if [ "$folded_header" = yes ]; then
+    expected=$tmp/block-body
+    sed '2d' "$block" > "$expected"
+  fi
+
+  if cmp -s "$existing" "$expected"; then
     printf 'already installed: %s\n' "$config"
     report_installed
     exit 0
   fi
 
   updated=$tmp/updated
-  head -n "$((start_line - 1))" "$config" > "$updated"
+  replace_start=$start_line
+  if [ "$folded_header" = yes ]; then
+    replace_start=$((start_line - 1))
+  fi
+  if [ "$replace_start" -gt 1 ]; then
+    head -n "$((replace_start - 1))" "$config" > "$updated"
+  else
+    # BSD head rejects "-n 0"; a block at the top has nothing before it.
+    : > "$updated"
+  fi
   cat "$block" >> "$updated"
   if [ -n "$end_line" ]; then
     tail -n "+$((end_line + 1))" "$config" >> "$updated"

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix `install-aven-command` on macOS and for hand-merged configs: rewriting a
+  managed block that starts at line 1 no longer calls `head -n 0` (rejected by
+  BSD `head`), and a block merged by hand under an existing top-level `tui:`
+  section is folded into the managed block instead of gaining a second,
+  unparseable `tui:` key. Aven's own `tui.columns` after the block are kept.
+
 - Add `aven-dispatch work`, a read-only, prompt-free lifecycle projection for
   central automation. It reports ready-to-land work (`done` + commit-bound
   approval + unsettled delivery, action `merge`), review work, ready-to-dispatch
