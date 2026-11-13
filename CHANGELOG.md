@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Make every herdr-app Aven surface follow the focused space's machine. When a
+  space lives on a remote machine from `hc machine ls`, the Kanban board, Aven
+  sidebar, tab indicator, and Aven launcher now run their Aven, Git,
+  `aven-dispatch`, and OpenCode work there through herdr-core instead of on this
+  computer: the board reads that machine's epics, details, summaries, dispatcher
+  attempts, and main ancestry; Dispatch, Merge, and Ship PR open Aven/agents on
+  that machine; attempt terminal addresses are matched with the machine prefix;
+  and machine switches clear cross-machine detail, ancestry, question, and
+  selection caches. Local spaces keep the exact previous argv and behavior. The
+  plugin must be installed on each machine that dispatches, because the
+  dispatcher still runs wherever its Aven TUI runs.
 - Fix the Kanban **all** project chip doing nothing: both board list reads now
   pass `aven list --all-projects`, so the board holds every epic in its explicit
   workspace and the project chips (including **all**) genuinely narrow and widen

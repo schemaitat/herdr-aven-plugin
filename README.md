@@ -524,6 +524,12 @@ started, so the first open reveals it instead of reporting that the terminal
 was not found. Pressing the key again while that terminal is still starting
 reuses it rather than opening a second Aven.
 
+The overlay follows the focused space's machine. A space on another machine
+from `hc machine ls` starts Aven there with `hc run --on`, so its Aven
+database, project inference, and dispatcher shortcuts stay on that machine. A
+live Aven terminal is reused only on the same machine; a same-named local
+terminal is never adopted. Local spaces keep the existing behaviour.
+
 ### Aven Kanban board
 
 Open the native **Aven Kanban** overlay with `ctrl-shift-h` (requested only when
@@ -538,14 +544,24 @@ the Board layout from
 [jkuepker/herdr-layouts](https://github.com/jkuepker/herdr-layouts): a dark
 Graphite-style palette, a compact top bar, a today strip, a NEXT MOVE banner,
 project chips, and colour-accented, independently scrolling columns. It lists
-nondeleted root epics from every Aven project in the explicit local `default`
-workspace, with the project chips narrowing that set. Scheduled open epics and
-terminal done/canceled epics are included. Five flexible columns always fit the
-window width without horizontal scrolling and combine independent Aven and
-dispatcher facts instead of creating another task store. The selected card has
-a bright accent border and the focused column header carries an accent rule and
-count chip; every board text colour meets WCAG AA contrast on the surface it is
-drawn on:
+nondeleted root epics from every Aven project in the explicit `default`
+workspace of the focused space's machine, with the project chips narrowing that
+set. Scheduled open epics and terminal done/canceled epics are included. Five
+flexible columns always fit the window width without horizontal scrolling and
+combine independent Aven and dispatcher facts instead of creating another task
+store. The selected card has a bright accent border and the focused column
+header carries an accent rule and count chip; every board text colour meets
+WCAG AA contrast on the surface it is drawn on:
+
+When the focused space lives on a machine from `hc machine ls` (for example
+`a1`), the board follows it: Aven list/detail/summary reads, the
+`aven-dispatch` store, Git ancestry, live-terminal lookup, and Dispatch,
+Merge, and Ship PR handoffs all run there through herdr-core, and the top bar
+shows `on a1`. A same-named checkout on this computer is never substituted, and
+a machine switch clears cached details, ancestry, questions, and selection
+before the first read. Local spaces emit no `--on` and behave exactly as
+before. Install and upgrade the plugin on every machine that dispatches; the
+dispatcher always runs wherever its Aven TUI runs.
 
 | Column | Contents |
 | --- | --- |
@@ -749,11 +765,14 @@ demand with `d l`/`z l` in Aven and are never written during a panel refresh.
 
 The Aven panel lists nondeleted open epics (inbox, backlog, todo, active),
 including future-available epics, from the repository's inferred project in the
-explicit local `default` workspace. It merges normal open-epic and per-project
-upcoming reads, deduplicates canonical IDs, orders valid `created_at` values
-newest first (stable ID ties; invalid dates last), and labels loading, empty,
-stale, errors, and incomplete coverage separately. A list cap, malformed data,
-timeout, or project failure is never displayed as a complete empty list.
+explicit `default` workspace of the focused space's machine. It merges normal
+open-epic and per-project upcoming reads, deduplicates canonical IDs, orders
+valid `created_at` values newest first (stable ID ties; invalid dates last),
+and labels loading, empty, stale, errors, and incomplete coverage separately. A
+list cap, malformed data, timeout, or project failure is never displayed as a
+complete empty list. On a remote space, every Aven, Git, and dispatcher read
+and every Aven launch uses that machine; phase and summary caches are cleared
+when focus moves to another machine.
 
 Every row carries its project's stable colour as a 3px left bar and a coloured
 project chip. The colour comes from the same eight-colour Board chip palette
@@ -851,14 +870,18 @@ automatic generation.
    live: Up/Down (or PageUp/PageDown) move, Enter selects, Esc clears the
    search or cancels when it is empty, and Ctrl-C always cancels. `q` also
    cancels when the search is not active, without creating a session or prompt.
+   When the task is selected through the Kanban board or the Aven panel on a
+   remote space, the dispatch terminal, Aven, and this picker all run on that
+   space's machine.
 3. Choose a model from every model enabled by your currently configured
    OpenCode providers. The same live `/` search applies, so the list stays
    workable as more providers and models are configured.
 4. Worktree discovery, creation, cleanliness checks, and integration run through
-   `hc exec --cwd <repo> git ...`. The dispatcher creates the OpenCode session,
-   starts the OpenCode CLI in a dedicated herdr-core terminal, and submits the
-   task through the OpenCode V2 API. If herdr-app is running, the worktree gets
-   a sidebar space named for the task, the terminal is labelled into its tab,
+   `hc exec --cwd <repo> git ...` on the machine that hosts the Aven TUI. The
+   dispatcher creates the OpenCode session, starts the OpenCode CLI in a
+   dedicated herdr-core terminal, and submits the task through the OpenCode V2
+   API on that machine. If herdr-app is running, the worktree gets a sidebar
+   space named for the task, the terminal is labelled into its tab,
    and an **Aven** pane opens beside the agent with the root epic, phase
    progress, the current task, and the persisted dispatcher/agent state.
    Headless dispatch is unchanged. The panel reads Aven and
@@ -931,6 +954,13 @@ phase worktrees insert `phase-NN` before the dispatch id).
 | `OPENCODE_BIN` | OpenCode executable override; defaults to the first `opencode` on `PATH`, then `~/.opencode/bin`, `~/.local/bin`, and the standard bin directories |
 | `HERDR_APP_BIN` | herdr-app executable override; defaults to `herdr-app` |
 | `HC_SESSION` | Isolated herdr-core session for integration tests; never set it for normal work |
+
+Every path in this table is resolved on the machine that runs the dispatcher.
+The Kanban board, Aven sidebar, tab indicator, and Aven launcher follow the
+focused herdr-app space's machine, so a task selected on `a1` uses `a1`'s Aven
+database, checkout, worktree root, dispatcher store, OpenCode, and terminals.
+Install and upgrade the plugin on each such machine; the dispatcher always runs
+where its Aven TUI runs.
 
 By default, every checkout, worktree, and project shares one central SQLite
 store at `$XDG_STATE_HOME/aven/dispatch.sqlite` (fallback
