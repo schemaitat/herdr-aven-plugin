@@ -3,9 +3,16 @@
 // ends dispatched work, and a missing app never affects dispatch.
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { closeOverlay, exec, focused, hc, nextCommand, props, run, terminals, theme } from "herdr";
+import { closeOverlay, exec, focused, hc, nextCommand, props, run, spaces, terminals, theme } from "herdr";
 
 const base = (path) => (path ?? "").replace(/\/+$/, "").split("/").pop() || path || "~";
+// Remote terminal addresses carry a `machine/` prefix; this computer's stay
+// bare. Reusing a terminal across machines would open the wrong Aven.
+const onMachine = (address, machine) => {
+  const value = String(address ?? "");
+  if (!value) return false;
+  return machine ? value.startsWith(`${machine}/`) : !value.includes("/");
+};
 // herdr-core returns a new address before herdr-app has adopted the terminal.
 // Probe the peek for a bounded time instead of revealing too early.
 const READY_TIMEOUT_MS = 3000;
@@ -79,9 +86,16 @@ export default class AvenTasks extends View {
     if (!this.closed) this.cx.notify();
   }
 
-  reuse(kind, folder) {
+  machine() {
+    const id = focused()?.space;
+    return spaces().find((space) => space.id === id)?.machine ?? null;
+  }
+
+  reuse(kind, folder, machine = null) {
     const prefix = kind === "compose" ? "aven-add-" : "aven-tui-";
-    const matches = terminal => terminal.state === "live" && terminal.cwd === folder && String(terminal.name ?? "").startsWith(prefix);
+    const matches = terminal => terminal.state === "live" && terminal.cwd === folder
+      && onMachine(terminal.address, machine)
+      && String(terminal.name ?? "").startsWith(prefix);
     return terminals().find(matches) ?? this.live.find(matches);
   }
 
@@ -116,21 +130,22 @@ export default class AvenTasks extends View {
   }
 
   async launch(kind) {
-    const folder = this.cwd;
+    const folder = focused()?.cwd ?? this.cwd;
+    const machine = this.machine();
     if (!folder) {
       this.error = "No focused folder; open a terminal first.";
       this.cx.notify();
       return;
     }
-    const existing = this.reuse(kind, folder);
+    const existing = this.reuse(kind, folder, machine);
     if (existing) {
       await this.reveal(existing.address);
       return;
     }
     const name = `${kind === "compose" ? "aven-add" : "aven-tui"}-${Date.now().toString(36)}`;
     const command = kind === "compose"
-      ? ["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name, "--cwd", folder, "--", "aven", "tui", "-p", "--add-task-only"]
-      : ["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name, "--cwd", folder, "--", "aven", "tui", "-p"];
+      ? ["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name, ...(machine ? ["--on", machine] : []), "--cwd", folder, "--", "aven", "tui", "-p", "--add-task-only"]
+      : ["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name, ...(machine ? ["--on", machine] : []), "--cwd", folder, "--", "aven", "tui", "-p"];
     try {
       const result = await hc(command);
       if (result.code !== 0) throw new Error(result.stderr.trim() || "could not start aven");

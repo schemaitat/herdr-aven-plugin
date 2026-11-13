@@ -10,6 +10,7 @@ import {
   landedWeek, landedWeekTotal, lastQuestion, liveHandoffTerminal, mapLimit, markMergedOnMain, mergeApprovalIssue, mergeEpicRows, mergePrompt,
   mergeTabName, moveColumn, moveEdge, moveSelection, nextMove, obligationListArgs, openObligationIndex,
   openArgs, projectChips, automaticProjectFilter, currentProjectArgs, resolveCurrentProject, safeDeleteOutcome, safeDetail,
+  machineOption, onMachine, qualifyAttempt, spaceMachine,
   selectAttempt, selectedCard, selectionAfterClick, selectionCards, selectWorktreeSpace, shipPrompt, shipTabName, terminalName, upcomingArgs,
   pruneSelection, bulkTargets, progressPublishDue,
 } from "./logic.js";
@@ -111,6 +112,7 @@ export default class AvenKanban extends View {
     this.pendingLaunches = new Set();
     this.pendingHandoffs = new Set();
     this.reopening = "";
+    this.machineKey = "";
     // Navigation and archive presses that arrive before classification settles
     // are replayed against the authoritative board, so a provisional frame
     // cannot move the selection to a card that later changes column.
@@ -152,7 +154,7 @@ export default class AvenKanban extends View {
     cx.timer.every(QUESTION_MS, (timerCx) => this.readQuestions(timerCx));
     cx.timer.every(30000, (timerCx) => { this.now = Date.now(); this.notify(timerCx); });
     cx.spawn(async () => {
-      try { for (const program of await knownAgents()) this.programs[program.key] = program; } catch {}
+      try { for (const program of await knownAgents(machineOption(this.machine()))) this.programs[program.key] = program; } catch {}
     });
     this.commands(cx);
   }
@@ -168,6 +170,10 @@ export default class AvenKanban extends View {
     const id = focused()?.space;
     return spaces().find((space) => space.id === id) ?? spaces().find((space) => space.active) ?? null;
   }
+  // The focused space owns its Aven database, checkout, dispatcher store, and
+  // installed agents. null means this computer.
+  machine() { return spaceMachine(this.space()); }
+  option(extra = {}, machine = this.machine()) { return machineOption(machine, extra); }
   spaceFolder() {
     const space = this.space();
     const focus = focused();
@@ -263,16 +269,17 @@ export default class AvenKanban extends View {
     this.notify(cx);
   }
 
-  async rootFolder(folder) {
+  async rootFolder(folder, machine = this.machine()) {
+    const option = this.option({}, machine);
     if (!folder) {
       try {
-        const current = await exec("pwd", []);
+        const current = await exec("pwd", [], option);
         folder = current.code === 0 ? current.stdout.trim() : "";
       } catch {}
     }
     if (!folder) return "";
     try {
-      const result = await exec("git", ["-C", folder, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+      const result = await exec("git", ["-C", folder, "rev-parse", "--path-format=absolute", "--git-common-dir"], option);
       if (result.code !== 0) return "";
       const common = result.stdout.trim().replace(/\/+$/, "");
       return common.endsWith("/.git") ? common.slice(0, -5) : folder;
@@ -294,19 +301,22 @@ export default class AvenKanban extends View {
   // and Git evidence enrich the same rows afterwards.
   async readSources() {
     const workspace = this.workspace();
+    const machine = this.machine();
     const folder = this.spaceFolder();
     // Never guess a checkout from the app's own cwd: a wrong repository would
     // silently mark another project's work as delivered.
-    const cwd = folder ? await this.rootFolder(folder) : "";
+    const cwd = folder ? await this.rootFolder(folder, machine) : "";
     // A non-Git folder can still be mapped to a project by Aven path mappings,
     // so let Aven see the space folder when there is no Git checkout.
     const projectCwd = cwd || folder;
+    const option = machineOption(machine, cwd ? { cwd } : {});
+    const projectOption = projectCwd ? machineOption(machine, { cwd: projectCwd }) : {};
     const [availableResult, upcomingResult, attemptsResult, projectResult, obligationResult] = await Promise.all([
-      exec("aven", epicArgs(workspace), cwd ? { cwd } : undefined),
-      exec("aven", upcomingArgs(workspace), cwd ? { cwd } : undefined),
-      exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], cwd ? { cwd } : undefined),
-      projectCwd ? exec("aven", currentProjectArgs(workspace), { cwd: projectCwd }).catch(() => null) : Promise.resolve(null),
-      exec("aven", obligationListArgs(workspace), cwd ? { cwd } : undefined).then(emptyWhenUnknownMetadata),
+      exec("aven", epicArgs(workspace), option),
+      exec("aven", upcomingArgs(workspace), option),
+      exec("aven-dispatch", ["list", "--summary", "--limit", String(ATTEMPT_LIMIT)], option),
+      projectCwd ? exec("aven", currentProjectArgs(workspace), projectOption).catch(() => null) : Promise.resolve(null),
+      exec("aven", obligationListArgs(workspace), option).then(emptyWhenUnknownMetadata),
     ]);
     const available = parseList(availableResult, "Epics");
     const upcoming = parseList(upcomingResult, "Upcoming epics");
@@ -328,7 +338,7 @@ export default class AvenKanban extends View {
       if (cached && cached.updatedAt === row?.updated_at
         && cached.detail?.task?.status === String(row?.status ?? "")) return cached.detail;
       const detail = safeDetail(parse(
-        await exec("aven", detailArgs(workspace, ref), cwd ? { cwd } : undefined),
+        await exec("aven", detailArgs(workspace, ref), option),
         `Obligation ${ref}`,
       ));
       this.obligationDetails.set(ref, { updatedAt: row?.updated_at, detail });
@@ -337,10 +347,15 @@ export default class AvenKanban extends View {
     const obligations = openObligationIndex(obligationDetails);
     const baseRows = mergeEpicRows({ available, upcoming, obligations });
     assertBoardCoverage({ epics: baseRows.length });
-    const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id)));
+    const currentKeys = new Set(baseRows.map((row) => detailCacheKey(workspace, row.id, machine)));
     for (const key of this.details.keys()) if (!currentKeys.has(key)) this.details.delete(key);
-    const attemptIndex = indexAttempts(rawAttempts);
-    return { workspace, cwd, resolvedProject, available, upcoming, obligations, baseRows, attemptIndex, attempts: [...attemptIndex.values()].flat() };
+    // Stored dispatcher addresses are bare; qualify them once for matching
+    // against herdr-app's machine-prefixed agent and terminal addresses.
+    const attemptIndex = indexAttempts(rawAttempts.map((attempt) => qualifyAttempt(attempt, machine)));
+    return {
+      workspace, machine, cwd, resolvedProject, available, upcoming, obligations, baseRows, attemptIndex,
+      attempts: [...attemptIndex.values()].flat(),
+    };
   }
 
   mergedRows() {
@@ -348,7 +363,7 @@ export default class AvenKanban extends View {
     if (!sources) return [];
     const details = {};
     for (const row of sources.baseRows) {
-      const cached = this.details.get(detailCacheKey(sources.workspace, row.id));
+      const cached = this.details.get(detailCacheKey(sources.workspace, row.id, sources.machine));
       if (detailIsCurrent(cached, sources.workspace, row)) details[row.id] = cached.detail;
     }
     return markMergedOnMain(
@@ -364,7 +379,7 @@ export default class AvenKanban extends View {
     if (this.projectAuto) {
       // Automatic scope follows the selected space's project, but only while
       // that project has a card the current view can actually show.
-      const visible = filterArchived(filterRowsByCreated(rows, this.createdFilter), this.archived, this.workspace());
+      const visible = filterArchived(filterRowsByCreated(rows, this.createdFilter), this.archived, this.workspace(), this.sources?.machine ?? null);
       this.projectFilter = automaticProjectFilter(this.resolvedProject, visible);
     } else if (this.projectFilter && !rows.some((row) => row.project === this.projectFilter)) {
       // An explicit filter that no longer matches any epic is cleared rather
@@ -422,35 +437,38 @@ export default class AvenKanban extends View {
     return terminals;
   }
 
-  async mainHead(cwd) {
-    if (!cwd) return { head: "", error: "Local main is unavailable; delivery ancestry was not checked." };
-    const headResult = await exec("git", ["-C", cwd, "rev-parse", "--verify", "main"]);
+  async mainHead(cwd, machine = this.machine()) {
+    if (!cwd) return { head: "", error: "main is unavailable; delivery ancestry was not checked." };
+    const headResult = await exec("git", ["-C", cwd, "rev-parse", "--verify", "main"], this.option({}, machine));
     if (headResult.code === 0) return { head: headResult.stdout.trim(), error: "" };
     const detail = String(headResult.stderr ?? "").trim();
-    return { head: "", error: `Local main is unavailable at ${cwd}; delivery ancestry was not checked${detail ? `: ${detail}` : "."}` };
+    return { head: "", error: `main is unavailable at ${cwd}; delivery ancestry was not checked${detail ? `: ${detail}` : "."}` };
   }
 
   // `head` is resolved by the caller so a cheap refresh can detect a moved main
   // with one probe and reuse the cached evidence when nothing else changed.
-  async evidenceFromMain(cwd, terminals, head) {
+  async evidenceFromMain(cwd, terminals, head, machine = this.machine()) {
+    const option = this.option({}, machine);
     if (!terminals.length) return { merged: new Set(), error: "" };
-    if (!cwd || !head) return { merged: new Set(), error: "Local main is unavailable; delivery ancestry was not checked." };
-    if (this.mainEvidence.head !== head) this.mainEvidence = { head, entries: new Map() };
+    if (!cwd || !head) return { merged: new Set(), error: "main is unavailable; delivery ancestry was not checked." };
+    if (this.mainEvidence.head !== head || this.mainEvidence.machine !== machine) {
+      this.mainEvidence = { head, machine, entries: new Map() };
+    }
     const merged = new Set();
     await mapLimit(terminals, EVIDENCE_WORKERS, async ({ row, attempt }) => {
       const commits = new Set();
       if (attempt.branch) {
-        const branch = await exec("git", ["-C", cwd, "rev-parse", "--verify", `${attempt.branch}^{commit}`]);
+        const branch = await exec("git", ["-C", cwd, "rev-parse", "--verify", `${attempt.branch}^{commit}`], option);
         if (branch.code === 0 && branch.stdout.trim()) commits.add(branch.stdout.trim());
       }
       if (attempt.worktree) {
-        const worktree = await exec("git", ["-C", attempt.worktree, "rev-parse", "HEAD"]);
+        const worktree = await exec("git", ["-C", attempt.worktree, "rev-parse", "HEAD"], option);
         if (worktree.code === 0 && worktree.stdout.trim()) commits.add(worktree.stdout.trim());
       }
       for (const commit of commits) {
         let contained = this.mainEvidence.entries.get(commit);
         if (contained === undefined) {
-          const ancestry = await exec("git", ["-C", cwd, "merge-base", "--is-ancestor", commit, head]);
+          const ancestry = await exec("git", ["-C", cwd, "merge-base", "--is-ancestor", commit, head], option);
           contained = ancestry.code === 0;
           this.mainEvidence.entries.set(commit, contained);
         }
@@ -466,6 +484,32 @@ export default class AvenKanban extends View {
     // staged and published once; otherwise merged/main badges would disappear
     // and reappear while metadata and Git evidence are recomputed.
     const progressive = refreshMayPublishProgress(this.hasSettledBoard);
+    // A machine switch invalidates every row before the first read. If that
+    // machine is unreachable, show an empty error state rather than this
+    // computer's epics labelled as the remote machine's.
+    const requested = this.machine();
+    if ((requested ?? "") !== this.machineKey) {
+      this.machineKey = requested ?? "";
+      this.sources = null;
+      this.details.clear();
+      this.obligationDetails.clear();
+      this.mainMerged = new Set();
+      this.mainEvidence = { head: "", machine: requested, entries: new Map() };
+      this.questions.clear();
+      this.relatedAgentCache = new Map();
+      this.projectFilter = "";
+      this.resolvedProject = "";
+      setShared("aven-kanban.project-filter", "");
+      this.selectedId = "";
+      this.selectedIds = [];
+      this.summaryCardId = "";
+      this.dispatchMenuEpicId = null;
+      this.deleteConfirmId = "";
+      this.sourceSignature = "";
+      this.lastFullRefresh = 0;
+      this.hasSettledBoard = false;
+      this.state = { ...this.state, rows: [], attempts: [], attemptIndex: new Map(), loading: true, error: "", stale: false };
+    }
     this.refreshing = true;
     if (progressive) this.ancestryChecked = false;
     if (!this.state.rows.length) this.state = { ...this.state, loading: true, error: "" };
@@ -473,6 +517,27 @@ export default class AvenKanban extends View {
     cx.spawn(async (taskCx) => {
       try {
         const sources = await this.readSources();
+        const machineKey = String(sources.machine ?? "");
+        if (this.machineKey !== machineKey) {
+          // Focus can settle after the first read. Drop every presentation fact
+          // that could name another machine's repository or terminal.
+          this.machineKey = machineKey;
+          this.details.clear();
+          this.obligationDetails.clear();
+          this.mainMerged = new Set();
+          this.mainEvidence = { head: "", machine: sources.machine, entries: new Map() };
+          this.questions.clear();
+          this.relatedAgentCache = new Map();
+          this.projectFilter = "";
+          this.resolvedProject = "";
+          setShared("aven-kanban.project-filter", "");
+          this.selectedId = "";
+          this.selectedIds = [];
+          this.summaryCardId = "";
+          this.dispatchMenuEpicId = null;
+          this.deleteConfirmId = "";
+          this.sourceSignature = "";
+        }
         const signature = boardSourceSignature({
           rows: sources.baseRows, attempts: sources.attempts, obligations: sources.obligations,
         });
@@ -488,7 +553,7 @@ export default class AvenKanban extends View {
         }
         const neededRows = sources.baseRows.filter((row) =>
           detailNeedsRefresh(
-            this.details.get(detailCacheKey(sources.workspace, row.id)),
+            this.details.get(detailCacheKey(sources.workspace, row.id, sources.machine)),
             sources.workspace,
             row,
             { revalidate: full },
@@ -501,13 +566,13 @@ export default class AvenKanban extends View {
               rows: neededRows,
               workspace: sources.workspace,
               limit: READ_WORKERS,
-              cached: (row) => this.details.get(detailCacheKey(sources.workspace, row.id)),
+              cached: (row) => this.details.get(detailCacheKey(sources.workspace, row.id, sources.machine)),
               read: async (row) => parse(
-                await exec("aven", detailArgs(sources.workspace, row.ref), sources.cwd ? { cwd: sources.cwd } : undefined),
+                await exec("aven", detailArgs(sources.workspace, row.ref), machineOption(sources.machine, sources.cwd ? { cwd: sources.cwd } : {})),
                 `Epic ${row.ref}`,
               ),
               publish: (row, snapshot) => {
-                const key = detailCacheKey(sources.workspace, row.id);
+                const key = detailCacheKey(sources.workspace, row.id, sources.machine);
                 // A failed read must not leave an older approval marker usable.
                 if (snapshot) this.details.set(key, snapshot);
                 else this.details.delete(key);
@@ -536,12 +601,15 @@ export default class AvenKanban extends View {
           const waitForCheckout = full || changed || hydration.needed > 0 || !this.ancestryChecked;
           if (!cwd && waitForCheckout) {
             for (let attempt = 0; !cwd && attempt < 25; attempt += 1) {
+              // Focus may have moved to another machine while waiting; never
+              // read a new machine's folder with the old machine's target.
+              if ((this.machine() ?? "") !== (sources.machine ?? "")) break;
               await taskCx.sleep(200);
               const folder = this.spaceFolder();
-              cwd = folder ? await this.rootFolder(folder) : "";
+              cwd = folder ? await this.rootFolder(folder, sources.machine) : "";
             }
           }
-          const headInfo = await this.mainHead(cwd);
+          const headInfo = await this.mainHead(cwd, sources.machine);
           const evidenceDue = evidenceNeedsRefresh({
             full, changed, hydrated: hydration.needed,
             head: headInfo.head, previousHead: this.mainEvidence.head,
@@ -551,7 +619,7 @@ export default class AvenKanban extends View {
               mainEvidence = { merged: new Set(), error: headInfo.error };
               this.mainEvidence = { head: "", entries: new Map() };
             } else {
-              mainEvidence = await this.evidenceFromMain(cwd, terminals, headInfo.head);
+              mainEvidence = await this.evidenceFromMain(cwd, terminals, headInfo.head, sources.machine);
             }
           }
         }
@@ -587,7 +655,7 @@ export default class AvenKanban extends View {
   // Archive and creation filters apply before the project filter so the strip
   // and chips can still describe every visible project.
   createdRows() {
-    return filterArchived(filterRowsByCreated(this.state.rows, this.createdFilter), this.archived, this.workspace());
+    return filterArchived(filterRowsByCreated(this.state.rows, this.createdFilter), this.archived, this.workspace(), this.sources?.machine ?? null);
   }
   boardColumns() {
     return buildBoard({ rows: this.createdRows(), attemptIndex: this.state.attemptIndex, liveAgents: this.state.liveAgents ?? [] });
@@ -620,21 +688,25 @@ export default class AvenKanban extends View {
     const selected = this.selected(columns);
     const cards = flattenBoard(columns);
     const ordered = [selected, ...cards].filter(Boolean);
+    const machine = this.sources?.machine ?? this.machine();
+    const folder = this.sources?.cwd || this.spaceFolder();
+    const requestKey = (ref) => `${machine ?? ""}\u0000${ref}`;
     const card = ordered.find((candidate) => candidate.summaryAuto
-      && !this.autoRequests.has(candidate.ref)
-      && Date.now() - (this.autoAttempts.get(candidate.ref) ?? 0) >= 120000);
+      && !this.autoRequests.has(requestKey(candidate.ref))
+      && Date.now() - (this.autoAttempts.get(requestKey(candidate.ref)) ?? 0) >= 120000);
     if (!card) return;
+    const key = requestKey(card.ref);
     this.autoBusy = true;
-    this.autoRequests.add(card.ref);
-    this.autoAttempts.set(card.ref, Date.now());
+    this.autoRequests.add(key);
+    this.autoAttempts.set(key, Date.now());
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder());
-        await exec("aven-dispatch", ["describe", card.ref, "--llm", "--auto", "--workspace", this.workspace()], cwd ? { cwd } : undefined);
+        const cwd = await this.rootFolder(folder, machine);
+        await exec("aven-dispatch", ["describe", card.ref, "--llm", "--auto", "--workspace", this.workspace()], machineOption(machine, cwd ? { cwd } : {}));
       } catch {}
       finally {
         this.autoBusy = false;
-        this.autoRequests.delete(card.ref);
+        this.autoRequests.delete(key);
         if (!this.closed) this.refresh(taskCx);
       }
     });
@@ -810,7 +882,8 @@ export default class AvenKanban extends View {
   reopenAgent(card, cx) {
     const target = reopenTarget(card);
     if (!target) return false;
-    const identity = `reopen\u0000${target.attemptId}`;
+    const machine = this.sources?.machine ?? this.machine();
+    const identity = `${machine ?? ""}\u0000reopen\u0000${target.attemptId}`;
     if (this.pendingLaunches.has(identity)) return true;
     this.pendingLaunches.add(identity);
     this.reopening = card.ref;
@@ -820,7 +893,7 @@ export default class AvenKanban extends View {
       try {
         const args = ["reopen", target.ref, "--json"];
         if (target.workflow) args.push("--workflow", target.workflow);
-        const result = await exec("aven-dispatch", args);
+        const result = await exec("aven-dispatch", args, machineOption(machine));
         const payload = parse(result, `Reopen ${target.ref}`);
         const address = String(payload?.terminal ?? "");
         if (!address) throw new Error(`Reopen ${target.ref} returned no terminal`);
@@ -919,16 +992,18 @@ export default class AvenKanban extends View {
 
   open(epic, cx) {
     const workspace = this.workspace();
-    const identity = terminalName(workspace, epic.id);
+    const machine = this.sources?.machine ?? this.machine();
+    const folder = this.sources?.cwd || this.spaceFolder();
+    const identity = `${machine ?? ""}\u0000${terminalName(workspace, epic.id)}`;
     if (this.pendingLaunches.has(identity)) return;
-    const existing = terminals().find((terminal) => isLiveEpicTerminal(terminal, workspace, epic.id));
+    const existing = terminals().find((terminal) => isLiveEpicTerminal(terminal, workspace, epic.id, machine));
     if (existing) { void this.reveal(existing.address, cx); return; }
     this.pendingLaunches.add(identity);
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder());
-        const name = `${identity}${Date.now().toString(36)}`;
-        const result = await hc(openArgs({ workspace, epic, cwd, name }));
+        const cwd = await this.rootFolder(folder, machine);
+        const name = `${terminalName(workspace, epic.id)}${Date.now().toString(36)}`;
+        const result = await hc(openArgs({ workspace, epic, cwd, name, machine }));
         if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not start Aven");
         await this.reveal(JSON.parse(result.stdout).address, taskCx);
       } catch (error) {
@@ -959,18 +1034,22 @@ export default class AvenKanban extends View {
   dispatch(epic, action, cx) {
     if (epic.status === "done" || epic.status === "canceled") return;
     const workspace = this.workspace();
-    const identity = `${terminalName(workspace, epic.id)}\u0000${action.id}`;
+    const machine = this.sources?.machine ?? this.machine();
+    const folder = this.sources?.cwd || this.spaceFolder();
+    const identity = `${machine ?? ""}\u0000${terminalName(workspace, epic.id)}\u0000${action.id}`;
     const prefix = dispatchTerminalName(workspace, epic.id, action);
     if (this.pendingLaunches.has(identity)) return;
-    const existing = terminals().find((terminal) => terminal.state === "live" && String(terminal.name ?? "").startsWith(prefix));
+    const existing = terminals().find((terminal) => terminal.state === "live"
+      && onMachine(terminal.address, machine)
+      && String(terminal.name ?? "").startsWith(prefix));
     if (existing) { void this.reveal(existing.address, cx); return; }
     this.pendingLaunches.add(identity);
     this.dispatchMenuEpicId = null;
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder());
+        const cwd = await this.rootFolder(folder, machine);
         const name = `${prefix}${Date.now().toString(36)}`;
-        const started = await hc(openArgs({ workspace, epic, cwd, name }));
+        const started = await hc(openArgs({ workspace, epic, cwd, name, machine }));
         if (started.code !== 0) throw new Error(started.stderr.trim() || `could not open ${epic.ref} in Aven`);
         const address = JSON.parse(started.stdout).address;
         await this.waitForDetail(address, epic.ref, taskCx);
@@ -986,13 +1065,13 @@ export default class AvenKanban extends View {
     });
   }
 
-  async handoffAgent() {
+  async handoffAgent(machine = this.sources?.machine ?? this.machine()) {
     const configured = shared("aven-kanban.merge-agent");
     if (Array.isArray(configured) && configured.length > 0 && configured.every((part) => typeof part === "string")) {
       return configured;
     }
     try {
-      const installed = (await knownAgents())
+      const installed = (await knownAgents(machineOption(machine)))
         .filter((agent) => agent?.installed && Array.isArray(agent.run) && agent.run.length > 0);
       const preferred = installed.find((agent) =>
         /opencode/i.test(`${agent.key ?? ""} ${agent.name ?? ""} ${agent.run.join(" ")}`));
@@ -1002,8 +1081,8 @@ export default class AvenKanban extends View {
     return ["opencode"];
   }
 
-  async exactDetail(workspace, epic, cwd) {
-    const result = await exec("aven", detailArgs(workspace, epic.ref), cwd ? { cwd } : undefined);
+  async exactDetail(workspace, epic, cwd, machine = this.sources?.machine ?? this.machine()) {
+    const result = await exec("aven", detailArgs(workspace, epic.ref), machineOption(machine, cwd ? { cwd } : {}));
     const detail = safeDetail(parse(result, `Epic ${epic.ref}`));
     if (detail.task.id !== epic.id || !detail.task.is_epic) {
       throw new Error(`approval identity mismatch for ${epic.ref}`);
@@ -1028,13 +1107,14 @@ export default class AvenKanban extends View {
     const label = kind === "ship" ? "Ship PR" : "Merge";
     try {
       const workspace = this.workspace();
-      const cwd = epic.attempt?.worktree || await this.rootFolder(this.spaceFolder());
+      const machine = this.sources?.machine ?? this.machine();
+      const cwd = epic.attempt?.worktree || await this.rootFolder(this.sources?.cwd || this.spaceFolder(), machine);
       // Re-read the exact task now: a cached or stale approval marker must
       // never deliver a handoff. The dispatcher journal still validates it.
-      const detail = await this.exactDetail(workspace, epic, cwd);
+      const detail = await this.exactDetail(workspace, epic, cwd, machine);
       const issue = mergeApprovalIssue(detail.task, detail.metadata);
       if (issue) {
-        this.details.delete(detailCacheKey(workspace, epic.id));
+        this.details.delete(detailCacheKey(workspace, epic.id, machine));
         throw new Error(`no complete durable approval (${issue}); rerun /approve`);
       }
       const task = kind === "ship" ? shipPrompt(epic) : mergePrompt(epic);
@@ -1051,7 +1131,7 @@ export default class AvenKanban extends View {
       // worktree space rather than starting a fresh agent in main.
       const worktree = epic.attempt?.worktree ?? "";
       const activeSpaceId = focused()?.space ?? spaces().find((space) => space.active)?.id ?? "";
-      const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes());
+      const target = selectWorktreeSpace(spaces(), worktree, activeSpaceId, panes(), machine);
       if (!target?.id) {
         throw new Error("the task agent terminal and its worktree space are unavailable; open the task agent and retry");
       }
@@ -1067,7 +1147,7 @@ export default class AvenKanban extends View {
         this.close();
         return { ok: true };
       }
-      const argv = await this.handoffAgent();
+      const argv = await this.handoffAgent(machine);
       const result = await exec("herdr-app", handoffTabArgs({
         name, space: target.id, folder: worktree, argv, task,
       }));
@@ -1130,7 +1210,7 @@ export default class AvenKanban extends View {
       return;
     }
     if (!cardArchiveable(card, this.state)) return;
-    this.archived.add(archiveKey(this.workspace(), card.id));
+    this.archived.add(archiveKey(this.workspace(), card.id, this.sources?.machine ?? null));
     setShared(ARCHIVE_SHARED, [...this.archived]);
     this.questions.delete(card.id);
     this.retainSelection(cx);
@@ -1142,7 +1222,7 @@ export default class AvenKanban extends View {
     const targets = bulkTargets(cards, "archive", this.state);
     if (!targets.length) { this.notify(cx); return; }
     for (const card of targets) {
-      this.archived.add(archiveKey(this.workspace(), card.id));
+      this.archived.add(archiveKey(this.workspace(), card.id, this.sources?.machine ?? null));
       this.questions.delete(card.id);
     }
     setShared(ARCHIVE_SHARED, [...this.archived]);
@@ -1158,7 +1238,7 @@ export default class AvenKanban extends View {
     const done = this.columns().find((column) => column.id === "done")?.cards ?? [];
     for (const card of done) {
       if (!cardArchiveable(card, this.state)) continue;
-      this.archived.add(archiveKey(this.workspace(), card.id));
+      this.archived.add(archiveKey(this.workspace(), card.id, this.sources?.machine ?? null));
       this.questions.delete(card.id);
     }
     setShared(ARCHIVE_SHARED, [...this.archived]);
@@ -1192,11 +1272,13 @@ export default class AvenKanban extends View {
     this.deleteConfirmId = "";
     this.notice = "";
     const workspace = this.workspace();
+    const machine = this.sources?.machine ?? this.machine();
+    const folder = this.sources?.cwd || this.spaceFolder();
     const fallback = card.taskIds ?? [card.id];
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder());
-        const result = await exec("aven-dispatch", deleteArgs(workspace, card.ref), cwd ? { cwd } : undefined);
+        const cwd = await this.rootFolder(folder, machine);
+        const result = await exec("aven-dispatch", deleteArgs(workspace, card.ref), machineOption(machine, cwd ? { cwd } : {}));
         if (result.code !== 0) throw new Error((result.stderr || "").trim() || `delete exited ${result.code}`);
         let outcome = null;
         try { outcome = safeDeleteOutcome(JSON.parse(result.stdout || "null")); } catch {}
@@ -1221,10 +1303,11 @@ export default class AvenKanban extends View {
   }
   forgetDeleted(ids) {
     const workspace = this.workspace();
+    const machine = this.sources?.machine ?? null;
     let archiveChanged = false;
     for (const id of ids) {
-      archiveChanged = this.archived.delete(archiveKey(workspace, id)) || archiveChanged;
-      this.details.delete(detailCacheKey(workspace, id));
+      archiveChanged = this.archived.delete(archiveKey(workspace, id, machine)) || archiveChanged;
+      this.details.delete(detailCacheKey(workspace, id, machine));
       this.questions.delete(id);
     }
     const removed = new Set(ids);
@@ -1490,6 +1573,7 @@ export default class AvenKanban extends View {
         .child(div().absolute().bottom(0).left(8).right(8).h(2).rounded(1).bg(C.accent)))
       .child(div().w(1).h(16).mx(4).bg(C.line2))
       .child(mono(10, C.dim, `${plural(stats.total, "epic")}`))
+      .when(Boolean(this.sources?.machine), (el) => el.child(mono(10, C.accentDim, `on ${this.sources.machine}`)))
       .child(div().flex_1())
       .child(this.btn("aven-kanban-help-toggle", "? Keys", "plain", (clickCx) => this.toggleHelp(clickCx)))
       .child(this.refreshButton(cx))

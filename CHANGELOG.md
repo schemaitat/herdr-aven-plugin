@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Make every herdr-app Aven surface follow the focused space's machine. When a
+  space lives on a remote machine from `hc machine ls`, the Kanban board, Aven
+  sidebar, tab indicator, and Aven launcher now run their Aven, Git,
+  `aven-dispatch`, and OpenCode work there through herdr-core instead of on this
+  computer: the board reads that machine's epics, details, obligations,
+  summaries, dispatcher attempts, and main ancestry; Dispatch, Merge, and Ship
+  PR act on that machine; attempt terminal addresses are matched with the
+  machine prefix; and machine switches clear cross-machine detail, ancestry,
+  obligation, question, and selection caches. Local spaces keep the exact
+  previous argv and behavior. The plugin must be installed on each machine that
+  dispatches, because the dispatcher still runs wherever its Aven TUI runs.
 - Fix `install-aven-command` on macOS and for hand-merged configs: rewriting a
   managed block that starts at line 1 no longer calls `head -n 0` (rejected by
   BSD `head`), and a block merged by hand under an existing top-level `tui:`

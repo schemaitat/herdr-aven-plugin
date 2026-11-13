@@ -297,24 +297,51 @@ export function scopeEpics(rows, scope, context) {
   return rootId ? rows.filter((row) => canonicalId(row) === rootId) : rows;
 }
 
+// The focused space's machine owns its Aven database, checkout, and dispatcher
+// store. null means this computer.
+export function spaceMachine(space) {
+  const machine = space?.machine;
+  return typeof machine === "string" && machine ? machine : null;
+}
+
+// Herdr prefixes remote terminal addresses with `machine/`; this computer's
+// terminals stay bare.
+export function onMachine(address, machine) {
+  const value = String(address ?? "");
+  if (!value) return false;
+  const target = String(machine ?? "");
+  return target ? value.startsWith(`${target}/`) : !value.includes("/");
+}
+
+export function machineOption(machine, extra = {}) {
+  const target = String(machine ?? "");
+  return target ? { ...extra, on: target } : extra;
+}
+
 export function terminalName(workspace, epicId) {
   // Herdr terminal names are limited to 32 chars. Keep a stable, compact
   // per-workspace/task prefix so existing terminals can still be reused.
   return `aven-e-${terminalHash(`${workspace}\u0000${epicId}`)}-`;
 }
 
-export function terminalIdentity(workspace, epicId) {
-  return `${workspace}\u0000${epicId}`;
+export function terminalIdentity(workspace, epicId, machine = null) {
+  const prefix = machine ? `${machine}\u0000` : "";
+  return `${prefix}${workspace}\u0000${epicId}`;
 }
 
-export function launchArgs({ workspace, epic, cwd, name }) {
+export function launchArgs({ workspace, epic, cwd, name, machine = null }) {
   const cwdArgs = cwd ? ["--cwd", cwd] : [];
   return ["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name,
+    ...(machine ? ["--on", machine] : []),
     ...cwdArgs, "--", "aven", "--workspace", workspace, "tui", epic.ref];
 }
 
-export function isLiveEpicTerminal(terminal, workspace, epicId) {
-  return terminal?.state === "live" && String(terminal?.name ?? "").startsWith(terminalName(workspace, epicId));
+export function isLiveEpicTerminal(terminal, workspace, epicId, machine = null) {
+  if (terminal?.state !== "live") return false;
+  // Terminal names are unique only within a core, so a remote match must also
+  // carry that machine's address prefix.
+  if (machine && !onMachine(terminal?.address, machine)) return false;
+  return String(terminal?.name ?? "").startsWith(terminalName(workspace, epicId));
 }
 
 export function normalizeFolder(value) {

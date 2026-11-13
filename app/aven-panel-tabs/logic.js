@@ -17,15 +17,28 @@ export function encodeChoices(choices) {
 
 export function normalizeFolder(value) { return String(value ?? "").replace(/\/+$/, ""); }
 
+export function machineOption(machine, extra = {}) {
+  const target = String(machine ?? "");
+  return target ? { ...extra, on: target } : extra;
+}
+
+// A remote worktree can share a path with this computer's. Key the dispatch set
+// by machine as well as folder so selection never crosses machines.
+export function folderKey(folder, machine = null) {
+  const value = normalizeFolder(folder);
+  if (!value) return "";
+  return machine ? `${machine}\u0000${value}` : value;
+}
+
 // A worktree is dispatched when a persisted attempt or one of its phases names
 // this checkout. Ordinary project spaces stay on their explicit choice only.
-export function dispatchFolders(attempts = []) {
+export function dispatchFolders(attempts = [], machine = null) {
   const folders = new Set();
   for (const attempt of attempts ?? []) {
     const values = [attempt?.worktree, ...(attempt?.phases ?? []).map((phase) => phase?.worktree)];
     for (const value of values) {
-      const folder = normalizeFolder(value);
-      if (folder) folders.add(folder);
+      const key = folderKey(value, machine);
+      if (key) folders.add(key);
     }
   }
   return folders;
