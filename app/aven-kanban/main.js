@@ -451,6 +451,9 @@ export default class AvenKanban extends View {
         // wrong folder, then settle with an explicit error if it never appears.
         let cwd = sources.cwd;
         for (let attempt = 0; !cwd && attempt < 25; attempt += 1) {
+          // Focus may have moved to another machine while waiting; never read a
+          // new machine's folder with the old machine's target.
+          if ((this.machine() ?? "") !== (sources.machine ?? "")) break;
           await exec("sleep", ["0.2"], machineOption(sources.machine));
           const folder = this.spaceFolder();
           cwd = folder ? await this.rootFolder(folder, sources.machine) : "";
@@ -511,6 +514,7 @@ export default class AvenKanban extends View {
     const cards = flattenBoard(this.columns());
     const ordered = [selected, ...cards].filter(Boolean);
     const machine = this.sources?.machine ?? this.machine();
+    const folder = this.spaceFolder();
     const requestKey = (ref) => `${machine ?? ""}\u0000${ref}`;
     const card = ordered.find((candidate) => candidate.summaryAuto
       && !this.autoRequests.has(requestKey(candidate.ref))
@@ -522,7 +526,7 @@ export default class AvenKanban extends View {
     this.autoAttempts.set(key, Date.now());
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder(), machine);
+        const cwd = await this.rootFolder(folder, machine);
         await exec("aven-dispatch", ["describe", card.ref, "--llm", "--auto", "--workspace", this.workspace()], machineOption(machine, cwd ? { cwd } : {}));
       } catch {}
       finally {
@@ -726,6 +730,7 @@ export default class AvenKanban extends View {
   open(epic, cx) {
     const workspace = this.workspace();
     const machine = this.machine();
+    const folder = this.spaceFolder();
     const identity = `${machine ?? ""}\u0000${terminalName(workspace, epic.id)}`;
     if (this.pendingLaunches.has(identity)) return;
     const existing = terminals().find((terminal) => isLiveEpicTerminal(terminal, workspace, epic.id, machine));
@@ -733,7 +738,7 @@ export default class AvenKanban extends View {
     this.pendingLaunches.add(identity);
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder(), machine);
+        const cwd = await this.rootFolder(folder, machine);
         const name = `${terminalName(workspace, epic.id)}${Date.now().toString(36)}`;
         const result = await hc(openArgs({ workspace, epic, cwd, name, machine }));
         if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not start Aven");
@@ -767,6 +772,7 @@ export default class AvenKanban extends View {
     if (epic.status === "done" || epic.status === "canceled") return;
     const workspace = this.workspace();
     const machine = this.machine();
+    const folder = this.spaceFolder();
     const identity = `${machine ?? ""}\u0000${terminalName(workspace, epic.id)}\u0000${action.id}`;
     const prefix = dispatchTerminalName(workspace, epic.id, action);
     if (this.pendingLaunches.has(identity)) return;
@@ -778,7 +784,7 @@ export default class AvenKanban extends View {
     this.dispatchMenuEpicId = null;
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceFolder(), machine);
+        const cwd = await this.rootFolder(folder, machine);
         const name = `${prefix}${Date.now().toString(36)}`;
         const started = await hc(openArgs({ workspace, epic, cwd, name, machine }));
         if (started.code !== 0) throw new Error(started.stderr.trim() || `could not open ${epic.ref} in Aven`);
@@ -825,14 +831,15 @@ export default class AvenKanban extends View {
   // task-named tab in the main space on the same machine. The board never
   // mutates Git itself.
   handoff(epic, kind, cx) {
-    const identity = `${kind}\u0000${epic.id}`;
+    const machine = this.machine();
+    const folder = this.spaceFolder();
+    const identity = `${machine ?? ""}\u0000${kind}\u0000${epic.id}`;
     if (!epic.mergeable || this.pendingHandoffs.has(identity)) return;
     this.pendingHandoffs.add(identity);
     cx.spawn(async (taskCx) => {
       const label = kind === "ship" ? "Ship PR" : "Merge";
       try {
-        const machine = this.machine();
-        const root = await this.rootFolder(this.spaceFolder(), machine);
+        const root = await this.rootFolder(folder, machine);
         if (!root) throw new Error("the primary checkout is unavailable");
         const workspace = this.workspace();
         // Re-read the exact task now: a cached or stale approval marker must

@@ -161,6 +161,7 @@ export default class AvenPanel extends View {
     const reference = String(task?.ref ?? "");
     if (!reference || this.closed) return;
     const machine = this.machine();
+    const folder = this.spaceCwd(this.space());
     const key = `${machine ?? ""}\u0000${reference}`;
     if (this.autoRequests.has(key)) return;
     if (Date.now() - (this.autoAttempts.get(key) ?? 0) < 120000) return;
@@ -168,7 +169,7 @@ export default class AvenPanel extends View {
     this.autoAttempts.set(key, Date.now());
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceCwd(this.space()), machine);
+        const cwd = await this.rootFolder(folder, machine);
         await exec("aven-dispatch", ["describe", reference, "--llm", "--auto", "--workspace", this.workspace()], machineOption(machine, cwd ? { cwd } : {}));
       } catch {}
       finally {
@@ -284,6 +285,7 @@ export default class AvenPanel extends View {
 
   launch(epic, cx) {
     const workspace = this.workspace(), machine = this.machine();
+    const folder = this.spaceCwd(this.space());
     const identity = terminalIdentity(workspace, epic.id, machine);
     if (this.pendingLaunches.has(identity)) return;
     const existing = terminals().find((terminal) => isLiveEpicTerminal(terminal, workspace, epic.id, machine));
@@ -292,8 +294,7 @@ export default class AvenPanel extends View {
     cx.spawn(async (taskCx) => {
       try {
         const name = `${terminalName(workspace, epic.id)}${Date.now().toString(36)}`;
-        const cwd = this.spaceCwd(this.space());
-        const result = await hc(launchArgs({ workspace, epic, cwd, name, machine }));
+        const result = await hc(launchArgs({ workspace, epic, cwd: folder, name, machine }));
         if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not start Aven");
         await this.reveal(JSON.parse(result.stdout).address, taskCx);
       } catch (error) {
@@ -323,6 +324,7 @@ export default class AvenPanel extends View {
 
   dispatch(epic, action, cx) {
     const workspace = this.workspace(), machine = this.machine();
+    const folder = this.spaceCwd(this.space());
     const identity = `${terminalIdentity(workspace, epic.id, machine)}\u0000${action.id}`;
     const prefix = `${terminalName(workspace, epic.id)}${action.terminalKey}-`;
     if (this.pendingLaunches.has(identity)) return;
@@ -333,7 +335,7 @@ export default class AvenPanel extends View {
     this.pendingLaunches.add(identity);
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceCwd(this.space()), machine);
+        const cwd = await this.rootFolder(folder, machine);
         const name = `${prefix}${Date.now().toString(36)}`;
         const started = await hc(launchArgs({ workspace, epic, cwd, name, machine }));
         if (started.code !== 0) throw new Error(started.stderr.trim() || `could not open ${epic.ref} in Aven`);
