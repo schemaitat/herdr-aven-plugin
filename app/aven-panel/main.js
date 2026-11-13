@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, focused, hc, props, run, spaces, terminals, theme } from "herdr";
-import { DISPATCH_ACTIONS, LIMIT, SUMMARY_LABEL, autoSummaryCandidate, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, mergeProjectRows, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, statusLabel, summaryState, taskSummary, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
+import { DISPATCH_ACTIONS, LIMIT, SUMMARY_LABEL, autoSummaryCandidate, canonicalId, descriptionBody, descriptionSnippet, dispatchLabel, dispatchTargets, focusedPhase, fullDetail, inferredEpicArgs, inferredUpcomingArgs, launchArgs, lifecycleStage, machineOption, mergeProjectRows, onMachine, phaseOverview, phaseProgress, projectTone, resolveSpaceContext, scopeEpics, spaceMachine, statusLabel, summaryState, taskSummary, terminalIdentity, terminalName, isLiveEpicTerminal } from "./logic.js";
 
 const REFRESH_MS = 10000;
 const FOCUS_POLL_MS = 1000;
@@ -30,6 +30,7 @@ export default class AvenPanel extends View {
     this.autoAttempts = new Map();
     this.scope = "all";
     this.dispatchMenuEpicId = null;
+    this.machineKey = "";
     this.focusedSpace = focused()?.space ?? "";
     this.refresh(cx);
     cx.timer.every(REFRESH_MS, (timerCx) => this.refresh(timerCx));
@@ -48,6 +49,8 @@ export default class AvenPanel extends View {
   workspace() { return String(props()?.workspace ?? "default"); }
   cwd() { return String(props()?.cwd ?? ""); }
   space() { const id = focused()?.space; return spaces().find((space) => space.id === id) ?? spaces().find((space) => space.active) ?? null; }
+  machine() { return spaceMachine(this.space()); }
+  option(extra = {}, machine = this.machine()) { return machineOption(machine, extra); }
 
   spaceCwd(space) {
     const focus = focused();
@@ -56,19 +59,19 @@ export default class AvenPanel extends View {
     return focus?.space === space?.id && focus.cwd ? focus.cwd : (this.cwd() || space?.folder || "");
   }
 
-  async worktreeFolder(folder) {
+  async worktreeFolder(folder, machine = this.machine()) {
     if (!folder) return "";
     try {
-      const result = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder });
+      const result = await exec("git", ["rev-parse", "--show-toplevel"], this.option({ cwd: folder }, machine));
       if (result.code === 0 && result.stdout.trim()) return result.stdout.trim().replace(/\/+$/, "");
     } catch {}
     return folder.replace(/\/+$/, "");
   }
 
-  async rootFolder(folder) {
+  async rootFolder(folder, machine = this.machine()) {
     if (!folder) return undefined;
     try {
-      const result = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: folder });
+      const result = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], this.option({ cwd: folder }, machine));
       const common = result.code === 0 ? result.stdout.trim().replace(/\/+$/, "") : "";
       return common.endsWith("/.git") ? common.slice(0, -5) : folder;
     } catch { return folder; }
@@ -77,10 +80,12 @@ export default class AvenPanel extends View {
   notify(cx) { if (!this.closed) { try { cx.notify(); } catch {} } }
 
   async readPhaseDescription(ref, force = false) {
-    if (this.phaseReads.has(ref)) return;
+    const machine = this.machine();
+    const readKey = `${machine ?? ""}\u0000${ref}`;
+    if (this.phaseReads.has(readKey)) return;
     const previous = this.phaseDetails.get(ref);
     if (!force && previous && !previous.error) return;
-    this.phaseReads.add(ref);
+    this.phaseReads.add(readKey);
     this.phaseDetails.set(ref, {
       loading: true,
       description: previous?.description ?? "",
@@ -90,11 +95,12 @@ export default class AvenPanel extends View {
       error: "",
     });
     try {
-      const result = await exec("aven", ["show", ref, "--workspace", this.workspace(), "--full", "--json"]);
+      const result = await exec("aven", ["show", ref, "--workspace", this.workspace(), "--full", "--json"], machineOption(machine));
       if (result.code !== 0) throw new Error((result.stderr || "").trim() || `could not read ${ref}`);
       const payload = JSON.parse(result.stdout);
       const detail = fullDetail(payload);
       if (detail?.ref && detail.ref !== ref) throw new Error(`identity mismatch for ${ref}`);
+      if ((this.machine() ?? "") !== (machine ?? "")) return;
       this.phaseDetails.set(ref, {
         loading: false,
         description: String(detail?.description ?? ""),
@@ -104,6 +110,7 @@ export default class AvenPanel extends View {
         error: "",
       });
     } catch (error) {
+      if ((this.machine() ?? "") !== (machine ?? "")) return;
       this.phaseDetails.set(ref, {
         loading: false,
         description: "",
@@ -113,7 +120,7 @@ export default class AvenPanel extends View {
         error: String(error?.message ?? error),
       });
     } finally {
-      this.phaseReads.delete(ref);
+      this.phaseReads.delete(readKey);
     }
   }
 
@@ -152,17 +159,20 @@ export default class AvenPanel extends View {
 
   autoGenerate(task, cx) {
     const reference = String(task?.ref ?? "");
-    if (!reference || this.closed || this.autoRequests.has(reference)) return;
-    if (Date.now() - (this.autoAttempts.get(reference) ?? 0) < 120000) return;
-    this.autoRequests.add(reference);
-    this.autoAttempts.set(reference, Date.now());
+    if (!reference || this.closed) return;
+    const machine = this.machine();
+    const key = `${machine ?? ""}\u0000${reference}`;
+    if (this.autoRequests.has(key)) return;
+    if (Date.now() - (this.autoAttempts.get(key) ?? 0) < 120000) return;
+    this.autoRequests.add(key);
+    this.autoAttempts.set(key, Date.now());
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceCwd(this.space()));
-        await exec("aven-dispatch", ["describe", reference, "--llm", "--auto", "--workspace", this.workspace()], cwd ? { cwd } : undefined);
+        const cwd = await this.rootFolder(this.spaceCwd(this.space()), machine);
+        await exec("aven-dispatch", ["describe", reference, "--llm", "--auto", "--workspace", this.workspace()], machineOption(machine, cwd ? { cwd } : {}));
       } catch {}
       finally {
-        this.autoRequests.delete(reference);
+        this.autoRequests.delete(key);
         if (!this.closed) this.refresh(taskCx);
       }
     });
@@ -171,26 +181,38 @@ export default class AvenPanel extends View {
   refresh(cx) {
     if (this.refreshing || this.closed) return;
     this.refreshing = true;
+    // Clear every cached phase and summary when focus moves to a space on
+    // another machine, before the first read can fail.
+    const requested = this.machine();
+    if ((requested ?? "") !== this.machineKey) {
+      this.machineKey = requested ?? "";
+      this.phaseDetails.clear();
+      this.autoRequests.clear();
+      this.autoAttempts.clear();
+      this.state = { ...this.state, rows: [], loading: true, error: "", stale: false };
+    }
     this.state = { ...this.state, loading: !this.state.rows.length, error: "" };
     this.notify(cx);
     cx.spawn(async (taskCx) => {
       try {
         const workspace = this.workspace();
         const space = this.space();
+        const machine = spaceMachine(space);
         const spaceCwd = this.spaceCwd(space);
-        const cwd = await this.rootFolder(spaceCwd);
+        const cwd = await this.rootFolder(spaceCwd, machine);
+        const option = machineOption(machine, cwd ? { cwd } : {});
         const [open, upcoming] = await Promise.all([
-          exec("aven", inferredEpicArgs(workspace), cwd ? { cwd } : undefined),
-          exec("aven", inferredUpcomingArgs(workspace), cwd ? { cwd } : undefined),
+          exec("aven", inferredEpicArgs(workspace), option),
+          exec("aven", inferredUpcomingArgs(workspace), option),
         ]);
         const openRows = parse(open, "Open epics"), upcomingRows = parse(upcoming, "Upcoming epics");
         if (openRows.length >= LIMIT || upcomingRows.length >= LIMIT) throw new Error(`read reached the ${LIMIT}-item safety limit`);
         const rows = mergeProjectRows({ workspace, project: "", open: openRows, upcoming: upcomingRows });
         let context;
         try {
-          const worktree = await this.worktreeFolder(spaceCwd);
+          const worktree = await this.worktreeFolder(spaceCwd, machine);
           const contextSpace = { ...space, folder: worktree };
-          const cwdOption = worktree ? { cwd: worktree } : undefined;
+          const cwdOption = machineOption(machine, worktree ? { cwd: worktree } : {});
           const attemptsResult = await exec("aven-dispatch", ["list", "--summary"], cwdOption);
           if (attemptsResult.code !== 0) throw new Error((attemptsResult.stderr || "").trim() || "could not read dispatcher attempts");
           const attempts = JSON.parse(attemptsResult.stdout || "[]");
@@ -261,15 +283,17 @@ export default class AvenPanel extends View {
   }
 
   launch(epic, cx) {
-    const workspace = this.workspace(), identity = terminalIdentity(workspace, epic.id);
+    const workspace = this.workspace(), machine = this.machine();
+    const identity = terminalIdentity(workspace, epic.id, machine);
     if (this.pendingLaunches.has(identity)) return;
-    const existing = terminals().find((terminal) => isLiveEpicTerminal(terminal, workspace, epic.id));
+    const existing = terminals().find((terminal) => isLiveEpicTerminal(terminal, workspace, epic.id, machine));
     if (existing) { void this.reveal(existing.address, cx); return; }
     this.pendingLaunches.add(identity);
     cx.spawn(async (taskCx) => {
       try {
         const name = `${terminalName(workspace, epic.id)}${Date.now().toString(36)}`;
-        const result = await hc(launchArgs({ workspace, epic, cwd: this.cwd(), name }));
+        const cwd = this.spaceCwd(this.space());
+        const result = await hc(launchArgs({ workspace, epic, cwd, name, machine }));
         if (result.code !== 0) throw new Error((result.stderr || "").trim() || "could not start Aven");
         await this.reveal(JSON.parse(result.stdout).address, taskCx);
       } catch (error) {
@@ -298,19 +322,21 @@ export default class AvenPanel extends View {
   }
 
   dispatch(epic, action, cx) {
-    const workspace = this.workspace();
-    const identity = `${terminalIdentity(workspace, epic.id)}\u0000${action.id}`;
+    const workspace = this.workspace(), machine = this.machine();
+    const identity = `${terminalIdentity(workspace, epic.id, machine)}\u0000${action.id}`;
     const prefix = `${terminalName(workspace, epic.id)}${action.terminalKey}-`;
     if (this.pendingLaunches.has(identity)) return;
-    const existing = terminals().find((terminal) => terminal.state === "live" && String(terminal.name ?? "").startsWith(prefix));
+    const existing = terminals().find((terminal) => terminal.state === "live"
+      && onMachine(terminal.address, machine)
+      && String(terminal.name ?? "").startsWith(prefix));
     if (existing) { void this.reveal(existing.address, cx); return; }
     this.pendingLaunches.add(identity);
     cx.spawn(async (taskCx) => {
       try {
-        const cwd = await this.rootFolder(this.spaceCwd(this.space()));
+        const cwd = await this.rootFolder(this.spaceCwd(this.space()), machine);
         const name = `${prefix}${Date.now().toString(36)}`;
-        const started = await hc(["run", "--bg", "--json", "--no-parent", "--outlive-parent", "--name", name,
-          ...(cwd ? ["--cwd", cwd] : []), "--", "aven", "--workspace", workspace, "tui", epic.ref]);
+        const started = await hc(launchArgs({ workspace, epic, cwd, name, machine }));
+        if (started.code !== 0) throw new Error(started.stderr.trim() || `could not open ${epic.ref} in Aven`);
         if (started.code !== 0) throw new Error(started.stderr.trim() || `could not open ${epic.ref} in Aven`);
         const address = JSON.parse(started.stdout).address;
         await this.waitForDetail(address, epic.ref, taskCx);

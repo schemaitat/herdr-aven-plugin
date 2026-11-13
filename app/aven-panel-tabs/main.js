@@ -3,7 +3,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { exec, spaces, panes, run, openOverlay, theme, window, layout, settings } from "herdr";
-import { STORAGE_KEY, decodeChoices, desiredChoice, dispatchFolders, encodeChoices, normalizeFolder, panelCommands } from "./logic.js";
+import { STORAGE_KEY, decodeChoices, desiredChoice, dispatchFolders, encodeChoices, folderKey, machineOption, panelCommands } from "./logic.js";
 
 function find(node, id) { if (node?.id === id) return node; for (const child of node?.children ?? []) { const found = find(child, id); if (found) return found; } return null; }
 
@@ -24,15 +24,16 @@ export default class AvenPanelTabs extends View {
     const id = String(space?.id ?? "");
     if (id === this.focusedSpace) return;
     this.focusedSpace = id;
-    this.refreshDispatch(space?.folder, cx);
+    this.refreshDispatch(space?.folder, space?.machine ?? null, cx);
   }
-  refreshDispatch(folder, cx) {
-    if (!folder) { this.applyDispatch(new Set(), cx); return; }
+  refreshDispatch(folder, machine, cx) {
+    const target = String(machine ?? "");
+    if (!folder && !target) { this.applyDispatch(new Set(), cx); return; }
     cx.spawn(async (taskCx) => {
       let folders = new Set();
       try {
-        const result = await exec("aven-dispatch", ["list", "--summary"], { cwd: folder });
-        if (result.code === 0) folders = dispatchFolders(JSON.parse(result.stdout || "[]"));
+        const result = await exec("aven-dispatch", ["list", "--summary"], machineOption(machine, folder ? { cwd: folder } : {}));
+        if (result.code === 0) folders = dispatchFolders(JSON.parse(result.stdout || "[]"), machine);
       } catch {}
       this.applyDispatch(folders, taskCx);
     });
@@ -51,7 +52,7 @@ export default class AvenPanelTabs extends View {
     const now = panel.hidden ? null : body?.active ?? null;
     if (space.id === this.space) return;
     this.space = space.id;
-    const dispatched = this.dispatch.has(normalizeFolder(space.folder));
+    const dispatched = this.dispatch.has(folderKey(space.folder, space.machine ?? null));
     const choice = desiredChoice(this.choices, space.id, dispatched);
     // A first visit stays hidden unless the space is a dispatched worktree;
     // an explicit valid saved choice always wins.

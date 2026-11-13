@@ -6,6 +6,7 @@ import {
   inferredUpcomingArgs, isLiveEpicTerminal, launchArgs, lifecycleStage, mergeCoverage, mergeProjectRows, openArgs,
   phaseOverview, phaseProgress, projectArgs, projectTone, resolveSpaceContext, scopeEpics, sortEpics, statusLabel,
   storedSummary, summaryDigest, summaryNeeded, summaryState, taskSummary, terminalName, upcomingArgs,
+  machineOption, onMachine, spaceMachine, terminalIdentity,
 } from "../app/aven-panel/logic.js";
 
 const epic = (id, created_at, extra = {}) => ({ id, ref: `HAP-${id}`, title: id, status: "todo", is_epic: true, created_at, ...extra });
@@ -106,6 +107,24 @@ assert.equal(isLiveEpicTerminal({ state: "live", name }, "default", target.id), 
 assert.equal(isLiveEpicTerminal({ state: "dead", name }, "default", target.id), false);
 assert.deepEqual(launchArgs({ workspace: "default", epic: target, cwd: "/repo", name }).slice(-5), ["--", "aven", "--workspace", "default", "tui", "HAP-EPIC"].slice(-5));
 assert.equal(launchArgs({ workspace: "default", epic: target, cwd: "", name }).includes("--cwd"), false);
+
+// The focused space's machine owns the Aven database, checkout, and terminals.
+assert.equal(spaceMachine({ machine: "a1" }), "a1");
+assert.equal(spaceMachine({}), null);
+assert.deepEqual(machineOption(null, { cwd: "/repo" }), { cwd: "/repo" });
+assert.deepEqual(machineOption("a1", { cwd: "/repo" }), { cwd: "/repo", on: "a1" });
+assert.equal(onMachine("a1/t7", "a1"), true);
+assert.equal(onMachine("t7", "a1"), false);
+assert.equal(onMachine("t7", null), true);
+assert.notEqual(terminalIdentity("default", target.id, "a1"), terminalIdentity("default", target.id));
+assert.equal(isLiveEpicTerminal({ state: "live", name, address: "a1/t7" }, "default", target.id, "a1"), true);
+assert.equal(isLiveEpicTerminal({ state: "live", name, address: "t7" }, "default", target.id, "a1"), false,
+  "a same-named local terminal is never adopted for a remote epic");
+const localLaunch = launchArgs({ workspace: "default", epic: target, cwd: "/repo", name });
+assert.equal(localLaunch.includes("--on"), false);
+const remoteLaunch = launchArgs({ workspace: "default", epic: target, cwd: "/home/dev/apo", name, machine: "a1" });
+assert.deepEqual(remoteLaunch.slice(remoteLaunch.indexOf("--on"), remoteLaunch.indexOf("--on") + 2), ["--on", "a1"]);
+assert.equal(remoteLaunch[remoteLaunch.indexOf("--on") + 2], "--cwd", "the remote checkout follows --on");
 const root = { id: "root", ref: "HAP-ROOT", is_epic: true, title: "Root" };
 const context = resolveSpaceContext({ space: { name: "review", folder: "/repo" }, attempts: [{ worktree: "/repo" }], task: { ref: "HAP-CHILD" }, root, rows: [root] });
 assert.equal(context.kind, "dispatch"); assert.equal(context.pinned.id, "root");
