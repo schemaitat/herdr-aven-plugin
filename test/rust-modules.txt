@@ -1,0 +1,17 @@
+# Rust source modules that have unit tests but no shell suite in suites.txt.
+#
+# `run.sh module:<name>` accepts these names with zero shell suites, so
+# `just test-module store` still runs the Rust filter and succeeds. Shell-only
+# modules are declared in the suites.txt modules column instead.
+agents
+app
+core
+dispatch
+inspect
+main
+model
+picker
+process
+store
+watch
+worktrees

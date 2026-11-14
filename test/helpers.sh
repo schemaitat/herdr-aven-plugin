@@ -67,9 +67,22 @@ finally:
 PY
 }
 
-# mkworkdir: a fresh scratch directory that the test owns.
+# mkworkdir: a fresh scratch directory that the test owns. Return the
+# physical path so repositories, worktrees and recorded paths agree even when
+# TMPDIR is a symlink (for example /var -> /private/var on macOS).
 mkworkdir() {
   dir=${TMPDIR:-/tmp}/aven.tasks.test.$$
   mkdir -p "$dir"
-  printf '%s' "$dir"
+  (cd "$dir" && pwd -P)
+}
+
+# dispatch_bin: the prebuilt dispatcher under test. Suites run the binary
+# directly so each command does not pay `cargo run` startup or contend on the
+# cargo lock; build it once only when it is genuinely missing.
+DISPATCH_BIN=${AVEN_DISPATCH_BIN:-$PLUGIN_ROOT/target/debug/aven-dispatch}
+dispatch_bin() {
+  if [ ! -x "$DISPATCH_BIN" ]; then
+    (cd "$PLUGIN_ROOT" && cargo build --quiet --bin aven-dispatch) >&2
+  fi
+  printf '%s\n' "$DISPATCH_BIN"
 }

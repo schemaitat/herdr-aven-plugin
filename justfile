@@ -26,21 +26,26 @@ test-approval:
 install-app-mod:
     sh scripts/install-app-mod.sh
 
-# Default fast tier: Rust unit tests plus unit/contract suites, budgeted at 20s.
+# Default fast tier: Rust unit tests plus fast contract suites, under 10s once built.
 test:
     cargo test --workspace
     cargo build --workspace
-    TEST_BUDGET_SECONDS=${TEST_BUDGET_SECONDS:-20} sh test/run.sh unit
+    TEST_BUDGET_SECONDS=${TEST_BUDGET_SECONDS:-10} sh test/run.sh unit
 
 # Explicit alias for the default fast tier.
 test-unit: test
+
+# Slower functional contracts: inspector, installer, summaries, watcher and work queue.
+test-extended:
+    cargo build --workspace
+    sh test/run.sh extended
 
 # Heavy approval, dispatch and lifecycle fixtures; opt in when needed.
 test-integration:
     cargo build --workspace
     sh test/run.sh integration
 
-# Every local Rust and shell suite: unit tier first, then integration.
+# Every local Rust and shell suite: unit tier first, then extended, then integration.
 test-all:
     cargo test --workspace
     cargo build --workspace
@@ -50,12 +55,18 @@ test-all:
 test-rust *filter:
     cargo test --workspace {{filter}}
 
+# One module's Rust tests and shell suites, e.g. `just test-module dispatch`.
+test-module *modules:
+    cargo build --workspace
+    @for m in {{modules}}; do cargo test --workspace "$m"; done
+    sh test/run.sh $(for m in {{modules}}; do printf 'module:%s ' "$m"; done)
+
 # Named use-case suites, e.g. `just test-suite lifecycle` or `just test-suite install`.
 test-suite *names:
     cargo build --workspace
     sh test/run.sh {{names}}
 
-# Discover suite names, tiers, dependencies and files.
+# Discover suite names, tiers, modules, dependencies and files.
 test-list:
     sh test/run.sh --list
 
@@ -97,6 +108,15 @@ check:
 
 fmt:
     cargo fmt --check
+
+# Fast pre-commit gate: format, lint, Rust tests and the unit tier.
+# Target: under 10 seconds on a warm cache (suite budget excludes compilation).
+quality:
+    cargo fmt --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
+    cargo build --workspace
+    TEST_BUDGET_SECONDS=${TEST_BUDGET_SECONDS:-10} sh test/run.sh unit
 
 doctor:
     cargo run -- doctor

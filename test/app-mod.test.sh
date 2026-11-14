@@ -188,14 +188,6 @@ assert_file_contains "$PLUGIN_ROOT/app/layouts/aven-right.json" '"radius": 6' 'o
 [ ! -e "$PLUGIN_ROOT/bin/run.sh" ] || fail 'legacy herdr popup entrypoint must be retired'
 [ ! -e "$PLUGIN_ROOT/scripts/install-keybindings.sh" ] || fail 'legacy herdr keybinding installer must be retired'
 
-if command -v herdr-app >/dev/null 2>&1; then
-  for mod in app app/aven-panel app/aven-kanban app/aven-panel-tabs; do
-    if herdr-app check "$PLUGIN_ROOT/$mod" >/tmp/app-check.log 2>&1; then
-      assert_file_contains /tmp/app-check.log 'check passed' "herdr-app accepts $mod"
-    else
-      fail "herdr-app rejected $mod: $(cat /tmp/app-check.log)"
-    fi
-  done
-fi
-
+# Optional herdr-app runtime validation stays in `just app-check`: the default
+# unit tier must not depend on the desktop tool or pay its multi-second startup.
 printf 'app mod ok\n'

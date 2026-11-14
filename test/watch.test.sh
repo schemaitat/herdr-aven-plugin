@@ -6,6 +6,7 @@ set -eu
 . "$(dirname "$0")/helpers.sh"
 
 work=$(mkworkdir)
+binary=$(dispatch_bin)
 fake=$work/bin
 state=$work/hc-state
 repo=$work/repo
@@ -66,11 +67,11 @@ EOF
 chmod +x "$fake"/*
 
 context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"watched task"},"project":{"key":"app"}}}}'
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null
 $context
 EOF
 
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch > "$work/watch.log" 2>&1 &
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch > "$work/watch.log" 2>&1 &
 watcher=$!
 trap 'kill "$watcher" 2>/dev/null || true' EXIT HUP INT TERM
 for _ in $(seq 1 200); do
@@ -79,14 +80,14 @@ for _ in $(seq 1 200); do
 done
 grep -q '"running": true' "$work/watch.json" || fail 'watcher did not publish durable running state'
 
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --status > "$work/status.json"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch --status > "$work/status.json"
 assert_file_contains "$work/status.json" '"lock"' 'status reports the owning lock'
 for _ in $(seq 1 100); do grep -q 'fixture-core' "$work/watch.json" && break; sleep 0.05; done
 assert_file_contains "$work/watch.json" 'fixture-core' 'state records the durable core identity'
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --status > "$work/status.json"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch --status > "$work/status.json"
 
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch > "$work/duplicate" 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch > "$work/duplicate" 2>&1
 rc=$?
 set -e
 assert_eq "$rc" "1" 'a second watcher is refused'
@@ -111,7 +112,7 @@ done
 assert_eq "$seen" "yes" 'status event updated the terminal observation'
 assert_contains "$(sqlite_json "$store")" '"state": "running"' 'core status alone does not change persisted execution state'
 
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --stop > "$work/stop"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch --stop > "$work/stop"
 assert_file_contains "$work/stop" 'stopped dispatcher watcher' 'watch --stop signals the owner'
 for _ in $(seq 1 100); do [ ! -e "$work/watch.lock" ] && break; sleep 0.05; done
 [ ! -e "$work/watch.lock" ] || fail 'watcher lock was not released'

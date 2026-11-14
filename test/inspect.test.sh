@@ -168,8 +168,7 @@ printf '{"url":"http://127.0.0.1:%s","password":"test-password"}\n' "$port" > "$
 mkdir -p "$work/state/opencode"
 mv "$work/state/opencode-service.json" "$work/state/opencode/service.json"
 
-cargo build --quiet --bin aven-dispatch
-binary=$PLUGIN_ROOT/target/debug/aven-dispatch
+binary=$(dispatch_bin)
 
 PATH="$fake:$PATH" "$binary" inspect --project app --cwd "$repo" --json > "$work/out.json"
 

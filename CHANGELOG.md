@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Make the local test workflow module-scoped and fast. `test/suites.txt` now
+  records the source modules for every suite, `test/run.sh` accepts
+  `module:<name>` selectors, and `just test-module <module>` runs only that
+  module's Rust tests and shell suites (Rust-only modules live in
+  `test/rust-modules.txt`). The default `unit` tier is budgeted at
+  10 seconds and contains only the fastest contracts; slower functional suites
+  moved to a new opt-in `extended` tier, while heavy process/Git fixtures stay
+  in `integration`. `just test-all` runs unit, extended, then integration.
+  `just quality` combines formatting, clippy, Rust tests and the unit tier for
+  a single warm-cache pre-commit gate under 10 seconds.
+  Suites now invoke the prebuilt dispatcher binary instead of `cargo run`, and
+  the default tier no longer calls the optional, slow `herdr-app check`
+  (`just app-check` remains the explicit path).
+
 - Fix the first dispatch into a newly created worktree. OpenCode loads a
   location's configuration lazily, so its first location-scoped `/api/agent`
   response for that worktree can be empty even though the next response lists

@@ -1467,13 +1467,16 @@ retained approved plan can be dispatched again without duplicate planning.
 ```sh
 just fmt        # Check Rust formatting
 just check      # Compile checks
-just test       # Fast unit tier: Rust unit tests + contract suites (<20s once built)
+just quality    # Fast pre-commit gate: fmt + clippy + unit tier (<10s warm)
+just test       # Fast unit tier: Rust unit tests + fast contract suites (<10s once built)
 just test-unit  # Explicit alias for the default fast tier
+just test-extended     # Slower functional contracts: inspector, installer, summary, watch, work
 just test-integration  # Heavy approval, dispatch and lifecycle fixtures
-just test-all   # Every local Rust and shell suite, unit tier first
+just test-all   # Every local Rust and shell suite: unit, extended, then integration
 just test-rust <filter>   # Rust unit tests scoped by module/test name
+just test-module <module...> # One module's Rust tests and shell suites
 just test-suite <name...> # Named use-case suites from the manifest
-just test-list  # Discover suite names, tiers and dependencies
+just test-list  # Discover suite names, tiers, modules and dependencies
 just test-e2e   # Process fixture using herdr-core, fake OpenCode/Aven, and real Git
 just app-test   # Node 24 Kanban and right-panel model/tabs fixtures
 just app-check  # herdr-app check all optional Aven mods
@@ -1484,11 +1487,26 @@ just ui-test    # Dashboard unit tests
 
 `just test` is the default fast tier. It runs `cargo test --workspace` plus
 every `unit` suite in `test/suites.txt`, and fails when suite execution exceeds
-`TEST_BUDGET_SECONDS` (20 by default). The budget covers suite execution after
-the binary is built, not compilation. The heavy `approval`, `dispatch` and
-`lifecycle` fixtures are `integration` suites and run through
-`just test-integration`, `just test-all`, their focused recipes, or an explicit
-`just test-suite <name>`.
+`TEST_BUDGET_SECONDS` (10 by default). The budget covers suite execution after
+the binary is built, not compilation. `just quality` adds formatting, clippy,
+Rust tests and the fast tier for a single warm-cache pre-commit gate under
+10 seconds.
+
+The manifest has three tiers. `unit` is the fast default, `extended` holds
+slower functional contracts that do not need process/Git fixtures, and
+`integration` holds the heavy `approval`, `dispatch` and `lifecycle` fixtures.
+Run the opt-in tiers through `just test-extended`, `just test-integration`,
+`just test-all`, their focused recipes, or an explicit `just test-suite <name>`.
+
+Every suite lists one or more source modules in `test/suites.txt`.
+`just test-module <module>` runs `cargo test --workspace <module>` plus every
+suite whose module list contains that name, so a one-module change does not
+need the full suite. Rust-only modules such as `store` are listed in
+`test/rust-modules.txt`; they run the cargo filter and select no shell suite.
+Module selection spans tiers: asking for `module:dispatch` also selects the
+dispatch integration fixture deliberately. `just test-suite` selects named
+use-case suites instead. `just test-changed` is intentionally not provided;
+automatic file-to-module inference is left to the caller.
 
 Suites and approval's internal scenarios run in parallel by default, bounded by
 the logical CPU count. Set `TEST_JOBS=1` or `APPROVAL_TEST_JOBS=1` to force
@@ -1496,8 +1514,9 @@ serial execution when diagnosing a failure. `just test-rust` forwards its
 argument to cargo's test filter, so `just test-rust dispatch::plan` runs one
 module's tests. Add a new `test/*.test.sh` by classifying it in
 `test/suites.txt`; `test/suites.test.sh` fails until every file appears exactly
-once and the dependency graph is valid. The `web/` UI tier is separate and only
-needed for UI work.
+once, every suite has a module and the dependency graph is valid. The `web/` UI
+tier is separate and only needed for UI work. Optional `herdr-app` validation
+stays in `just app-check`, not in the default unit tier.
 
 The E2E fixture uses `test/hc_fixture.py` as `HC_BIN`; its `hc exec` runs real
 Git, so worktree operations are exercised through the same boundary as
