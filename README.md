@@ -988,6 +988,18 @@ automatic generation.
    `aven-dispatch list` only; it never edits tasks, dispatches, or prompts.
    The empty shell `space.new` starts is removed once the attempt terminal is
    adopted, so the space holds the agent and Aven.
+
+   When no herdr-app window answers where the dispatcher runs, as on a space
+   from another machine or a headless host, the dispatcher cannot call
+   `space.new`. It then labels the worktree terminal on that machine's core with
+   a deterministic `herdr.space`/`herdr.tab` pair, which herdr-app adopts as a
+   new space and tab. The adopted space takes herdr-app's automatic name for the
+   worktree folder, its tab is unnamed, and keyboard focus stays where the
+   person is, so open the new space from the sidebar. Because the ids derive
+   from the worktree path, the worker, babysitter, coordinator, phase workers,
+   and every re-dispatch reuse that same space instead of adding duplicates. The
+   machine that dispatches still needs its own herdr-core, and the app must be
+   connected to it; this does not move focus or Aven state across machines.
 5. Aven records the handoff and marks the task `active`. Prompt admission does
    **not** mean the task is complete, and a core status word is not acceptance.
 
