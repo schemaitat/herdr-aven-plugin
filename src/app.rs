@@ -161,6 +161,41 @@ fn space_target(space: &Value, address: &str) -> Option<SpaceTarget> {
     })
 }
 
+/// herdr-app adopts any core terminal labelled with a `herdr.space`/`herdr.tab`
+/// pair: an id it does not know becomes a new place for that terminal. A
+/// dispatcher running on a remote machine cannot reach the person's app, so it
+/// writes those labels on its own core instead and the app follows them.
+///
+/// Ids are derived from the machine-local worktree path. Every terminal for one
+/// worktree (worker, babysitter, coordinator, phase workers) and every later
+/// re-dispatch therefore resolves to the same space and tab instead of adding
+/// duplicates.
+fn adopted_id(prefix: &str, folder: &str) -> String {
+    // FNV-1a (128 bit): stable across runs and Rust versions, unlike
+    // DefaultHasher, and this is only an opaque key, not a security primitive.
+    let mut hash: u128 = 0x6c62272e07bb014262b821756295c58d;
+    for byte in folder.as_bytes() {
+        hash ^= u128::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b);
+    }
+    format!("{prefix}{hash:032x}")
+}
+
+/// The app-facing placement for an adopted terminal: one space and one tab per
+/// worktree path, matching what `space.new` would have created.
+fn adoption_labels(folder: &str) -> Vec<(String, String)> {
+    vec![
+        ("herdr.space".into(), adopted_id("sp", folder)),
+        ("herdr.tab".into(), adopted_id("tb", folder)),
+    ]
+}
+
+/// Adoption is the reveal of last resort: it only runs when herdr-app is not
+/// running where the dispatcher runs, so it can never compete with `space.new`.
+fn adopt(address: &str, folder: &str) -> bool {
+    core::label(address, &adoption_labels(folder)).is_ok()
+}
+
 fn find_space(
     entries: &[Value],
     folder: &str,
@@ -194,7 +229,13 @@ pub(crate) fn show_worktree(
         return false;
     }
     let Some(before) = spaces() else {
-        return false;
+        // No answering window here (a dispatch on a remote machine, or a host
+        // with the app closed). An app that is merely slow keeps the previous
+        // best-effort no-op so an inventory hiccup cannot fork a second space.
+        return match status() {
+            Availability::Unavailable(_) => adopt(address, folder),
+            Availability::Available => false,
+        };
     };
     // A sidecar is not present in the app inventory until after it is labelled.
     // Anchor it to the already-adopted worker instead of whichever tab happened
@@ -273,6 +314,66 @@ mod tests {
         assert_eq!(target.space, "sp1");
         assert_eq!(target.tab, "tb1");
         assert_eq!(target.placeholder.as_deref(), Some("t7"));
+    }
+
+    #[test]
+    fn adopted_ids_are_stable_shape_and_worktree_scoped() {
+        let space = adopted_id(
+            "sp",
+            "/home/dev/.herdr/worktrees/apo/feat-apo-1-dispatch-id",
+        );
+        let tab = adopted_id(
+            "tb",
+            "/home/dev/.herdr/worktrees/apo/feat-apo-1-dispatch-id",
+        );
+        assert_eq!(
+            space,
+            adopted_id(
+                "sp",
+                "/home/dev/.herdr/worktrees/apo/feat-apo-1-dispatch-id"
+            )
+        );
+        assert_eq!(space.len(), 34);
+        assert!(space.starts_with("sp"));
+        assert!(
+            space[2..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+        assert!(tab.starts_with("tb"));
+        assert_eq!(&space[2..], &tab[2..]);
+        assert_ne!(
+            space,
+            adopted_id(
+                "sp",
+                "/home/dev/.herdr/worktrees/apo/feat-apo-2-dispatch-other"
+            )
+        );
+        assert_ne!(
+            adopted_id("sp", "/home/dev/worktrees/apo/feat-apo-1"),
+            adopted_id("sp", "/home/dev/.herdr/worktrees/apo/feat-apo-1")
+        );
+    }
+
+    #[test]
+    fn adoption_labels_place_a_worktree_in_one_space_and_tab() {
+        let labels = adoption_labels("/home/dev/.herdr/worktrees/apo/feat-apo-1");
+        let value = |key: &str| {
+            labels
+                .iter()
+                .find(|(label, _)| label == key)
+                .map(|(_, value)| value.clone())
+                .expect("adoption label")
+        };
+        assert_eq!(labels.len(), 2);
+        assert_eq!(
+            value("herdr.space"),
+            adopted_id("sp", "/home/dev/.herdr/worktrees/apo/feat-apo-1")
+        );
+        assert_eq!(
+            value("herdr.tab"),
+            adopted_id("tb", "/home/dev/.herdr/worktrees/apo/feat-apo-1")
+        );
     }
 
     #[test]

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Reveal dispatched work when the dispatcher runs where herdr-app is not
+  running, such as a space on a remote machine. The dispatcher can create the
+  worktree and agent there but cannot call that person's `space.new`, so the
+  worktree and agent used to stay hidden in that machine's core. It now labels
+  the terminal on its own core with a deterministic `herdr.space`/`herdr.tab`
+  pair, and herdr-app adopts an unknown id as a new space and tab. Every
+  terminal for one worktree (worker, babysitter, coordinator, phase workers)
+  and every re-dispatch reuse the same space, so no duplicate spaces appear.
+  The adopted space takes herdr-app's automatic name for the worktree folder and
+  an unnamed tab, and keyboard focus stays on this screen; the person opens the
+  new space from the sidebar. Behaviour with an available herdr-app, including
+  the task-named space, placeholder removal, and focus, is unchanged.
+
 - Fix the first dispatch into a newly created worktree. OpenCode loads a
   location's configuration lazily, so its first location-scoped `/api/agent`
   response for that worktree can be empty even though the next response lists

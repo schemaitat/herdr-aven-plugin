@@ -573,6 +573,28 @@ assert_eq "$(grep -c 'space.new' "$work/app.log")" 1 'babysitter reuses the work
 assert_file_lacks "$work/app.log" 'pane.split' 'babysitter never creates a panel pane'
 assert_file_contains "$work/app.log" 'pane.focus --terminal t' 'sidecar layout restores focus to the worker or sidecar terminal'
 
+# Without herdr-app (a dispatch on a remote machine, or a host where the app is
+# closed), the worktree must still appear in the person's window: the terminal is
+# labelled with deterministic space/tab ids on its own core and herdr-app adopts
+# an unknown id as a new space and tab. A dispatcher that cannot reach the app
+# must never pretend to create the space through it.
+seed_aven
+adopt_log=$work/adopt-calls
+: > "$work/app.log"
+PATH="$fake:$PATH" HC_FIXTURE_LOG="$adopt_log" AVEN_DISPATCH_STORE="$work/adopt.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+$context
+EOF
+assert_file_lacks "$work/app.log" 'space.new' 'an unavailable herdr-app is never asked for a space'
+grep -E 'herdr\.space=sp[0-9a-f]{32}' "$adopt_log" >/dev/null || fail 'a remote dispatch labels its terminal into an adopted space'
+grep -E 'herdr\.tab=tb[0-9a-f]{32}' "$adopt_log" >/dev/null || fail 'a remote dispatch labels its terminal into an adopted tab'
+
+# Re-dispatching the same worktree reuses the adopted space instead of forking a
+# duplicate: the ids derive from the worktree path, not from the run.
+PATH="$fake:$PATH" HC_FIXTURE_LOG="$adopt_log" AVEN_DISPATCH_STORE="$work/adopt.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+$context
+EOF
+assert_eq "$(grep -oE 'herdr\.space=sp[0-9a-f]{32}' "$adopt_log" | sort -u | wc -l | tr -d ' ')" 1 'a redispatch reuses the adopted worktree space'
+
 # Cumulative dispatch keeps the coordinator and every phase worker in their
 # own worktree space and never splits a panel into any of them.
 seed_aven
