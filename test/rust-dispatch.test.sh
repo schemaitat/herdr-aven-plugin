@@ -8,6 +8,7 @@ set -eu
 . "$(dirname "$0")/helpers.sh"
 
 work=$(mkworkdir)
+binary=$(dispatch_bin)
 fake=$work/bin
 state=$work/hc-state
 log=$work/calls
@@ -122,7 +123,7 @@ export OPENCODE_LOG=$work/opencode.log
 context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}}}'
 bulk_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"bulk-task","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-1","task":{"id":"immutable-task","title":"quoted \"task\""},"project":{"key":"app"}}}}'
 
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
 $context
 EOF
 
@@ -152,7 +153,7 @@ assert_contains "$(sqlite_json "$store")" '"address": "t1"' 'terminal address pe
 seed_aven
 bulk_store=$work/bulk.sqlite
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$bulk_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$bulk_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
 $bulk_context
 EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
@@ -173,7 +174,7 @@ PY
 # second new attempt must reuse all choices rather than prompting again.
 seed_aven
 printf '%s\n' "$bulk_context" > "$work/bulk-context.json"
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/interactive-bulk.out" 2 none "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/interactive-bulk.out" 2 none "$binary" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 sqlite_json "$work/interactive-bulk.sqlite" > "$work/interactive-bulk.json"
 python3 - "$work/interactive-bulk.json" <<'PY'
 import json, sys
@@ -184,7 +185,7 @@ for attempt in attempts.values():
         'implementation', 'subsessions', 'configured-build', 'github-copilot/gpt-6.1-terra'), attempt
 PY
 # Reopening an entirely existing batch asks for no new configuration.
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/existing-bulk.out" 2 existing "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/existing-bulk.out" 2 existing "$binary" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 
 # OpenCode can answer the first location-scoped agent request for a new
 # worktree with an empty list while it loads that location's configuration.
@@ -195,7 +196,7 @@ cold_marker=$work/cold-agent-empty
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/cold-agent.sqlite" \
   OPENCODE_EMPTY_FIRST_AGENT=1 OPENCODE_EMPTY_FIRST_MARKER="$cold_marker" \
   python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/cold-context.json" "$work/cold-agent.out" 1 none \
-  "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+  "$binary" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 [ -e "$cold_marker" ] || fail 'cold agent fixture did not serve an empty first response'
 assert_file_contains "$work/opencode.log" 'POST /api/session/' 'cold agent discovery still creates a session'
 assert_file_contains "$work/opencode.log" '/prompt' 'cold agent discovery still admits the prompt'
@@ -212,16 +213,16 @@ PY
 # A dry run still selects the implementation mode only once, without starting
 # agent/model pickers or sessions.
 seed_aven
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/dry-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/dry-bulk.out" 2 dry-run "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --dry-run --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/dry-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/dry-bulk.out" 2 dry-run "$binary" dispatch --dry-run --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 
 # Reopening a saved single-session attempt does not prompt or seed settings for
 # the new subsession attempt; the explicit mode of the saved attempt survives.
 seed_aven
 mixed_store=$work/mixed-bulk.sqlite
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$mixed_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-sol --mode single-session --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$mixed_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-sol --mode single-session --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF >/dev/null
 $context
 EOF
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$mixed_store" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/mixed-bulk.out" 2 none "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$mixed_store" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/mixed-bulk.out" 2 none "$binary" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 sqlite_json "$mixed_store" > "$work/mixed-bulk.json"
 python3 - "$work/mixed-bulk.json" <<'PY'
 import json, sys
@@ -235,12 +236,12 @@ PY
 # Canceling the shared agent choice cannot admit either task.
 seed_aven
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/canceled-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/canceled-bulk.out" 1 agent "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/canceled-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/canceled-bulk.out" 1 agent "$binary" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 assert_eq "$after" "$before" 'canceling shared configuration admits no task'
 assert_eq "$(sqlite_count "$work/canceled-bulk.sqlite")" 0 'canceled selection removes its reservation'
 seed_aven
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/canceled-model-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/canceled-model-bulk.out" 1 model "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/canceled-model-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/canceled-model-bulk.out" 1 model "$binary" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
 assert_eq "$after" "$before" 'canceling shared model admits no task'
 assert_eq "$(sqlite_count "$work/canceled-model-bulk.sqlite")" 0 'canceled model removes its reservation'
@@ -249,7 +250,7 @@ assert_eq "$(sqlite_count "$work/canceled-model-bulk.sqlite")" 0 'canceled model
 # not marked; the focused selection never takes part in the batch.
 seed_aven
 detached_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"bulk-task","ref":"APP-3"}]},"selection":{"primary":{"ref":"APP-9","task":{"id":"focused-elsewhere","title":"focused elsewhere"},"project":{"key":"app"}}}}'
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/detached-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/detached"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/detached-bulk.sqlite" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/detached"
 $detached_context
 EOF
 assert_file_lacks "$work/opencode.log" 'focused-elsewhere' 'focused task outside the marks never joins the batch'
@@ -259,7 +260,7 @@ assert_file_contains "$work/detached" 'APP-3' 'marked batch still includes the s
 # can be created for any selected task.
 before=$(wc -l < "$work/opencode.log")
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/invalid-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/invalid-bulk.sqlite" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null 2>&1
 {"version":1,"invocation":{"origin_cwd":"$repo"},"targeting":{"targets":[{"id":"duplicate","ref":"APP-1"},{"id":"duplicate","ref":"APP-3"}]}}
 EOF
 rc=$?
@@ -271,7 +272,7 @@ assert_eq "$(wc -l < "$work/opencode.log")" "$before" 'invalid batch has no Open
 # a later selection is also rejected without partially dispatching the batch.
 before=$(wc -l < "$work/opencode.log")
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/stale-bulk.sqlite" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/stale-bulk.sqlite" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra <<EOF >/dev/null 2>&1
 {"version":1,"invocation":{"origin_cwd":"$repo"},"targeting":{"targets":[{"id":"immutable-task","ref":"APP-1"},{"id":"expected-task","ref":"APP-4"}]}}
 EOF
 rc=$?
@@ -280,7 +281,7 @@ assert_eq "$rc" "1" 'stale selected target fails preflight'
 assert_eq "$(wc -l < "$work/opencode.log")" "$before" 'stale batch has no partial dispatch'
 
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/reopen"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/reopen"
 $context
 EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
@@ -303,7 +304,7 @@ PY
 "$HC_BIN" kill "$old_terminal" >/dev/null
 sessions_before=$(grep -c -- '--session' "$log" || true)
 runs_before=$(grep -c '"run"' "$log" || true)
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reopen APP-1 --json > "$work/reopen-json"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" reopen APP-1 --json > "$work/reopen-json"
 python3 - "$work/reopen-json" <<'PY'
 import json, sys
 payload = json.load(open(sys.argv[1]))
@@ -327,7 +328,7 @@ json.dump(state, open(sys.argv[1], 'w'), indent=2, sort_keys=True)
 PY
 before_failed=$(grep -c '"run"' "$log")
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reopen APP-1 --json > "$work/reopen-terminal.out" 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" reopen APP-1 --json > "$work/reopen-terminal.out" 2>&1
 rc=$?
 set -e
 assert_eq "$rc" "1" 'reopen refuses a terminal task'
@@ -337,7 +338,7 @@ assert_eq "$(grep -c '"run"' "$log")" "$before_failed" 'refused reopen launches 
 # Babysitting is opt-in: a second API session and a separate owned terminal.
 seed_aven
 babysitter_store=$work/babysitter.sqlite
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$babysitter_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
 $context
 EOF
 assert_contains "$(sqlite_json "$babysitter_store")" '"babysitter": true' 'babysitter opt-in persisted'
@@ -354,7 +355,7 @@ grep -F '"agent":"build","location"' "$work/opencode.log" | grep -F '"model":{"i
 # persisted for later recovery.
 seed_aven
 override_store=$work/babysitter-override.sqlite
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model github-copilot/gpt-5.5 <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model github-copilot/gpt-5.5 <<EOF >/dev/null
 $context
 EOF
 assert_contains "$(sqlite_json "$override_store")" '"babysitter_model": "github-copilot/gpt-5.5"' 'babysitter override persisted'
@@ -366,7 +367,7 @@ grep -F '"agent":"build","location"' "$work/opencode.log" | tail -n 1 | grep -F 
 # The environment variable is an equivalent configuration surface.
 seed_aven
 env_store=$work/babysitter-env.sqlite
-AVEN_DISPATCH_BABYSITTER_MODEL=github-copilot/gpt-6-astra PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$env_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
+AVEN_DISPATCH_BABYSITTER_MODEL=github-copilot/gpt-6-astra PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$env_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
 $context
 EOF
 assert_contains "$(sqlite_json "$env_store")" '"babysitter_model": "github-copilot/gpt-6-astra"' 'babysitter model environment variable persisted'
@@ -388,7 +389,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.commit()
 PY2
 babysitter_sessions=$(grep -c '"agent":"aven-babysitter"' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model github-copilot/gpt-6.1-sol <<EOF > "$work/babysitter-reopen"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$override_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model github-copilot/gpt-6.1-sol <<EOF > "$work/babysitter-reopen"
 $context
 EOF
 assert_eq "$(grep -c '"agent":"aven-babysitter"' "$work/opencode.log")" "$((babysitter_sessions + 1))" 'missing babysitter sidecar is recreated on reopen'
@@ -399,7 +400,7 @@ grep -F '"agent":"aven-babysitter","location"' "$work/opencode.log" | tail -n 1 
 seed_aven
 invalid_store=$work/babysitter-invalid.sqlite
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model not-a-model <<EOF > "$work/babysitter-invalid" 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter --babysitter-model not-a-model <<EOF > "$work/babysitter-invalid" 2>&1
 $context
 EOF
 rc=$?
@@ -434,7 +435,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.commit()
 PY2
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$pending_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/pending-retry"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$pending_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/pending-retry"
 $context
 EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
@@ -460,7 +461,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.commit()
 PY2
 before=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$incomplete_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/incomplete-retry"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$incomplete_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/incomplete-retry"
 $context
 EOF
 after=$(grep -c 'POST /api/session/.*/prompt' "$work/opencode.log")
@@ -483,7 +484,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.commit()
 PY
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$legacy_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/legacy" 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$legacy_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills" <<EOF > "$work/legacy" 2>&1
 $context
 EOF
 rc=$?
@@ -496,7 +497,7 @@ assert_file_lacks "$work/opencode.log" '"agent":"aven-orchestrator"' 'non-worktr
 seed_aven
 cumulative_store=$work/cumulative.sqlite
 cumulative_context='{"version":1,"invocation":{"origin_cwd":"'"$repo"'"},"targeting":{"targets":[{"id":"epic-task","ref":"APP-2"}]},"selection":{"primary":{"ref":"APP-2","task":{"id":"epic-task","title":"cumulative epic"},"project":{"key":"app"}}}}'
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$cumulative_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
 $cumulative_context
 EOF
 for phase in phase-01 phase-02; do
@@ -522,7 +523,7 @@ done
 # through coordinator_model.
 seed_aven
 orchestrator_store=$work/orchestrator-override.sqlite
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$orchestrator_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model github-copilot/gpt-5.5 <<EOF >/dev/null
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$orchestrator_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model github-copilot/gpt-5.5 <<EOF >/dev/null
 $cumulative_context
 EOF
 assert_contains "$(sqlite_json "$orchestrator_store")" '"coordinator_model": "github-copilot/gpt-5.5"' 'coordinator override persisted'
@@ -537,7 +538,7 @@ done
 seed_aven
 invalid_orchestrator_store=$work/orchestrator-invalid.sqlite
 set +e
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_orchestrator_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model not-a-model <<EOF > "$work/orchestrator-invalid" 2>&1
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$invalid_orchestrator_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees --orchestrator-model not-a-model <<EOF > "$work/orchestrator-invalid" 2>&1
 $cumulative_context
 EOF
 rc=$?
@@ -546,16 +547,16 @@ assert_eq "$rc" "1" 'invalid orchestrator model fails session creation'
 assert_file_contains "$work/orchestrator-invalid" 'must use provider/model form' 'invalid orchestrator model uses the model_ref validation path'
 
 # Bounded reconcile and watcher status are explicit, repeatable operations.
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --once > "$work/watch-once"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch --once > "$work/watch-once"
 assert_file_contains "$work/watch-once" 'reconciled' 'watch --once reconciles persisted attempts'
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- watch --status > "$work/watch-status"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" watch --status > "$work/watch-status"
 assert_file_contains "$work/watch-status" '"store"' 'watcher status reports its store'
 
 # With herdr-app available, a dispatched worktree gets a sidebar space and the
 # attempt terminal is labelled into that space's tab.
 seed_aven
 app_store=$work/app.sqlite
-FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
+FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --babysitter <<EOF >/dev/null
 $context
 EOF
 assert_file_contains "$work/app.log" 'space.new' 'dispatch creates a worktree space in herdr-app'
@@ -599,7 +600,7 @@ assert_eq "$(grep -oE 'herdr\.space=sp[0-9a-f]{32}' "$adopt_log" | sort -u | wc 
 # own worktree space and never splits a panel into any of them.
 seed_aven
 app_worktree_store=$work/app-worktree.sqlite
-FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_worktree_store" cargo run --quiet -- dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
+FAKE_APP=1 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$app_worktree_store" "$binary" dispatch --agent build --model github-copilot/gpt-6.1-terra --skill aven/sdd-implement --skills-dir "$PLUGIN_ROOT/skills" --mode worktrees <<EOF >/dev/null
 $cumulative_context
 EOF
 assert_file_lacks "$work/app.log" 'pane.split' 'coordinator and phase workers receive no panel pane'
@@ -608,7 +609,7 @@ assert_file_contains "$work/app.log" 'feat-app-2-cumulative-epic-dispatch-epic-t
 assert_file_contains "$work/app.log" 'feat-app-2-cumulative-epic-dispatch-epic-task' 'coordinator gets its root worktree space'
 
 # Reset invalidates execution while preserving Aven plan/status.
-PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" cargo run --quiet -- reset APP-1 --yes > "$work/reset"
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$store" "$binary" reset APP-1 --yes > "$work/reset"
 assert_file_contains "$work/reset" 'reset complete for APP-1'
 assert_eq "$(sqlite_count "$store")" 0 'reset removes the central attempt'
 last_edit=$(grep 'aven edit APP-1' "$work/aven.log" | tail -n 1)

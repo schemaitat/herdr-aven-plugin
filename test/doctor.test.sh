@@ -4,6 +4,7 @@ set -eu
 . "$(dirname "$0")/helpers.sh"
 
 work=$(mkworkdir)
+binary=$(dispatch_bin)
 fake=$work/bin
 mkdir -p "$fake"
 cat > "$fake/aven" <<'SCRIPT'
@@ -67,7 +68,7 @@ esac
 SCRIPT
 chmod +x "$fake"/*
 set +e
-HC_BIN=$fake/hc PATH="$fake:$PATH" cargo run --quiet -- doctor > "$work/rust-doctor" 2>&1
+HC_BIN=$fake/hc PATH="$fake:$PATH" "$binary" doctor > "$work/rust-doctor" 2>&1
 rc=$?
 set -e
 assert_eq "$rc" "1" 'doctor rejects missing event capability'
@@ -83,7 +84,7 @@ case " $* " in
 esac
 SCRIPT
 chmod +x "$fake/hc"
-HC_BIN=$fake/hc PATH="$fake:$PATH" cargo run --quiet -- doctor > "$work/rust-doctor" 2>&1
+HC_BIN=$fake/hc PATH="$fake:$PATH" "$binary" doctor > "$work/rust-doctor" 2>&1
 assert_file_contains "$work/rust-doctor" 'ready:' 'doctor reports ready with tested capabilities'
 assert_file_contains "$work/rust-doctor" 'headless dispatch remains supported' 'missing app remains supported'
 
