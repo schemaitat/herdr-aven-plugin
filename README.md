@@ -963,8 +963,11 @@ automatic generation.
    confirmation pickers; they do not determine the new attempts' settings.
 2. Choose an agent by number in the existing Aven terminal, or in a dedicated
    herdr-core picker terminal when dispatched outside Aven. The picker appears
-   even with one agent. In the terminal picker, press `/` and type to filter
-   live: Up/Down (or PageUp/PageDown) move, Enter selects, Esc clears the
+   even with one agent. OpenCode loads a location's configuration lazily, so
+   the first agent listing for a brand-new worktree can briefly be empty; the
+   dispatcher retries that worktree-scoped read for up to five seconds before
+   treating the list as empty. In the terminal picker, press `/` and type to
+   filter live: Up/Down (or PageUp/PageDown) move, Enter selects, Esc clears the
    search or cancels when it is empty, and Ctrl-C always cancels. `q` also
    cancels when the search is not active, without creating a session or prompt.
    When the task is selected through the Kanban board or the Aven panel on a
