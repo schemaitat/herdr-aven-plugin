@@ -6,6 +6,7 @@ use std::{
     env, fs,
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use crate::model::ExecutionMode;
@@ -142,9 +143,16 @@ pub(crate) fn install_global_agent(agent_id: &str, contents: &str) -> Result<Pat
     install_agent_definition(&global_opencode_agents_dir()?, agent_id, contents)
 }
 
-fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
-    let output = opencode_text_in("GET", "/api/agent", None, Some(Path::new(worktree)))?;
-    let response: Value = serde_json::from_str(&output).context("OpenCode agent list response")?;
+/// OpenCode initializes a location's configuration lazily. The first
+/// location-scoped agent request for a directory the server has never seen can
+/// return an empty list before the built-in and global profiles are loaded, and
+/// the next request returns them. This bounded window absorbs that warm-up
+/// without turning a real misconfiguration into a silent fallback.
+const AGENT_DISCOVERY_ATTEMPTS: usize = 50;
+const AGENT_DISCOVERY_INTERVAL: Duration = Duration::from_millis(100);
+
+fn parse_primary_agents(output: &str) -> Result<Vec<PrimaryAgent>> {
+    let response: Value = serde_json::from_str(output).context("OpenCode agent list response")?;
     let agents = response
         .pointer("/data")
         .and_then(Value::as_array)
@@ -173,6 +181,42 @@ fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
             })
         })
         .collect())
+}
+
+/// Retry a cold location until it reports a selectable primary agent. A
+/// populated response is returned immediately; an empty one is retried up to
+/// `attempts` times with `interval` between calls, then returned as-is so the
+/// caller keeps its actionable error.
+fn discover_primary_agents(
+    mut fetch: impl FnMut() -> Result<Vec<PrimaryAgent>>,
+    attempts: usize,
+    interval: Duration,
+) -> Result<Vec<PrimaryAgent>> {
+    let attempts = attempts.max(1);
+    let mut agents = Vec::new();
+    for attempt in 0..attempts {
+        agents = fetch()?;
+        if !agents.is_empty() {
+            break;
+        }
+        if attempt + 1 < attempts {
+            std::thread::sleep(interval);
+        }
+    }
+    Ok(agents)
+}
+
+fn fetch_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
+    let output = opencode_text_in("GET", "/api/agent", None, Some(Path::new(worktree)))?;
+    parse_primary_agents(&output)
+}
+
+fn available_primary_agents(worktree: &str) -> Result<Vec<PrimaryAgent>> {
+    discover_primary_agents(
+        || fetch_primary_agents(worktree),
+        AGENT_DISCOVERY_ATTEMPTS,
+        AGENT_DISCOVERY_INTERVAL,
+    )
 }
 
 /// Every chat model from every currently configured provider. The API is
@@ -661,16 +705,74 @@ mod tests {
         let response = json!({"data": [
             {"id": "build", "name": "Build", "mode": "primary", "hidden": false},
             {"id": "hidden", "mode": "primary", "hidden": true},
-            {"id": "subagent", "mode": "subagent", "hidden": false}
+            {"id": "subagent", "mode": "subagent", "hidden": false},
+            {"id": "aven-babysitter", "mode": "primary", "hidden": false}
         ]});
-        let agents = response["data"].as_array().unwrap();
-        let selected: Vec<_> = agents
-            .iter()
-            .filter(|agent| agent.pointer("/mode").and_then(Value::as_str) == Some("primary"))
-            .filter(|agent| agent.pointer("/hidden").and_then(Value::as_bool) != Some(true))
-            .filter_map(|agent| agent.pointer("/id").and_then(Value::as_str))
-            .collect();
-        assert_eq!(selected, vec!["build"]);
+        let agents = parse_primary_agents(&response.to_string()).unwrap();
+        assert_eq!(
+            agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["build"]
+        );
+    }
+    #[test]
+    fn agent_discovery_uses_a_populated_first_response() {
+        let mut calls = 0;
+        let agents = discover_primary_agents(
+            || {
+                calls += 1;
+                Ok(vec![PrimaryAgent {
+                    id: "build".into(),
+                    name: "Build".into(),
+                    model: None,
+                }])
+            },
+            5,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(agents.len(), 1);
+    }
+    #[test]
+    fn agent_discovery_retries_a_cold_empty_location() {
+        let mut calls = 0;
+        let agents = discover_primary_agents(
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Ok(Vec::new())
+                } else {
+                    Ok(vec![PrimaryAgent {
+                        id: "build".into(),
+                        name: "Build".into(),
+                        model: None,
+                    }])
+                }
+            },
+            5,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(calls, 3);
+        assert_eq!(agents[0].id, "build");
+    }
+    #[test]
+    fn agent_discovery_stops_after_its_bounded_window() {
+        let mut calls = 0;
+        let agents = discover_primary_agents(
+            || {
+                calls += 1;
+                Ok(Vec::new())
+            },
+            3,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(agents.is_empty());
+        assert_eq!(calls, 3);
     }
     #[test]
     fn legacy_dispatcher_agent_ids_are_not_selectable() {

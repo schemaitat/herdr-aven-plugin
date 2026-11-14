@@ -80,7 +80,7 @@ case " $* " in
   *" GET /api/session/ses_"*) if [ -n "${OPENCODE_OUTCOME:-}" ]; then printf '{"data":{"outcome":"%s"}}\n' "$OPENCODE_OUTCOME"; else printf '%s\n' '{"data":{}}'; fi ;;
   *" GET /api/session?limit=1 "*) printf '%s\n' '{"data":[]}' ;;
   *" GET /api/experimental/session/"*) printf 'id: 42\nevent: update\ndata: {}\n\n' ;;
-  *" GET /api/agent "*" x-opencode-directory:"*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-6.1-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":false},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":false}]}' ;;
+  *" GET /api/agent "*" x-opencode-directory:"*) if [ "${OPENCODE_EMPTY_FIRST_AGENT:-}" = 1 ] && [ ! -e "$OPENCODE_EMPTY_FIRST_MARKER" ]; then : > "$OPENCODE_EMPTY_FIRST_MARKER"; printf '%s\n' '{"data":[]}'; exit 0; fi; printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-6.1-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":false},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":false}]}' ;;
   *" GET /api/agent "*) printf '%s\n' '{"data":[{"id":"configured-build","name":"Configured build","model":{"providerID":"github-copilot","id":"gpt-6.1-terra"},"mode":"primary","hidden":false},{"id":"aven-babysitter","name":"Aven babysitter","mode":"primary","hidden":false},{"id":"aven-orchestrator","name":"Aven orchestrator","mode":"primary","hidden":false}]}' ;;
   *) printf '%s\n' '{"data":[]}' ;;
 esac
@@ -185,6 +185,29 @@ for attempt in attempts.values():
 PY
 # Reopening an entirely existing batch asks for no new configuration.
 PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/interactive-bulk.sqlite" python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/bulk-context.json" "$work/existing-bulk.out" 2 existing "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+
+# OpenCode can answer the first location-scoped agent request for a new
+# worktree with an empty list while it loads that location's configuration.
+# Discovery must retry instead of aborting before the agent picker appears.
+seed_aven
+printf '%s\n' "$context" > "$work/cold-context.json"
+cold_marker=$work/cold-agent-empty
+PATH="$fake:$PATH" AVEN_DISPATCH_STORE="$work/cold-agent.sqlite" \
+  OPENCODE_EMPTY_FIRST_AGENT=1 OPENCODE_EMPTY_FIRST_MARKER="$cold_marker" \
+  python3 "$PLUGIN_ROOT/test/bulk-dispatch-pty.py" "$work/cold-context.json" "$work/cold-agent.out" 1 none \
+  "$PLUGIN_ROOT/target/debug/aven-dispatch" dispatch --agent select --preferred-agent configured-build --preferred-model github-copilot/gpt-6.1-terra --skill aven/sdd-plan-implement --skills-dir "$PLUGIN_ROOT/skills"
+[ -e "$cold_marker" ] || fail 'cold agent fixture did not serve an empty first response'
+assert_file_contains "$work/opencode.log" 'POST /api/session/' 'cold agent discovery still creates a session'
+assert_file_contains "$work/opencode.log" '/prompt' 'cold agent discovery still admits the prompt'
+sqlite_json "$work/cold-agent.sqlite" > "$work/cold-agent.json"
+python3 - "$work/cold-agent.json" <<'PY'
+import json, sys
+attempts = json.load(open(sys.argv[1]))['attempts']
+assert len(attempts) == 1, attempts
+attempt = next(iter(attempts.values()))
+assert (attempt['execution_mode'], attempt['agent'], attempt['model']) == (
+    'single-session', 'configured-build', 'github-copilot/gpt-6.1-terra'), attempt
+PY
 
 # A dry run still selects the implementation mode only once, without starting
 # agent/model pickers or sessions.

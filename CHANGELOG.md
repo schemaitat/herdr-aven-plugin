@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix the first dispatch into a newly created worktree. OpenCode loads a
+  location's configuration lazily, so its first location-scoped `/api/agent`
+  response for that worktree can be empty even though the next response lists
+  the built-in and global agents. Agent discovery now retries that scoped read
+  for up to five seconds instead of aborting with "OpenCode has no visible
+  primary agents" before the picker appears. A genuinely agent-less
+  configuration still fails with the same actionable error.
+
 - Make every herdr-app Aven surface follow the focused space's machine. When a
   space lives on a remote machine from `hc machine ls`, the Kanban board, Aven
   sidebar, tab indicator, and Aven launcher now run their Aven, Git,
